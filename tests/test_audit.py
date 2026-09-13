@@ -397,7 +397,7 @@ class TestRender(unittest.TestCase):
                                        "new": "超价取消", "reason": "超上限"}],
                                      {"reviewed": 120, "data_date": "2026-09-12",
                                       "valid_until": "2026-09-18"})
-        for need in ("首选观察", "备选观察", "计划变化", "数据说明",
+        for need in ("首选观察", "备选观察", "计划变化", "复核 120 只",
                      "不追价上限", "失效条件", "超价取消"):
             self.assertIn(need, html)
         self.assertLess(len(re.sub(r"<[^>]+>", "", html)), 2500,

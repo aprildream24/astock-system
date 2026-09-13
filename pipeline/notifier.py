@@ -25,31 +25,56 @@ RULE_VERSION = "v2-20260912"   # 内容+规则版本：升级后 biz_key 自动�
 
 
 # ---------------------------------------------------------------------------
-# 渲染
+# 渲染（内联样式自绘——微信/PushPlus 只认内联样式，避免字体大小失控）
 # ---------------------------------------------------------------------------
 
+_STY = {
+    "doc": ("font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;"
+            "font-size:14px;color:#333;line-height:1.75"),
+    "h1": ("font-size:17px;font-weight:700;color:#111;"
+           "border-bottom:2px solid #d93026;padding-bottom:6px;margin:6px 0 10px"),
+    "h2": ("font-size:15px;font-weight:700;color:#111;"
+           "border-left:4px solid #d93026;padding-left:8px;margin:14px 0 6px"),
+    "h3": "font-size:14px;font-weight:700;color:#111;margin:10px 0 4px",
+    "p": "margin:5px 0",
+    "li": "margin:4px 0",
+    "meta": "color:#999;font-size:12px;margin:6px 0",
+}
+
+ACTION_BG = {"现在买": "#d93026", "次日竞价达标买": "#b9860b",
+             "等回踩": "#b9860b", "小仓试": "#b9860b",
+             "观望": "#6b7280", "禁买": "#7a2226", "未推荐": "#9ca3af",
+             "条件满足": "#1d7a4c", "等待确认": "#b9860b", "数据不足": "#6b7280",
+             "超价取消": "#c62828", "结构失效": "#c62828", "到期失效": "#6b7280"}
+
+
+def _badge(text, bg):
+    return (f'<span style="background:{bg};color:#fff;border-radius:4px;'
+            f'padding:1px 8px;font-size:12px;font-weight:700;'
+            f'display:inline-block">{text}</span>')
+
+
+def _inline(s):
+    s = re.sub(r"\*\*(.+?)\*\*", r'<strong style="color:#111">\1</strong>', s)
+    return s
+
+
 def md2html(md):
-    """极简 markdown → HTML（红买绿卖，A股惯例 dark 友好）。"""
+    """极简 markdown → 内联样式 HTML（红涨绿卖灰辅助，微信 webview 兼容）。"""
     out = []
     for line in md.splitlines():
         esc = html.escape(line)
         if line.startswith("### "):
-            out.append(f"<h3>{esc[4:]}</h3>")
+            out.append(f'<div style="{_STY["h3"]}">{_inline(esc[4:])}</div>')
         elif line.startswith("## "):
-            out.append(f"<h2>{esc[3:]}</h2>")
+            out.append(f'<div style="{_STY["h2"]}">{_inline(esc[3:])}</div>')
         elif line.startswith("# "):
-            out.append(f"<h1>{esc[2:]}</h1>")
+            out.append(f'<div style="{_STY["h1"]}">{_inline(esc[2:])}</div>')
         elif line.startswith("- "):
-            out.append(f"<li>{_inline(esc[2:])}</li>")
+            out.append(f'<div style="{_STY["li"]}">· {_inline(esc[2:])}</div>')
         elif line.strip():
-            out.append(f"<p>{_inline(esc)}</p>")
-    return ("<div style='font-family:sans-serif;max-width:640px'>"
-            + "".join(out) + "</div>")
-
-
-def _inline(s):
-    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
-    return s
+            out.append(f'<div style="{_STY["p"]}">{_inline(esc)}</div>')
+    return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
 
 
 def _cand_line(c):
@@ -105,60 +130,87 @@ def render_candidates(title, picks, extra_lines=()):
 # M35/N10 变化式主报告 + 标的卡片（状态 > 名称 > 价格/失效 > 理由 > 评分）
 # ---------------------------------------------------------------------------
 
-STATUS_MARK = {"条件满足": "🟢", "等待确认": "🟡", "数据不足": "⚪",
-               "超价取消": "🔴", "结构失效": "⛔", "到期失效": "⏳"}
+STATUS_CLS = {"条件满足": "#1d7a4c", "等待确认": "#b9860b", "数据不足": "#6b7280",
+              "超价取消": "#c62828", "结构失效": "#c62828", "到期失效": "#6b7280"}
+
+
+def _card(inner, border="#e5e5e5"):
+    return (f'<div style="border:1px solid {border};border-radius:8px;'
+            f'padding:10px;margin:8px 0">{inner}</div>')
+
+
+def _kv(k, v):
+    return (f'<div style="margin:2px 0"><span style="color:#999">{k}</span>'
+            f'<span>{v}</span></div>')
 
 
 def render_card(d, first=False):
-    """N10 统一标的卡片。评分弱化为末行小字——不抢动作的视觉重点。"""
+    """N10 统一标的卡片（内联样式）。状态>名称>价格/失效>理由>评分。"""
     zone = d.get("zone") or [None, None]
     zone_s = f"{zone[0]:.2f}~{zone[1]:.2f}" if zone[0] and zone[1] else "—"
     cap = f"{zone[1] * 1.03:.2f}" if zone[1] else "—"
-    mark = STATUS_MARK.get(d.get("status"), "·")
-    head = "【首选观察】" if first else "【备选观察】"
-    lines = [f"{head} {mark}**{d.get('status')}**｜{d.get('name','')} "
-             f"{d.get('code','')}",
-             f"关注区间 {zone_s}｜不追价上限 {cap}",
-             f"失效条件：{d.get('invalid_if', '条件破坏即失效')}",
-             f"有效截止：{d.get('valid_until', '—')}",
-             f"理由：{d.get('reason') or '—'}",
-             f"<sub>评级 {d.get('research_grade', '—')}｜分 "
-             f"{d.get('score', '—')}</sub>"]
-    return "\n".join(lines)
+    status = d.get("status", "等待确认")
+    badge = _badge(status, STATUS_CLS.get(status, "#6b7280"))
+    head = ('<div style="color:#5b8def;font-weight:700;font-size:13px;'
+            'margin-bottom:4px">【首选观察】</div>' if first else
+            '<div style="color:#8b95a5;font-weight:700;font-size:13px;'
+            'margin-bottom:4px">【备选观察】</div>')
+    inner = (
+        f'<div style="margin-bottom:6px"><span style="font-size:15px;'
+        f'font-weight:700">{html.escape(d.get("name") or "")}</span>'
+        f'<span style="color:#999;font-size:12px"> {html.escape(str(d.get("code", "")))}</span>'
+        f' <span style="float:right">{badge}</span></div>'
+        + _kv("关注区间：", f'<span class="zone">{zone_s}</span>')
+        + _kv("不追价上限：", cap)
+        + _kv("止损：", f'{d.get("stop"):.2f}' if d.get("stop") else "—")
+        + _kv("有效截止：", html.escape(str(d.get("valid_until", "—"))))
+        + _kv("失效条件：", html.escape(str(d.get("invalid_if", "条件破坏即失效"))))
+        + (f'<div style="color:#666;font-size:13px;margin-top:6px;'
+           f'border-top:1px dashed #eee;padding-top:6px">理由：'
+           f'{html.escape(str(d.get("reason") or "—"))}'
+           f'<span style="color:#bbb;font-size:11px"> ｜ 评级 '
+           f'{html.escape(str(d.get("research_grade", "—")))} 分 '
+           f'{d.get("score", "—")}</span></div>' if d.get("reason") or d.get("score") else ""))
+    return head + _card(inner)
 
 
 def render_brief(today, first, backups, changes, meta, ladder_next=()):
-    """M35 主报告简洁（300~600字目标），详情另存：
-    今日结论 / 首选 / 备选≤2 / 次日通道 / 计划变化 / 数据说明。
-    ladder_next = 次日竞价确认（当日涨停买不进，非即时可买）单独分组。"""
-    md = [f"# 收盘观察 {today}", ""]
+    """M35 主报告（内联样式自绘）：今日结论 / 首选 / 备选≤2 / 次日通道 /
+    计划变化 / 数据说明。ladder_next = 次日竞价确认单独分组（非即时可买）。"""
+    out = [f'<div style="{_STY["h1"]}">收盘观察 {html.escape(today)}</div>',
+           f'<div style="{_STY["meta"]}">复核 {html.escape(str(meta.get("reviewed", "—")))} 只 · '
+           f'数据日期 {html.escape(str(meta.get("data_date", today)))} · '
+           f'有效期至 {html.escape(str(meta.get("valid_until", "—")))}</div>']
     if first:
-        md += [render_card(first, first=True), ""]
+        out.append(render_card(first, first=True))
     else:
-        md += ["今日**无合格观察机会**——没有机会就不凑数。", ""]
+        out.append('<div style="color:#666;padding:14px 0">今日无当下可买入的机会'
+                   '——没有机会就不凑数。</div>')
     for b in (backups or [])[:2]:
-        md += [render_card(b), ""]
+        out.append(render_card(b))
     if ladder_next:
-        md += ["## 次日竞价确认 · 非即时可买", ""]
+        out.append(f'<div style="{_STY["h2"]}">次日竞价确认 · 非即时可买</div>')
         for d in ladder_next[:2]:
             zone = d.get("zone") or [None, None]
             zs = f"{zone[0]:.2f}~{zone[1]:.2f}" if zone[0] and zone[1] else "—"
-            md.append(f"- 🎯 {d.get('name','')} {d.get('code','')}｜"
-                      f"达标条件：高开≥2%~5%（按板数）｜区间 {zs}｜"
-                      f"{d.get('gate_evidence') or '低开即放弃'}")
-        md.append("")
+            out.append(_card(
+                f'<div style="margin-bottom:4px"><b>{html.escape(d.get("name", ""))}</b>'
+                f'<span style="color:#999;font-size:12px"> {html.escape(str(d.get("code", "")))}</span></div>'
+                + _kv("达标条件：", "高开≥2%~5%（按板数）")
+                + _kv("低开处理：", "放弃（历史胜率仅24%）")
+                + _kv("关注区间：", zs)
+                + (f'<div style="color:#666;font-size:12px">{html.escape(str(d.get("gate_evidence") or ""))}</div>'
+                   if d.get("gate_evidence") else "")))
     if changes:
-        md += ["## 计划变化", ""]
-        for c in changes:
-            md.append(f"- {c['code']}：{c['old']} → {c['new']}"
-                      + (f"（{c['reason']}）" if c.get("reason") else ""))
-        md.append("")
-    md += ["## 数据说明", ""]
-    md.append(f"- 复核数量：{meta.get('reviewed', '—')}｜"
-              f"数据日期：{meta.get('data_date', today)}｜"
-              f"有效期至：{meta.get('valid_until', '—')}")
-    md.append(f"- {meta.get('note', '评分不是上涨概率；未触发、未委托、未成交如实区分。')}")
-    return md2html("\n".join(md))
+        out.append(f'<div style="{_STY["h2"]}">计划变化</div>')
+        for c in changes[:8]:
+            st_bg = STATUS_CLS.get(c.get("new"), "#6b7280")
+            out.append(_kv(html.escape(f"{c.get('code')}"),
+                           _badge(c.get("new", ""), st_bg)
+                           + f' <span style="color:#999;font-size:12px">'
+                           f'{html.escape(str(c.get("reason") or ""))}</span>'))
+    out.append(f'<div style="{_STY["meta"]}">{html.escape(str(meta.get("note", "")))}</div>')
+    return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
 
 
 def save_detail_report(html, today, data_json=None):
@@ -293,6 +345,12 @@ def push(mode, title, content, date=None, con=None,
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not force and _reconcile(con, key, mode, ts, True):
         return {"sent": False, "dedup": True, "key": key}
+    # 网页端入口：每条推送底部附站点地址（用户需求 2026-09-13）
+    site_url = cfg.get("site_url") or "https://aprildream24.github.io/astock-system/"
+    content += (f'<div style="margin-top:14px;padding-top:8px;'
+                f'border-top:1px solid #e5e5e5;color:#576b95;font-size:13px">'
+                f'🌐 网页端详情：<a href="{site_url}" style="color:#576b95">'
+                f'{site_url}</a>（访问口令见 config/users.json / SITE_USERS）</div>')
     results = {}
     if cfg.get("push_dry_run"):
         from . import wxpusher

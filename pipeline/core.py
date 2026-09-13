@@ -47,6 +47,7 @@ def load_config():
         "wxpusher_routes": {},
         "primary_channel": "wxpusher",   # wxpusher | pushplus | serverchan
         "push_tag": "Astra",             # 防混淆标识：【{tag}·来源】标题前缀
+        "site_url": "https://aprildream24.github.io/astock-system/",
         "site_password": os.environ.get("SITE_PASSWORD", ""),
         "admin_password": os.environ.get("ADMIN_PASSWORD", ""),
         "owner_id": os.environ.get("OWNER_ID", "owner"),
