@@ -1,0 +1,196 @@
+# -*- coding: utf-8 -*-
+"""统一评分 / 环境加权 / top_picks 终审 / 胜率熔断闸。"""
+import hashlib
+
+from . import engines
+
+
+# ---------------------------------------------------------------------------
+# 3.7 市场环境加权 env_bias
+# ---------------------------------------------------------------------------
+
+def env_weights(promote_rate, zhaban_rate, emotion):
+    """M09/M10：环境加权唯一入口（build 全部走这里，固定连乘顺序）。
+    口径约定：promote_rate = 连板晋级率（与情绪表"连板晋级率"同源
+    同算，均出自 zt_pool，禁止另一处另算）。"""
+    return env_bias(promote_rate, zhaban_rate, emotion)
+
+
+def env_bias(promote_rate, zhaban_rate, emotion):
+    """单位归一：>1 视为百分数自动 /100。返回 {连板,趋势,波段,区间} 权重。"""
+    if promote_rate > 1:
+        promote_rate /= 100
+    if zhaban_rate > 1:
+        zhaban_rate /= 100
+    w = {"连板": 1.0, "趋势": 1.0, "波段": 1.0, "区间": 1.0}
+    if promote_rate >= 0.55 and zhaban_rate <= 0.30:
+        w["连板"] *= 1.25
+    if zhaban_rate >= 0.40:
+        w["连板"] *= 0.70
+    if promote_rate < 0.40:
+        w["连板"] *= 0.85
+    if emotion >= 60:
+        w["趋势"] *= 1.15
+    # 情绪差：只降连板，不抬波段/区间（退潮做波段已被实证推翻）
+    return w
+
+
+# ---------------------------------------------------------------------------
+# 3.11 统一评分
+# ---------------------------------------------------------------------------
+
+def grade(score):
+    if score >= 85:
+        return "S"
+    if score >= 70:
+        return "A"
+    if score >= 55:
+        return "B"
+    if score >= 40:
+        return "C"
+    return "D"
+
+
+def position_hint(pool, score):
+    if pool == "连板" and score >= 55:
+        return "1~2成"
+    if pool == "趋势" and score >= 70:
+        return "2~3成"
+    if pool in ("波段", "区间") and score >= 70:
+        return "2成"
+    return "1成"
+
+
+def score_candidate(c, env_w):
+    """统一评分：各池基础分 → 环境加权 → eff_score。"""
+    pool = c["pool"]
+    if pool == "连板":
+        rr = max(0.0, (c.get("t1", c["close"]) - c["close"]) / c["close"])
+        base = 55 + min(25, rr * 12 * 100) + min(15, c.get("reach10", 0.2) * 15)
+    elif pool == "趋势":
+        base = c.get("worth_score", c.get("kscore", 50))
+        base += 4 if c.get("trend_state") == "加速上行" else (
+            -4 if c.get("trend_state") == "增速放缓" else 0)
+    elif pool == "区间":
+        base = 15 + max(0.0, min(70.0, c.get("worth", 0)))
+    else:  # 波段
+        base = c.get("worth", 50)
+    score = base * env_w.get(pool, 1.0)
+    return round(score, 2)
+
+
+# ---------------------------------------------------------------------------
+# 3.9 胜率熔断闸
+# ---------------------------------------------------------------------------
+
+def tag_winrate(con, days=30, min_n=10, threshold=45.0, today=None):
+    """对每个策略 tag 统计近 N 日推荐票的次日胜率。
+    胜率 <45% 且样本 ≥10 → observe。"""
+    out = {}
+    rows = con.execute(
+        "SELECT tag, outcome, COUNT(*) FROM rec_picks WHERE date >= date(?, ?) "
+        "GROUP BY tag, outcome", (today or "", f"-{days} day")).fetchall()
+    agg = {}
+    for tag, outcome, n in rows:
+        a = agg.setdefault(tag, {"win": 0, "n": 0})
+        a["n"] += n
+        if outcome in ("win", "tomorrow_up"):
+            a["win"] += n
+    for tag, a in agg.items():
+        wr = a["win"] / a["n"] * 100 if a["n"] else None
+        out[tag] = {"winrate": wr, "n": a["n"],
+                    "observe": bool(wr is not None and a["n"] >= min_n
+                                    and wr < threshold)}
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 3.8 top_picks 终审（唯一权威排序，三池合并）
+# ---------------------------------------------------------------------------
+
+WINRATE_ANCHOR = {"连板": 1.0, "趋势": 0.72, "波段": 0.72, "区间": 0.72}
+ACTION_RANK = {"现在买": 2, "次日竞价达标买": 2, "等回踩": 1, "小仓试": 1, "观望": 0}
+
+
+def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3):
+    """cands: 已过熔断闸的候选 list；返回 ≤3 只（允许 0 只）。"""
+    scored = []
+    for c in cands:
+        if c.get("observe"):
+            continue                      # 双保险：observe 票不进终审
+        pool = c["pool"]
+        eff = score_candidate(c, env_w) * WINRATE_ANCHOR.get(pool, 0.72)
+        # 优选因子：板块冷热 / 趋势双态
+        if c.get("sector_temp") == "❄弱":
+            eff *= 0.90
+        elif c.get("sector_temp") == "🔥强":
+            eff *= 1.03
+        if c.get("trend_state") == "增速放缓":
+            eff *= 0.90
+        elif c.get("trend_state") == "加速上行":
+            eff *= 1.05
+        c["eff_score"] = round(eff, 2)
+        scored.append(c)
+    # 板块内去重：同板块只留最高分 1 只
+    if sector_of:
+        best = {}
+        for c in scored:
+            sec = sector_of(c)
+            if sec not in best or c["eff_score"] > best[sec]["eff_score"]:
+                best[sec] = c
+        scored = list(best.values())
+    scored.sort(key=lambda c: (c["eff_score"], ACTION_RANK.get(c.get("action"), 0)),
+                reverse=True)
+    # 类型配额：连板 ≤2 席
+    picked, ladder = [], 0
+    for c in scored:
+        if c["pool"] == "连板":
+            if ladder >= 2:
+                continue
+            ladder += 1
+        picked.append(c)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def observe_mute(cands, winrates):
+    """胜率熔断：tag 胜率不达标 → observe=True（全通道一致的前提）。"""
+    for c in cands:
+        wr = winrates.get(c.get("tag", ""))
+        if wr and wr.get("observe"):
+            c["observe"] = True
+    return cands
+
+
+# ---------------------------------------------------------------------------
+# 决策 _decide：每股唯一操作结论（渲染层不重判）
+# ---------------------------------------------------------------------------
+
+def _decide(c, today=None):
+    """动作 ∈ {现在买, 等回踩, 次日竞价达标买, 观望, 禁买}。"""
+    if c.get("observe"):
+        return "观望"
+    if c.get("broken"):
+        return "禁买"
+    close = c["close"]
+    if c["pool"] == "连板":
+        gap = c.get("gap_pct")
+        if gap is None:
+            return "次日竞价达标买"        # 收盘时点：等明日竞价达标确认
+        follow, watch = engines.auction_discipline(c.get("streak", 1), gap)
+        if follow:
+            return "现在买"                # 竞价达标 → 开盘买（🔥优选）
+        return "禁买" if not watch else "观望"   # 低开放弃 → 禁买
+    lo, hi = c["buy_low"], c["buy_high"]
+    if lo <= close <= hi:
+        return "现在买"
+    if close <= hi * 1.06:
+        return "等回踩"
+    if c.get("stop") and close <= c["stop"]:
+        return "禁买"
+    return "观望"
+
+
+def sid_of(strategy, code, date):
+    return hashlib.sha1(f"{strategy}|{code}|{date}".encode()).hexdigest()[:16]

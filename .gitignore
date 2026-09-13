@@ -1,0 +1,20 @@
+# 敏感文件——绝不入库（规格 5.3 红线）
+config/notify.json
+config/users.json
+config/holdings.json
+config/watch.json
+config/models.json
+
+# 数据与构建产物
+cache/
+dist/
+site/
+*.db
+*.bin
+
+# Python
+__pycache__/
+*.pyc
+
+# 部署打包产物
+scf_stock.zip

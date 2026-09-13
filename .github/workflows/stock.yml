@@ -1,0 +1,97 @@
+# 主链调度 + GitHub Pages 自动发布（唯一部署通道）
+# 时点为北京时间（UTC+8）；密钥只从仓库 Secrets 注入，源码零密钥。
+# Secrets 一览：
+#   WXPUSHER_CONF   WxPusher 账户 JSON 数组（多账户）：
+#                   [{"name":"主号","app_token":"AT_xxx","uids":["UID_xxx"]}]
+#   SITE_USERS      站点口令 JSON：{"owner":"你的口令","guest":"访客口令"}
+#   SERVERCHAN_KEY  可选备用通道
+#   PUSHPLUS_TOKEN  可选备用通道
+# 未配置推送 key 时系统自动 dry-run，流水线不会失败。
+name: stock
+
+on:
+  schedule:
+    - cron: "50 0 * * 1-5"   # 08:50 盘前计划
+    - cron: "25 1 * * 1-5"   # 09:25 竞价裁决
+    - cron: "26 1 * * 1-5"   # 09:26 开盘异动
+    - cron: "7 2 * * 1-5"    # 10:07 盘中异动
+    - cron: "7 6 * * 1-5"    # 14:07 盘中异动
+    - cron: "22 7 * * 1-5"   # 15:22 收盘构建
+    - cron: "2 12 * * 1-5"   # 20:02 收盘复盘
+    - cron: "3 12 * * 0"     # 20:03 周日发酵
+    - cron: "5 0 * * 1"      # 08:05 周一预热
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "build 任务: pre | auction | close | review | site"
+        default: close
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 回归自检
+        run: python tests/run_regression.py
+      - name: 收盘数据抓取（全市场）
+        if: github.event.schedule == '22 7 * * 1-5'
+        run: python -m pipeline.fetch_daily
+      - name: 盘前/竞价轻量增量抓取
+        if: github.event.schedule == '50 0 * * 1-5' || github.event.schedule == '25 1 * * 1-5'
+        run: python -m pipeline.fetch_daily --days 20
+      - name: 构建+推送（WxPusher/PushPlus 多渠道）
+        env:
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          WATCH_CODES: ${{ secrets.WATCH_CODES }}
+          HOLDINGS_CONF: ${{ secrets.HOLDINGS_CONF }}
+        run: |
+          TASK="${{ github.event.inputs.task || 'close' }}"
+          case "$GITHUB_SCHEDULE" in
+            "50 0 * * 1-5") TASK=pre ;;
+            "25 1 * * 1-5") TASK=auction ;;
+            "22 7 * * 1-5") TASK=close ;;
+            *)              TASK=close ;;
+          esac
+          python -m pipeline.build --task "$TASK"
+      - name: 收盘复盘（自选股建议+AI叙事）
+        if: github.event.schedule == '2 12 * * 1-5'
+        env:
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+        run: python -m pipeline.build --task review
+      - name: 构建加密站点
+        env:
+          SITE_USERS: ${{ secrets.SITE_USERS }}
+        run: |
+          mkdir -p config
+          echo "$SITE_USERS" > config/users.json
+          python -m pipeline.build --task site
+      - name: 上传 Pages 构件
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy-pages:
+    needs: build
+    if: github.event.schedule == '22 7 * * 1-5' || github.event.inputs.task == 'site'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
