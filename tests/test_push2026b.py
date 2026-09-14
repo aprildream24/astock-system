@@ -99,6 +99,22 @@ class TestBuyableGate(unittest.TestCase):
         self.assertFalse(scoring.is_buyable_now(_cand(close=None)))
         self.assertFalse(scoring.is_buyable_now(_cand(buy_low=None)))
 
+    def test_wait_pullback_has_lower_bound(self):
+        """等回踩带上界+下界（2026-09-14 用户口径：飞天上/已破位都不要）。
+        略高于上沿 6% 内 → 等回踩；远超上沿 → 观望（飞在天上）；
+        回踩到下沿附近（≥97%下沿）→ 等回踩；跌破更深 → 观望/禁买。"""
+        base = _cand()   # 区间 10.0~10.3，close=10.1
+        # 略高于上沿 → 等回踩（值得等）
+        self.assertEqual(scoring._decide({**base, "close": 10.9}), "等回踩")
+        # 远超上沿（飞天上）→ 观望，不再说"等回踩"误导
+        self.assertEqual(scoring._decide({**base, "close": 12.0}), "观望")
+        # 跌破下沿 3% 内（回踩下沿）→ 等回踩
+        self.assertEqual(scoring._decide({**base, "close": 9.8}), "等回踩")
+        # 跌破更深 → 触发止损 = 禁买；未触止损的深跌 = 观望
+        self.assertEqual(scoring._decide({**base, "close": 9.2, "stop": 9.4}),
+                         "禁买")
+        self.assertEqual(scoring._decide({**base, "close": 9.6}), "观望")
+
 
 # ---------------------------------------------------------------------------
 # ③ 扫描覆盖口径：退市/未上市不计缺口

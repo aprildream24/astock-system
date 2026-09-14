@@ -55,32 +55,57 @@ def main():
     if not trade_calendar.is_trade_day(today):
         print(f"[watchdog] {today} 非交易日（{trade_calendar.why_closed(today)}），跳过")
         return 0
-    # ① 主链 CI 状态（新主判据）
-    runs = _today_ci_runs()
-    if runs is None:
-        print("[watchdog] GitHub API 不可达——跳过主链检查（不误报）")
-        return 0
-    ok = [r for r in runs if r.get("conclusion") == "success"]
-    running = [r for r in runs if r.get("status") in ("in_progress", "queued")]
-    if ok:
-        print(f"[watchdog] {today} CI 主链正常（{len(ok)} 个成功 run）")
-        return 0
-    problems = []
-    if running:
-        print(f"[watchdog] {today} CI 仍在跑（{len(running)} 个），暂不告警")
-        return 0
-    if runs:
-        problems.append(f"今日 CI {len(runs)} 个 run 全部失败（回归/构建挂了）")
-    else:
-        problems.append("今日 CI 零 run（GitHub cron 又漏触发——已知顽疾）")
-    # ② 本地兜底链路附加自检（不再单独决定告警）
+    # 判断运行模式：本地链路今天有产出（fetch_stats==today）→ 离线自检模式；
+    # 否则查 CI 主链（公开 API）。
     stats_path = os.path.join(ROOT, "cache", "fetch_stats.json")
+    local_fresh = False
     if os.path.exists(stats_path):
-        with open(stats_path, encoding="utf-8") as f:
-            stats = json.load(f)
-        if stats.get("date") != today:
-            problems.append(f"（本地兜底也未见今日数据：fetch_stats 停在 "
-                            f"{stats.get('date')}）")
+        try:
+            with open(stats_path, encoding="utf-8") as f:
+                stats = json.load(f)
+            local_fresh = (stats.get("date") == today and stats.get("fetched"))
+        except Exception:  # noqa: BLE001
+            pass
+    problems = []
+    if local_fresh:
+        # 离线模式：本地链路今天已跑 → 校验推送产出
+        print(f"[watchdog] {today} 本地链路模式（fetch 今日已跑）")
+        try:
+            ledger = os.path.join(ROOT, "dist", "push_ledger.json")
+            today_push = False
+            if os.path.exists(ledger):
+                with open(ledger, encoding="utf-8") as f:
+                    for k, v in (json.load(f) or {}).items():
+                        if str(v.get("ts", "")).startswith(today) \
+                                and v.get("status") in ("sent", "uncertain"):
+                            today_push = True
+                            break
+            if not today_push:
+                problems.append("本地 fetch 已跑但今日无成功推送（build 挂了？）")
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"账本不可读：{e!r}")
+    else:
+        # CI 模式：查 GitHub Actions
+        runs = _today_ci_runs()
+        if runs is None:
+            print("[watchdog] GitHub API 不可达且本地无今日数据——"
+                  "跳过检查（不误报）")
+            return 0
+        ok = [r for r in runs if r.get("conclusion") == "success"]
+        running = [r for r in runs
+                   if r.get("status") in ("in_progress", "queued")]
+        if ok:
+            print(f"[watchdog] {today} CI 主链正常（{len(ok)} 个成功 run）")
+            return 0
+        if running:
+            print(f"[watchdog] {today} CI 仍在跑（{len(running)} 个），暂不告警")
+            return 0
+        if runs:
+            problems.append(f"今日 CI {len(runs)} 个 run 全部失败（回归/构建挂了）")
+        else:
+            problems.append("今日 CI 零 run 且本地链路无产出（双通道全哑？）")
+        problems.append(f"（本地 fetch_stats 停在 "
+                        f"{_stats_date(stats_path) or '缺失'}）")
     if problems:
         print("[watchdog] 发现异常：")
         for p in problems:
@@ -97,6 +122,14 @@ def main():
         return 1
     print(f"[watchdog] {today} 全部正常")
     return 0
+
+
+def _stats_date(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("date")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 if __name__ == "__main__":

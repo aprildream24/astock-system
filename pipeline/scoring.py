@@ -255,13 +255,22 @@ def _decide(c, today=None):
     hint = c.get("action_hint")
     if hint in ACTION_HINT_MAP:
         act = ACTION_HINT_MAP[hint]
-        # 四态说能买，仍要落在买区内才成立（防报价漂移）
+        # 四态说能买，仍要落在买区内才成立（防报价漂移）；
+        # 跳出买区回落成"等回踩"也要带上界——飞在天上的不算等回踩（观望）
         if act == "现在买":
-            return "现在买" if lo <= close <= hi else "等回踩"
+            if lo <= close <= hi:
+                return "现在买"
+            return "等回踩" if close <= hi * 1.06 else "观望"
         return act
     if lo <= close <= hi:
         return "现在买"
-    if close <= hi * 1.06:
+    # 等回踩带上界+下界（2026-09-14 用户口径：不要飞在天上的，也不要已破位的）：
+    # ① 略高于上沿 6% 内 → 等回踩（回踩进区就买）
+    # ② 略破下沿 3% 内（回踩下沿）→ 等回踩
+    # ③ 更远的（飞天上 / 深破位）→ 观望或禁买，绝不以"等回踩"误导
+    up_band = hi < close <= hi * 1.06
+    dn_band = lo * 0.97 <= close < lo
+    if up_band or dn_band:
         return "等回踩"
     if c.get("stop") and close <= c["stop"]:
         return "禁买"

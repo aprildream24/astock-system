@@ -463,6 +463,20 @@ def build(task="close", date=None):
         c["action"] = scoring._decide(c)
     if task == "auction":
         auction_adjudicate(con, cands)   # 实际竞价逐票裁决 + 🔥优选
+    # 4.5% 窄带红线兜底（红线1，2026-09-14 实测区间池 91 只宽 6.06% 漏网）：
+    # 任何引擎造出的「现在买」买区宽过 MAX_NOW_ZONE_WIDTH 时，围绕现价收窄
+    # （close 必在区内）——推出去的必须是能照价挂单的窄带，不是统计区间。
+    for c in cands:
+        if c.get("action") != "现在买" or c.get("limit_up"):
+            continue
+        lo, hi, close = c.get("buy_low"), c.get("buy_high"), c.get("close")
+        if not (lo and hi and close) or hi / lo - 1 <= engines.MAX_NOW_ZONE_WIDTH:
+            continue
+        nhi = close * 1.005
+        nlo = max(lo, nhi / (1 + engines.MAX_NOW_ZONE_WIDTH))
+        if nhi > nlo:
+            c["buy_low"], c["buy_high"] = nlo, nhi
+            c["dist_pct"] = scoring.dist_pct(c)
     # 用户口径（2026-09-13）：主推荐只放「当下就能下单买入」的票。
     # 当日已涨停（一字/封死）的票买不进 → 归「次日竞价确认」独立通道，不混入。
     # buyable_now 收紧：action=现在买 **且** 现价确实落在买区内（dist_pct==0）。

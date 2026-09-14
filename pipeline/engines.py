@@ -277,10 +277,21 @@ def detect_stage_bottom(rows, turn20=None, fmv=None):
     pos = max(0.0, min(1.0, (close - box_low) / (box_high - box_low)))
     worth = (30 * (1 - pos) + min(12, touches * 1.2)
              + min(8, tops * 0.8) + min(20, upside))
+    # 买区（2026-09-14 收窄）：旧版 box_low*0.99~1.05 恒宽 6.06%，
+    # 绕过了 entry_plan 的 4.5% 可下单窄带红线——用户拿到手根本无法照价挂单。
+    # 现口径：close 落在箱体下部买区（≤box_low*1.05）→ 围绕**现价**造窄带
+    # （close 必在区内、宽度 ≤MAX_NOW_ZONE_WIDTH）；close 更高 → 收窄后的
+    # 旧区间作为回踩目标（等回踩语义，不该现在追）。
+    if close <= box_low * 1.05:
+        _nhi = close * 1.005
+        _nlo = max(box_low * 0.99, _nhi / (1 + MAX_NOW_ZONE_WIDTH))
+        _bl, _bh = _nlo, _nhi
+    else:
+        _bl, _bh = box_low * 0.99, box_low * (1 + MAX_NOW_ZONE_WIDTH)
     cand = {"pool": "区间", "close": close, "box_low": box_low,
             "box_high": box_high, "touches": touches, "tops": tops,
             "upside": upside, "worth": worth,
-            "buy_low": box_low * 0.99, "buy_high": box_low * 1.05,
+            "buy_low": _bl, "buy_high": _bh,
             "sell_low": box_high * 0.97, "sell_high": box_high,
             "stop": box_low * 0.94}
     cand.update(classify_box_speed(rows))

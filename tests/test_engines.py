@@ -90,6 +90,36 @@ class TestBandTrade(unittest.TestCase):
             gen_box_rows(end_at_low=False) and _break_rows())
         self.assertIsNone(broken, "跌破箱底 1% 应剔除（不接飞刀）")
 
+    def test_box_buyzone_narrow_band(self):
+        """红线1（2026-09-14）：箱体买区必须是 ≤4.5% 可下单窄带。
+
+        旧版 box_low*0.99~1.05 恒宽 6.06%，绕过 entry_plan 守卫，
+        用户无法照价挂单。现口径：close 在箱体下部 → 围绕现价窄带；
+        close 更高 → 收窄后的箱底区间（等回踩目标）。
+        """
+        good = engines.detect_stage_bottom(gen_box_rows())
+        self.assertIsNotNone(good)
+        w = good["buy_high"] / good["buy_low"] - 1
+        self.assertLessEqual(
+            w, engines.MAX_NOW_ZONE_WIDTH,
+            f"买区宽 {w:.2%} 超 4.5% 红线")
+        # close 落在箱体下部 → 现价必须区内（可照价下单）
+        self.assertLessEqual(good["buy_low"], good["close"])
+        self.assertGreaterEqual(good["buy_high"], good["close"])
+
+        # 高位变体：末日收在箱体上部（box_low*1.04，仍在 1.05 旧买区内）
+        rows = gen_box_rows()
+        box_low = 10.0
+        rows[-1][2] = box_low * 1.04
+        rows[-1][1] = box_low * 1.038
+        rows[-1][3] = box_low * 1.045
+        rows[-1][4] = box_low * 1.032
+        hi = engines.detect_stage_bottom(rows)
+        if hi is not None:
+            w2 = hi["buy_high"] / hi["buy_low"] - 1
+            self.assertLessEqual(w2, engines.MAX_NOW_ZONE_WIDTH,
+                                 f"高位买区宽 {w2:.2%} 超 4.5% 红线")
+
     def test_tight_box_blocked(self):
         r = gen_box_rows(box_low=10.0, box_high=10.3)  # 宽度 <5%
         self.assertIsNone(engines.detect_stage_bottom(r), "过窄箱体应拦截")
