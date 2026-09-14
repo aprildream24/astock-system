@@ -493,6 +493,10 @@ def build(task="close", date=None):
         [c for c in cands if c.get("action") == "次日竞价达标买"],
         env_w, winrates, sector_of=lambda c: c.get("sector", c["pool"]),
         limit=2)
+    # 展示口径（2026-09-14 用户困惑整改）：可下单的票永远排在「等回踩/小仓试」
+    # 前面——此前详情报告把高分的等回踩票排在首位，用户第一眼看到"不能买"，
+    # 再往下才看到可买票，产生"一下说观望一下说能买"的矛盾观感。
+    picks.sort(key=lambda c: (not c.get("buyable_now"), -(c.get("score") or 0)))
     for c in picks + ladder_next:
         con.execute("INSERT OR REPLACE INTO rec_picks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (date, c["code"], c.get("name", ""), c["tag"], c["action"],
@@ -636,7 +640,8 @@ def build(task="close", date=None):
         except Exception:  # noqa: BLE001
             site_data["xcheck"] = {"skipped": True}
         notifier.save_detail_report(detail, date, site_data)
-        r = notifier.push(f"build_{task}", date, brief, date=date, con=con)
+        r = notifier.push(f"build_{task}", date, brief, date=date, con=con,
+                          force=_force_push())
         print(f"[build] push={r}")
     # 自选股建议独立推送（独立 biz_key，不与主报告互相吃去重）
     if watch_advice and task in ("close", "review"):
@@ -644,7 +649,8 @@ def build(task="close", date=None):
             f"- **{a.get('name','')} {a['code']}**（{a['action']}）：{a['advice']}"
             + (f"｜距买区 {a['dist_pct']:+.1f}%" if a.get("dist_pct") is not None else "")
             for a in watch_advice))
-        wr = notifier.push("watch_advice", date, wmd, date=date, con=con)
+        wr = notifier.push("watch_advice", date, wmd, date=date, con=con,
+                           force=_force_push())
         print(f"[build] watch push={wr}")
     if task == "review":
         # AI 叙事降级链（未配置任何 key 时自动落到规则引擎，永不失败）
@@ -652,10 +658,17 @@ def build(task="close", date=None):
         text = narrative.narrate({"date": date, "mood": mood or {},
                                   "emotion": emo, "picks": picks})
         nr = notifier.push("narrative", date, notifier.md2html(text),
-                           date=date, con=con)
+                           date=date, con=con, force=_force_push())
         print(f"[build] narrative push={nr}")
     return {"date": date, "candidates": len(cands), "picks": picks,
             "ladder_next": ladder_next, "emotion": emo, "changes": changes}
+
+
+def _force_push():
+    """ASTOCK_FORCE_PUSH=1 时绕过当日去重强制重发（用户明确要求重发时用）。
+
+    平时恒为 False——去重是防打扰的核心，不能默认关闭。"""
+    return os.environ.get("ASTOCK_FORCE_PUSH") == "1"
 
 
 def prev_picks_of(con, date):
