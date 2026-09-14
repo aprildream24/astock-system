@@ -11,11 +11,12 @@ BASELINE_FILE = os.path.join(HERE, "baseline.json")
 
 SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           "test_p8.py", "test_final.py", "test_audit.py", "test_absorb.py",
-          "test_wx_deploy.py"]
+          "test_wx_deploy.py", "test_fix_20260913.py", "test_push2026b.py"]
 
 
 def main():
     total_pass, total_fail = 0, 0
+    bad = []          # (套件名, returncode, stderr 尾部) —— CI 上失败时用于定位
     for s in SUITES:
         p = subprocess.run([sys.executable, "-X", "utf8", "-m", "unittest",
                             os.path.splitext(s)[0].replace(os.sep, "."),
@@ -27,7 +28,14 @@ def main():
         total_pass += passed
         total_fail += failed
         print(f"--- {s}: PASS={passed} FAIL={failed}")
+        if failed or p.returncode:
+            bad.append((s, p.returncode, (out or p.stdout or "")[-2500:]))
     print(f"\n总计: PASS={total_pass} FAIL={total_fail}")
+    if bad:
+        # 只在失败时打印，避免正常运行时淹没输出
+        for s, rc, tail in bad:
+            print(f"\n===== 失败详情 {s} (rc={rc}) =====")
+            print(tail)
     prev = None
     if os.path.exists(BASELINE_FILE):
         with open(BASELINE_FILE, encoding="utf-8") as f:

@@ -6,6 +6,8 @@
 #   SITE_USERS      站点口令 JSON：{"owner":"你的口令","guest":"访客口令"}
 #   SERVERCHAN_KEY  可选备用通道
 #   PUSHPLUS_TOKEN  可选备用通道
+#   GLM_API_KEY     可选：智谱开放平台 key（免费模型 glm-4.7-flash，AI 叙事用）
+#   GLM_MODEL       可选：覆盖智谱模型名，默认 glm-4.7-flash（免费档）
 # 未配置推送 key 时系统自动 dry-run，流水线不会失败。
 name: stock
 
@@ -59,19 +61,41 @@ jobs:
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           WATCH_CODES: ${{ secrets.WATCH_CODES }}
           HOLDINGS_CONF: ${{ secrets.HOLDINGS_CONF }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GLM_MODEL: ${{ secrets.GLM_MODEL }}
+          # 修复：Actions 无 GITHUB_SCHEDULE 变量（原写法恒为空 → 任务永远落到 close）
+          GH_SCHEDULE: ${{ github.event.schedule }}
         run: |
-          TASK="${{ github.event.inputs.task || 'close' }}"
-          case "$GITHUB_SCHEDULE" in
-            "50 0 * * 1-5") TASK=pre ;;
-            "25 1 * * 1-5") TASK=auction ;;
-            "22 7 * * 1-5") TASK=close ;;
-            *)              TASK=close ;;
-          esac
+          TASK="${{ github.event.inputs.task }}"
+          if [ -z "$TASK" ]; then
+            case "$GH_SCHEDULE" in
+              "50 0 * * 1-5") TASK=pre ;;      # 08:50 盘前计划
+              "25 1 * * 1-5") TASK=auction ;;  # 09:25 竞价裁决
+              "22 7 * * 1-5") TASK=close ;;    # 15:22 收盘构建
+              "5 0 * * 1")    TASK=pre ;;      # 周一 08:05 预热
+              # 09:26 开盘异动 / 10:07 / 14:07 盘中异动：build.py 暂无 anomaly 任务，
+              # 以前会被 * 兜底成 close 造成重复收盘推送，明确跳过。
+              "26 1 * * 1-5") TASK=skip ;;
+              "7 2 * * 1-5")  TASK=skip ;;
+              "7 6 * * 1-5")  TASK=skip ;;
+              # 20:02 复盘 / 20:03 周日发酵：由下方「收盘复盘」步骤负责，此处不重复
+              "2 12 * * 1-5") TASK=skip ;;
+              "3 12 * * 0")   TASK=skip ;;
+              *)              TASK=close ;;
+            esac
+          fi
+          echo "[schedule] GH_SCHEDULE='$GH_SCHEDULE' -> TASK=$TASK"
+          if [ "$TASK" = "skip" ]; then
+            echo "[schedule] 该时点无对应任务，跳过构建与推送"
+            exit 0
+          fi
           python -m pipeline.build --task "$TASK"
       - name: 收盘复盘（自选股建议+AI叙事）
         if: github.event.schedule == '2 12 * * 1-5'
         env:
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GLM_MODEL: ${{ secrets.GLM_MODEL }}
         run: python -m pipeline.build --task review
       - name: 构建加密站点
         env:

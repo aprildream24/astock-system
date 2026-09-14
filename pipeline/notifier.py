@@ -25,21 +25,143 @@ RULE_VERSION = "v2-20260912"   # 内容+规则版本：升级后 biz_key 自动�
 
 
 # ---------------------------------------------------------------------------
-# 渲染（内联样式自绘——微信/PushPlus 只认内联样式，避免字体大小失控）
+# 渲染（表格化内联样式）
+#
+# 版面纪律（2026-09-13 重做，修复"推送版面不美观"）：
+#   1) 一律用 <table> 做对齐 —— 微信/PushPlus/邮件 webview 对 float/flex 支持
+#      极不稳定，旧的 float:right 徽章在手机上会掉行甚至压住标题；
+#   2) 指标用「标签列固定宽 + 数值列」两列表，中文冒号宽度不一的参差消失；
+#   3) 每张卡片固定顺序：状态 → 名称 → 价格矩阵 → 失效条件 → 理由，有落点；
+#   4) 纯文本通道（ServerChan）走 html_to_text 结构化降级，不再粗暴剥标签。
 # ---------------------------------------------------------------------------
 
 _STY = {
     "doc": ("font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;"
             "font-size:14px;color:#333;line-height:1.75"),
-    "h1": ("font-size:17px;font-weight:700;color:#111;"
-           "border-bottom:2px solid #d93026;padding-bottom:6px;margin:6px 0 10px"),
+    "h1": ("font-size:18px;font-weight:700;color:#111;"
+           "border-bottom:2px solid #d93026;padding-bottom:7px;margin:4px 0 10px"),
     "h2": ("font-size:15px;font-weight:700;color:#111;"
-           "border-left:4px solid #d93026;padding-left:8px;margin:14px 0 6px"),
+           "border-left:4px solid #d93026;padding-left:8px;margin:16px 0 8px"),
     "h3": "font-size:14px;font-weight:700;color:#111;margin:10px 0 4px",
     "p": "margin:5px 0",
     "li": "margin:4px 0",
-    "meta": "color:#999;font-size:12px;margin:6px 0",
+    "meta": "color:#9aa0a6;font-size:12px;margin:6px 0",
 }
+
+_LABEL_W = 80          # 指标标签列固定宽（两列表对齐的关键）
+
+
+def _esc(s):
+    """统一转义 + 空值占位（避免推送里出现 None / 空档位）。"""
+    return html.escape("—" if s is None or s == "" else str(s))
+
+
+def _table(inner):
+    return ('<table cellpadding="0" cellspacing="0" border="0" '
+            f'style="width:100%;border-collapse:collapse">{inner}</table>')
+
+
+def _row(k, v, v_color="#111", v_bold=False):
+    """两列表格行：标签灰、数值深，中文冒号宽度不一也不歪。"""
+    bold = "font-weight:700;" if v_bold else ""
+    return ('<tr>'
+            f'<td style="width:{_LABEL_W}px;color:#9aa0a6;font-size:13px;'
+            'padding:3px 10px 3px 0;vertical-align:top;white-space:nowrap">'
+            f'{_esc(k)}</td>'
+            f'<td style="padding:3px 0;color:{v_color};font-size:14px;{bold}">'
+            f'{v}</td></tr>')
+
+
+def _wide_row(inner, pad="2px 0 6px"):
+    """跨两列的行（放位置条这类块元素，不挤占标签列）。"""
+    return (f'<tr><td colspan="2" style="padding:{pad}">{inner}</td></tr>')
+
+
+def _zone_bar(lo, hi, close):
+    """买区位置条：一眼看出「现价 vs 买区」的位置关系（用户需求 2026-09-13）。
+
+    用户在推送里最常问的就是"这票现在能不能买"，光给数字要读者自己比大小。
+    这里用纯表格三段色带实现（无 float / 无 position——微信与 PushPlus 的
+    webview 对这两者支持极不稳定），现价所在段打 ▲ 标记。
+    """
+    if not (lo and hi and close):
+        return ""
+    v0, v1 = lo * 0.97, hi * 1.06            # 视窗：买区下沿-3% ~ 上沿+6%
+    if v1 <= v0:
+        return ""
+
+    def pos(x):
+        return max(0.0, min(100.0, (x - v0) / (v1 - v0) * 100))
+
+    p_lo, p_hi = pos(lo), pos(hi)
+    widths = [round(p_lo, 1), round(p_hi - p_lo, 1), round(100 - p_hi, 1)]
+    styles = ["#e8eaed", "#f3b6b2", "#e8eaed"]        # 区外灰 / 买区红 / 区外灰
+    aligns = ["right", "center", "left"]
+    here = 0 if close < lo else (1 if close <= hi else 2)
+    cells = "".join(
+        f'<td width="{widths[i]}%" align="{aligns[i]}" '
+        f'style="background:{styles[i]};height:15px;line-height:15px;'
+        f'white-space:nowrap;font-size:11px;color:#5f6368">'
+        f'{"▲现价" if i == here else ""}</td>'
+        for i in range(3) if widths[i] > 0)
+    return ('<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            f'style="border-collapse:collapse"><tr>{cells}</tr></table>'
+            '<div style="color:#bdc1c6;font-size:11px;margin-top:2px">'
+            '红段=买入区间｜灰段=不建议追价区</div>')
+
+
+def _status_color(s):
+    """复核状态按语义上色（红=走坏/止损，黄=略高，绿=还在跟）。"""
+    s = s or ""
+    if s.startswith(("⛔", "🔴", "⚠️")):
+        return "#c62828"
+    if s.startswith("🟡"):
+        return "#b9860b"
+    if s.startswith("🟢"):
+        return "#1d7a4c"
+    return "#5f6368"
+
+
+def _summary_strip(meta, n_buy, n_pending, n_ladder):
+    """顶部速览条：先给结论（几只能买），再给细节——手机上不必下滑就有答案。"""
+    cov = meta.get("coverage")
+    items = [("今日可下单", str(n_buy), "#d93026"),
+             ("待回踩", str(n_pending), "#b9860b"),
+             ("次日竞价", str(n_ladder), "#1a73e8"),
+             ("扫描覆盖", f"{cov:.0f}%" if cov is not None else "—", "#5f6368")]
+    # 顺序：先标题后数字 —— ServerChan 纯文本降级按 cell 换行要能读出
+    # 「今日可下单 2」，反过来的话降级后只剩一串孤立数字。
+    cells = "".join(
+        f'<td width="25%" align="center" style="padding:7px 0">'
+        f'<div style="font-size:11px;color:#9aa0a6">{_esc(k)}</div>'
+        f'<div style="font-size:17px;font-weight:700;color:{c}">{_esc(v)}</div>'
+        f'</td>'
+        for k, v, c in items)
+    return _card(_table(f'<tr>{cells}</tr>'), border="#e8eaed")
+
+
+def html_to_text(h):
+    """HTML → 结构化纯文本（ServerChan 等不支持 HTML 的通道专用）。
+
+    旧实现是 re.sub(r'<[^>]+>','') 粗暴剥标签，表格/卡片全部黏成一段，
+    这是"版面不美观"在纯文本通道上的根因。这里按块级/单元格语义换行。
+    """
+    h = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", h)
+    h = re.sub(r"(?i)<br\s*/?>", "\n", h)
+    h = re.sub(r"(?i)</tr>", "\n", h)
+    h = re.sub(r"(?i)</t[dh]>", "  ", h)
+    h = re.sub(r"(?i)</(p|div|section|table|ul|ol|h\d)>", "\n", h)
+    h = re.sub(r"(?i)<li[^>]*>", "· ", h)
+    h = re.sub(r"(?is)<a[^>]*href=[\"']([^\"']*)[\"'][^>]*>(.*?)</a>",
+               r"\2（\1）", h)
+    h = re.sub(r"<[^>]+>", "", h)
+    h = html.unescape(h)
+    out = []
+    for ln in h.splitlines():
+        ln = re.sub(r"[\t ]+", " ", ln).strip(" 　")
+        if ln:
+            out.append(ln)
+    return "\n".join(out)
 
 ACTION_BG = {"现在买": "#d93026", "次日竞价达标买": "#b9860b",
              "等回踩": "#b9860b", "小仓试": "#b9860b",
@@ -49,9 +171,11 @@ ACTION_BG = {"现在买": "#d93026", "次日竞价达标买": "#b9860b",
 
 
 def _badge(text, bg):
+    # white-space:nowrap —— 状态徽章（如"次日竞价达标买"）不得在窄屏折行
     return (f'<span style="background:{bg};color:#fff;border-radius:4px;'
-            f'padding:1px 8px;font-size:12px;font-weight:700;'
-            f'display:inline-block">{text}</span>')
+            f'padding:2px 9px;font-size:12px;font-weight:700;'
+            f'display:inline-block;line-height:1.7;white-space:nowrap">'
+            f'{_esc(text)}</span>')
 
 
 def _inline(s):
@@ -119,11 +243,19 @@ def _cand_line(c):
 
 
 def render_candidates(title, picks, extra_lines=()):
-    md = [f"# {title}", ""]
-    for c in picks:
-        md.append("- " + _cand_line(c))
-    md += ["" + l for l in extra_lines]
-    return md2html("\n".join(md))
+    """详情报告（落盘 dist/reports）：标题 + 候选表格卡 + 附加行。"""
+    out = [f'<div style="{_STY["h1"]}">{_esc(title)}</div>']
+    if picks:
+        rows = "".join(
+            '<tr><td style="padding:5px 2px;border-bottom:1px solid #f1f3f4">'
+            f'{_esc(_cand_line(c))}</td></tr>' for c in picks)
+        out.append(_card(_table(rows)))
+    else:
+        out.append(_card('<span style="color:#5f6368">今日无可买入标的'
+                         '——没有机会就不凑数。</span>', accent="#dadce0"))
+    for l in extra_lines:
+        out.append(f'<div style="{_STY["li"]}">{_esc(l)}</div>')
+    return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
 
 
 # ---------------------------------------------------------------------------
@@ -134,82 +266,157 @@ STATUS_CLS = {"条件满足": "#1d7a4c", "等待确认": "#b9860b", "数据不�
               "超价取消": "#c62828", "结构失效": "#c62828", "到期失效": "#6b7280"}
 
 
-def _card(inner, border="#e5e5e5"):
-    return (f'<div style="border:1px solid {border};border-radius:8px;'
-            f'padding:10px;margin:8px 0">{inner}</div>')
+def _card(inner, border="#e8eaed", accent=None):
+    """卡片容器。accent = 左侧色条（首选红 / 备选灰），替代旧版无层次的白框。"""
+    bar = f"border-left:3px solid {accent};" if accent else ""
+    # <!--card--> 是裁剪哨兵：超限裁剪时按整张卡回退，绝不截半个标签
+    return ('<!--card-->'
+            f'<div style="border:1px solid {border};{bar}border-radius:8px;'
+            f'padding:11px 12px;margin:10px 0;background:#fff">{inner}</div>')
 
 
-def _kv(k, v):
-    return (f'<div style="margin:2px 0"><span style="color:#999">{k}</span>'
-            f'<span>{v}</span></div>')
+def render_card(d, first=False, head=None, accent=None):
+    """N10 统一标的卡片（表格化）。顺序：状态 → 名称 → 价格矩阵 → 失效 → 理由。
 
-
-def render_card(d, first=False):
-    """N10 统一标的卡片（内联样式）。状态>名称>价格/失效>理由>评分。"""
+    head / accent 可覆盖（用于「等待更好买点」等非主推分组，
+    避免它们顶着【备选观察】的标题混进主推位）。
+    """
     zone = d.get("zone") or [None, None]
-    zone_s = f"{zone[0]:.2f}~{zone[1]:.2f}" if zone[0] and zone[1] else "—"
+    zone_s = (f"{zone[0]:.2f} ~ {zone[1]:.2f}"
+              if zone[0] and zone[1] else "—")
     cap = f"{zone[1] * 1.03:.2f}" if zone[1] else "—"
     status = d.get("status", "等待确认")
     badge = _badge(status, STATUS_CLS.get(status, "#6b7280"))
-    head = ('<div style="color:#5b8def;font-weight:700;font-size:13px;'
-            'margin-bottom:4px">【首选观察】</div>' if first else
-            '<div style="color:#8b95a5;font-weight:700;font-size:13px;'
-            'margin-bottom:4px">【备选观察】</div>')
-    inner = (
-        f'<div style="margin-bottom:6px"><span style="font-size:15px;'
-        f'font-weight:700">{html.escape(d.get("name") or "")}</span>'
-        f'<span style="color:#999;font-size:12px"> {html.escape(str(d.get("code", "")))}</span>'
-        f' <span style="float:right">{badge}</span></div>'
-        + _kv("关注区间：", f'<span class="zone">{zone_s}</span>')
-        + _kv("不追价上限：", cap)
-        + _kv("止损：", f'{d.get("stop"):.2f}' if d.get("stop") else "—")
-        + _kv("有效截止：", html.escape(str(d.get("valid_until", "—"))))
-        + _kv("失效条件：", html.escape(str(d.get("invalid_if", "条件破坏即失效"))))
-        + (f'<div style="color:#666;font-size:13px;margin-top:6px;'
-           f'border-top:1px dashed #eee;padding-top:6px">理由：'
-           f'{html.escape(str(d.get("reason") or "—"))}'
-           f'<span style="color:#bbb;font-size:11px"> ｜ 评级 '
-           f'{html.escape(str(d.get("research_grade", "—")))} 分 '
-           f'{d.get("score", "—")}</span></div>' if d.get("reason") or d.get("score") else ""))
-    return head + _card(inner)
+    if head is None:
+        label = "首选观察" if first else "备选观察"
+        if d.get("pool"):
+            label = f"{label} · {d['pool']}"       # 池别上标题，一眼知策略来源
+        head, head_color = (f"【{label}】", "#d93026" if first else "#8b95a5")
+    else:
+        head_color = "#8b95a5"
+    head = (f'<div style="color:{head_color};font-weight:700;font-size:13px;'
+            f'margin:0 0 5px">{_esc(head)}</div>')
+    close = d.get("close")
+    price_s = f"{close:.2f}" if close else "—"
+    dist = d.get("dist_pct")
+    if dist:                       # 现价跳出买区必须显式说明，别让读者自己算
+        dc = "#c62828" if dist > 0 else "#1d7a4c"
+        price_s += (f' <span style="color:{dc};font-size:12px;font-weight:700">'
+                    f'距买区 {dist:+.1f}%</span>')
+    sl, sh = d.get("sell_low"), d.get("sell_high")
+    target = f"{sl:.2f} ~ {sh:.2f}" if sl and sh else "—"
+    tbl = _table(
+        '<tr><td style="padding:0 0 7px">'
+        f'<span style="font-size:16px;font-weight:700;color:#111">'
+        f'{_esc(d.get("name"))}</span>'
+        f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
+        f' {_esc(d.get("code"))}</span></td>'
+        f'<td align="right" valign="top" style="padding:0 0 7px">{badge}</td></tr>'
+        + _row("现价", price_s)
+        + _row("买入区间", f'<span style="color:#d93026">{zone_s}</span>',
+               v_bold=True)
+        + _wide_row(_zone_bar(zone[0], zone[1], close))
+        + _row("不追价上限", cap)
+        + _row("目标区间", target)
+        + _row("止损", f'{d["stop"]:.2f}' if d.get("stop") else "—")
+        + (_row("建议仓位", _esc(d.get("position") or "1成"))
+           if d.get("position") or first else "")
+        + _row("有效期至", _esc(d.get("valid_until")))
+        + _row("失效条件", _esc(d.get("invalid_if") or "条件破坏即失效")))
+    inner = tbl
+    if d.get("reason") or d.get("score") is not None:
+        inner += ('<div style="color:#5f6368;font-size:13px;margin-top:9px;'
+                  'border-top:1px dashed #eceff3;padding-top:7px">'
+                  f'{_esc(d.get("reason") or "—")}'
+                  '<span style="color:#bdc1c6;font-size:11px;margin-left:6px">'
+                  f'评级 {_esc(d.get("research_grade", "—"))}'
+                  f' · 分 {_esc(d.get("score", "—"))}</span></div>')
+    if accent is None:
+        accent = "#d93026" if first else "#dadce0"
+    return head + _card(inner, border=("#f5c6c3" if first else "#e8eaed"),
+                        accent=accent)
 
 
-def render_brief(today, first, backups, changes, meta, ladder_next=()):
-    """M35 主报告（内联样式自绘）：今日结论 / 首选 / 备选≤2 / 次日通道 /
-    计划变化 / 数据说明。ladder_next = 次日竞价确认单独分组（非即时可买）。"""
-    out = [f'<div style="{_STY["h1"]}">收盘观察 {html.escape(today)}</div>',
-           f'<div style="{_STY["meta"]}">复核 {html.escape(str(meta.get("reviewed", "—")))} 只 · '
-           f'数据日期 {html.escape(str(meta.get("data_date", today)))} · '
-           f'有效期至 {html.escape(str(meta.get("valid_until", "—")))}</div>']
+def render_brief(today, first, backups, changes, meta, ladder_next=(),
+                 pending=(), prev_review=()):
+    """M35 主报告（表格化版式）：今日速览 / 今日结论 / 首选 / 备选≤2 /
+    等待更好买点 / 次日通道 / 昨日推荐复核 / 计划变化 / 数据说明。
+
+    pending = 现价**不在**买区的票（等回踩等），独立分组并强制标注距买区——
+    历史 bug：它们被混进"备选观察"，用户以为能照价下单。
+    prev_review = 昨日推荐今日结局（#601-B 闭环），让读者知道推荐的票后来怎样。
+    """
+    cov = meta.get("coverage")
+    cov_s = (f' · 扫描 {_esc(meta.get("universe"))} 只（覆盖 {cov}%）'
+             if cov is not None else "")
+    n_buy = (1 if first else 0) + len((backups or [])[:2])
+    n_pending = len((pending or [])[:2])
+    n_ladder = len((ladder_next or [])[:2])
+    out = [f'<div style="{_STY["h1"]}">收盘观察 {_esc(today)}</div>',
+           _summary_strip(meta, n_buy, n_pending, n_ladder),
+           f'<div style="{_STY["meta"]}">'
+           f'复核 {_esc(meta.get("reviewed", "—"))} 只 · '
+           f'数据日期 {_esc(meta.get("data_date", today))} · '
+           f'有效期至 {_esc(meta.get("valid_until", "—"))}{cov_s}</div>']
     if first:
         out.append(render_card(first, first=True))
     else:
-        out.append('<div style="color:#666;padding:14px 0">今日无当下可买入的机会'
-                   '——没有机会就不凑数。</div>')
+        out.append(_card('<span style="color:#5f6368">今日无当下可买入的机会'
+                         '——没有机会就不凑数。</span>',
+                         border="#e8eaed", accent="#dadce0"))
     for b in (backups or [])[:2]:
         out.append(render_card(b))
+    if pending:
+        out.append(f'<div style="{_STY["h2"]}">等待更好买点 · 现价不在买区</div>')
+        out.append('<div style="color:#9aa0a6;font-size:12px;margin:0 0 6px">'
+                   '以下标的现价已跳出买入区间，需回踩到位再买，'
+                   '<b>不要按现价追</b>。</div>')
+        for d in pending[:2]:
+            out.append(render_card(d, head="【待回踩 · 勿按现价追】",
+                                   accent="#b9860b"))
     if ladder_next:
         out.append(f'<div style="{_STY["h2"]}">次日竞价确认 · 非即时可买</div>')
         for d in ladder_next[:2]:
             zone = d.get("zone") or [None, None]
-            zs = f"{zone[0]:.2f}~{zone[1]:.2f}" if zone[0] and zone[1] else "—"
-            out.append(_card(
-                f'<div style="margin-bottom:4px"><b>{html.escape(d.get("name", ""))}</b>'
-                f'<span style="color:#999;font-size:12px"> {html.escape(str(d.get("code", "")))}</span></div>'
-                + _kv("达标条件：", "高开≥2%~5%（按板数）")
-                + _kv("低开处理：", "放弃（历史胜率仅24%）")
-                + _kv("关注区间：", zs)
-                + (f'<div style="color:#666;font-size:12px">{html.escape(str(d.get("gate_evidence") or ""))}</div>'
-                   if d.get("gate_evidence") else "")))
+            zs = f"{zone[0]:.2f} ~ {zone[1]:.2f}" if zone[0] and zone[1] else "—"
+            out.append(_card(_table(
+                '<tr><td style="padding:0 0 6px">'
+                f'<span style="font-size:15px;font-weight:700;color:#111">'
+                f'{_esc(d.get("name"))}</span>'
+                f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
+                f'{_esc(d.get("code"))}</span></td></tr>'
+                + _row("达标条件", "高开≥2%~5%（按板数）")
+                + _row("低开处理", "放弃（历史胜率仅24%）")
+                + _row("关注区间", zs))
+                + (f'<div style="color:#5f6368;font-size:12px;margin-top:6px">'
+                   f'{_esc(d.get("gate_evidence") or "")}</div>'
+                   if d.get("gate_evidence") else ""),
+                border="#e8eaed", accent="#b9860b"))
+    if prev_review:
+        # #601-B 闭环：昨日推的票今天怎么样了——推荐不是一锤子买卖
+        out.append(f'<div style="{_STY["h2"]}">昨日推荐 · 今日复核</div>')
+        rows = "".join(
+            '<tr><td style="padding:2px 8px 2px 0;color:#5f6368;'
+            'font-size:13px;white-space:nowrap">'
+            f'{_esc(p.get("name"))} {_esc(p.get("code"))}</td>'
+            f'<td style="padding:2px 0;font-size:13px;font-weight:700;'
+            f'color:{_status_color(p.get("status", ""))}">'
+            f'{_esc(p.get("status"))}</td></tr>'
+            for p in prev_review[:4])
+        out.append(_card(_table(rows), border="#e8eaed"))
     if changes:
         out.append(f'<div style="{_STY["h2"]}">计划变化</div>')
-        for c in changes[:8]:
-            st_bg = STATUS_CLS.get(c.get("new"), "#6b7280")
-            out.append(_kv(html.escape(f"{c.get('code')}"),
-                           _badge(c.get("new", ""), st_bg)
-                           + f' <span style="color:#999;font-size:12px">'
-                           f'{html.escape(str(c.get("reason") or ""))}</span>'))
-    out.append(f'<div style="{_STY["meta"]}">{html.escape(str(meta.get("note", "")))}</div>')
+        rows = "".join(
+            '<tr><td style="padding:3px 10px 3px 0;color:#5f6368;'
+            'font-size:13px;white-space:nowrap">'
+            f'{_esc(c.get("code"))}</td>'
+            f'<td style="padding:3px 0">{_badge(c.get("new", ""), STATUS_CLS.get(c.get("new"), "#6b7280"))}'
+            f' <span style="color:#9aa0a6;font-size:12px">'
+            f'{_esc(c.get("reason") or "")}</span></td></tr>'
+            for c in changes[:8])
+        out.append(_card(_table(rows), border="#e8eaed"))
+    if meta.get("note"):
+        out.append(f'<div style="{_STY["meta"]}">{_esc(meta.get("note"))}</div>')
     return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
 
 
@@ -228,17 +435,20 @@ def save_detail_report(html, today, data_json=None):
 
 
 def _clip_html(content):
-    """超限整行回退裁剪再重渲染（截半个 div 会整版错乱）。"""
+    """超限按「整张卡片」回退裁剪（截半个标签会整版错乱）。
+
+    旧实现对 <p>/<li>/<h> 做正则切块，而现版本面用 <div> 卡片 + <table>，
+    正则匹配不到 → 超限时返回空串，推送直接白屏。
+    """
     if len(content) <= PP_HTML_CAP:
         return content
-    blocks = re.findall(r"<(?:p|li)>.*?</(?:p|li)>|<h\d>.*?</h\d>", content)
-    while blocks and len("".join(blocks)) > PP_HTML_CAP:
-        if blocks and blocks[-1].startswith("<li>"):
-            # 从尾部候选行开始整块删
-            blocks.pop()
-        else:
-            blocks.pop()
-    return "".join(blocks)
+    parts = content.split("<!--card-->")
+    if len(parts) == 1:
+        return content[:PP_HTML_CAP]
+    head, cards = parts[0], ["<!--card-->" + p for p in parts[1:]]
+    while cards and len(head) + sum(len(c) for c in cards) > PP_HTML_CAP:
+        cards.pop()
+    return head + "".join(cards)
 
 
 # ---------------------------------------------------------------------------
@@ -345,12 +555,17 @@ def push(mode, title, content, date=None, con=None,
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not force and _reconcile(con, key, mode, ts, True):
         return {"sent": False, "dedup": True, "key": key}
-    # 网页端入口：每条推送底部附站点地址（用户需求 2026-09-13）
+    # 网页端入口：按钮式（旧版把 50+ 字符裸 URL 直接铺在正文末尾，
+    # 手机上换行成一坨，是版面难看的一大来源）
     site_url = cfg.get("site_url") or "https://aprildream24.github.io/astock-system/"
-    content += (f'<div style="margin-top:14px;padding-top:8px;'
-                f'border-top:1px solid #e5e5e5;color:#576b95;font-size:13px">'
-                f'🌐 网页端详情：<a href="{site_url}" style="color:#576b95">'
-                f'{site_url}</a>（访问口令见 config/users.json / SITE_USERS）</div>')
+    content += ('<div style="margin-top:16px;padding-top:12px;'
+                'border-top:1px solid #eceff3;text-align:center">'
+                f'<a href="{site_url}" style="display:inline-block;'
+                'background:#1a73e8;color:#fff;text-decoration:none;'
+                'border-radius:6px;padding:9px 20px;font-size:14px;'
+                'font-weight:700">📊 打开网页版完整详情</a>'
+                '<div style="color:#bdc1c6;font-size:11px;margin-top:7px">'
+                '访问口令见 config/users.json / SITE_USERS</div></div>')
     results = {}
     if cfg.get("push_dry_run"):
         from . import wxpusher
@@ -423,10 +638,12 @@ def push(mode, title, content, date=None, con=None,
 
 def _send_serverchan(key, title, content):
     """返回 (status, detail)。status ∈ sent/failed/uncertain（M37）。
-    超时/连接错误 = 受理不确定，不盲目重试双发。"""
+    超时/连接错误 = 受理不确定，不盲目重试双发。
+    ServerChan 不支持 HTML：走 html_to_text 结构化降级，保留分行与对齐，
+    不再用 re.sub 粗暴剥标签（会把卡片黏成一坨）。"""
     try:
         data = urllib.parse.urlencode(
-            {"title": title, "desp": re.sub(r"<[^>]+>", "", content)}
+            {"title": title, "desp": html_to_text(content)}
         ).encode()
         req = urllib.request.Request(
             f"https://sctapi.ftqq.com/{key}.send", data=data)

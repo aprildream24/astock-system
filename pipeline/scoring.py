@@ -2,7 +2,7 @@
 """统一评分 / 环境加权 / top_picks 终审 / 胜率熔断闸。"""
 import hashlib
 
-from . import engines
+from . import engines, mktfilter
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +167,75 @@ def observe_mute(cands, winrates):
 # 决策 _decide：每股唯一操作结论（渲染层不重判）
 # ---------------------------------------------------------------------------
 
+# 引擎四态 → 推送动作（唯一映射表）。
+# 历史 bug：_decide 只用退化的买区做判定，把引擎已经判为「过热/勿追」的票
+# 又判成「现在买」（实测 14 只）——四态是权威，买区只是报价，不得反客为主。
+ACTION_HINT_MAP = {"现在买": "现在买", "小仓试": "小仓试", "等回踩": "等回踩",
+                   "勿追": "观望", "禁买": "禁买"}
+
+MAX_ZONE_WIDTH = 0.08      # 买区宽度红线（>8% 视为伪区间，不推）
+MIN_UPSIDE_X = 1.02        # 目标区上沿 ≥ 买区上沿×1.02（必须有盈利空间）
+
+
+def buy_zone_ok(c, max_width=MAX_ZONE_WIDTH):
+    """买区自洽性闸门：过宽 / 倒挂 / 无盈利空间 / 整体高于现价 → 不推。
+
+    推出去的票必须能「照着价格下单」：买区是一段窄带，不是统计区间。
+    """
+    lo, hi = c.get("buy_low"), c.get("buy_high")
+    if not lo or not hi or lo <= 0 or hi <= lo:
+        return False
+    if (hi - lo) / lo > max_width:
+        return False
+    close = c.get("close")
+    if close and lo > close * 1.15:
+        return False
+    sh = c.get("sell_high")
+    if sh is not None and sh < hi * MIN_UPSIDE_X:
+        return False
+    return True
+
+
+def is_buyable_now(c):
+    """「这只票现在能不能照价下单」的唯一出口（用户需求 2026-09-13）。
+
+    历史事故：主推位只校验 action∈(现在买/等回踩/小仓试) 就上台，结果把现价
+    早已跳出买区的票推给读者——点开一看根本买不了，这就是"推的票不在购买
+    区间"的直接来源。此处把「可下单」收敛成六重闸门，任一不过即为 False：
+      1) 市场准入：沪深主板/创业板可买，科创板/北交所/其它一律否
+      2) 未闯熔断：observe / broken 不进可执行名单
+      3) 当日涨停：封死买不进 → 走次日竞价确认通道
+      4) 引擎四态：action 必须是「现在买」（等回踩/小仓试不算可执行）
+      5) 买区自洽：窄带 / 不倒挂 / 有盈利空间（buy_zone_ok）
+      6) 现价在区内：dist_pct == 0（跳出买区 = 不可照价下单）
+    渲染层禁止自己重判，只准读本函数结果。"""
+    code = c.get("code") or ""
+    num = code[2:] if code[:2] in ("sh", "sz") else code
+    if not mktfilter.tradable(num):
+        return False
+    if c.get("observe") or c.get("broken"):
+        return False
+    if c.get("limit_up"):
+        return False
+    if c.get("action") != "现在买":
+        return False
+    if not buy_zone_ok(c):
+        return False
+    return dist_pct(c) == 0
+
+
+def dist_pct(c):
+    """现价相对买区的偏离（负=低于下沿，正=高于上沿，0=区内）。"""
+    lo, hi, close = c.get("buy_low"), c.get("buy_high"), c.get("close")
+    if not (lo and hi and close):
+        return None
+    if close < lo:
+        return round((close / lo - 1) * 100, 1)
+    if close > hi:
+        return round((close / hi - 1) * 100, 1)
+    return 0.0
+
+
 def _decide(c, today=None):
     """动作 ∈ {现在买, 等回踩, 次日竞价达标买, 观望, 禁买}。"""
     if c.get("observe"):
@@ -183,6 +252,13 @@ def _decide(c, today=None):
             return "现在买"                # 竞价达标 → 开盘买（🔥优选）
         return "禁买" if not watch else "观望"   # 低开放弃 → 禁买
     lo, hi = c["buy_low"], c["buy_high"]
+    hint = c.get("action_hint")
+    if hint in ACTION_HINT_MAP:
+        act = ACTION_HINT_MAP[hint]
+        # 四态说能买，仍要落在买区内才成立（防报价漂移）
+        if act == "现在买":
+            return "现在买" if lo <= close <= hi else "等回踩"
+        return act
     if lo <= close <= hi:
         return "现在买"
     if close <= hi * 1.06:

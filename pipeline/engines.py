@@ -150,15 +150,28 @@ def screen_uptrend(rows, streak=0):
             "worth_score": max(0.0, min(100.0, score))}
 
 
+# 买区宽度红线：now_zone 必须是「当下能挂单的窄带」，不是统计区间。
+# 历史 bug：下沿取 max(low3, ref*0.97) 未对收盘价做约束，急拉票会出现
+# 「买区 28.00~476.36」这种跨越式伪区间——数学上 close 落在区内，
+# 但等于没给任何买点约束，推出去的票用户根本无法按价下单。
+MAX_NOW_ZONE_WIDTH = 0.045      # 相对下沿，约 4.5%
+
+
 def entry_plan(bars, box_low=None):
-    """近端买点阶梯（zones.py 口径）。返回 zones + 四态判定。"""
+    """近端买点阶梯（zones.py 口径）。返回 zones + 四态判定 + 目标区。
+
+    买入区间语义（2026-09-13 修正）：
+      可买/微超 → 围绕**现价**的窄带（下沿∈[close*0.97, close*0.995]，上沿 close*1.005）
+      等回踩/过热 → 回踩至**均线基准** ref 附近（低于现价，明确"现在别追"）
+    卖出目标区 target_zone（新增）：原先调用方把 pull_zone（更深的第二买点）
+    当卖出区用，导致"卖 46.60~52.37"低于"买 50.30~60.90"的自相矛盾推送。
+    """
     closes = [b[2] for b in bars]
     ref = max(sma(closes, 5), sma(closes, 10))
     close = closes[-1]
     low3 = min(b[4] for b in bars[-3:])
-    anchor = min(ref, close - 0.8 * atr(bars))
-    now_low = max(low3, ref * 0.97)
-    now_zone = [now_low, close * 1.005]
+    atr_v = atr(bars)
+    anchor = min(ref, close - 0.8 * atr_v)
     pull_low = min(min(sma(closes, 5), sma(closes, 10)) * 0.99, low3)
     pull_zone = [pull_low, max(anchor * 1.01, sma(closes, 5) * 1.005)]
     t3 = [box_low * 0.99, box_low * 1.05] if box_low else pull_zone
@@ -173,8 +186,26 @@ def entry_plan(bars, box_low=None):
         state, action = "等回踩", "等回踩"
     else:
         state, action = "过热", "勿追"
+    if state in ("已破位", "禁买") or state in ("等回踩", "过热"):
+        # 已追高/破位：买点不在现价，而在回踩均线处
+        zlo = min(ref * 0.99, close * 0.97)
+        zhi = min(ref * 1.03, close * 0.995)
+    else:
+        # 可买/微超：贴着现价的窄带，保证 close 落在区内且宽度可控
+        zlo = max(min(max(low3, ref * 0.97), close * 0.995), close * 0.97)
+        zhi = close * 1.005
+    if not (zhi > zlo):
+        zhi = zlo * (1 + MAX_NOW_ZONE_WIDTH)
+    if (zhi - zlo) / zlo > MAX_NOW_ZONE_WIDTH:      # 二次守卫，杜绝伪区间
+        zhi = zlo * (1 + MAX_NOW_ZONE_WIDTH)
+    now_zone = [zlo, zhi]
+    base = max(close, zhi)
+    t1 = max(base * 1.06, base + 1.5 * atr_v)
+    t2 = max(t1 * 1.04, base + 3.0 * atr_v)
     return {"ref": ref, "now_zone": now_zone, "pull_zone": pull_zone,
-            "deep_zone": t3, "stop": stop, "state": state, "action": action}
+            "deep_zone": t3, "stop": stop, "state": state, "action": action,
+            "target_zone": [t1, t2],
+            "zone_width": round((zhi - zlo) / zlo * 100, 2)}
 
 
 # ---------------------------------------------------------------------------

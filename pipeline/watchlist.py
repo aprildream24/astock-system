@@ -66,8 +66,10 @@ def build_watch_advice(con, date, watch_codes, holdings_codes=()):
                               "等止跌信号出现再评估" % day_pct)
             item["reasons"].append("单日深跌")
             continue
-        # 买卖区间：箱体优先；无箱体用「回踩档」做关注区（now_zone 相对现价
-        # 构造会让任何票都落在区间内，对破位票失真——自选语境必须绝对锚）
+        # 买卖区间：箱体优先；无箱体用「回踩档」pull_zone 做关注区。
+        # 注：now_zone 已于 2026-09-13 修正为 ≤4.5% 窄带（旧版相对现价构造会让
+        # 任何票都落在区间内），但自选语境仍须**绝对锚**——pull_zone 由
+        # 均线/近端低点绝对定位，不随当日收盘漂移，破位票不会失真。
         box = engines.detect_stage_bottom(rows)
         plan = engines.entry_plan(rows, box_low=box["box_low"] if box else None)
         zone = (box and [box["buy_low"], box["buy_high"]]) or plan["pull_zone"]

@@ -7,6 +7,10 @@
 - Kimi: temp=1、输出 ≤1600 字、RPM=3。
 密钥全部走环境变量（源码零密钥）：
   CF_AI_TOKEN / CF_ACCOUNT_ID / GLM_API_KEY / KIMI_API_KEY
+GLM 另支持 config/notify.json 的 glm_api_key / glm_model 本地兜底（不入库不同步）。
+GLM 免费模型：默认 glm-4.7-flash（智谱免费档主力，输入输出 0 元），
+可用 GLM_MODEL 环境变量覆盖。注意 glm-4.5-flash 已于 2026-01-30 下线，
+不要再用；glm-4.6 是付费模型，仅在显式设置 GLM_MODEL 时才会被用到。
 """
 import json
 import os
@@ -18,7 +22,27 @@ import urllib.request
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0"
 
 
+def _llm_conf():
+    """GLM 密钥/模型：环境变量优先，本地 config/notify.json 兜底（源码零密钥）。"""
+    key = os.environ.get("GLM_API_KEY", "")
+    model = os.environ.get("GLM_MODEL", "")
+    if not key:
+        try:
+            import json as _json
+            from .core import CONFIG_DIR
+            path = os.path.join(CONFIG_DIR, "notify.json")
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    cfg = _json.load(f)
+            key = cfg.get("glm_api_key", "")
+            model = model or cfg.get("glm_model", "")
+        except Exception:  # noqa: BLE001 — 配置缺失/损坏不阻断，走规则引擎兜底
+            pass
+    return key, (model or "glm-4.7-flash")
+
+
 def _providers():
+    glm_key, glm_model = _llm_conf()
     return [
         {"name": "cf", "enabled": bool(os.environ.get("CF_AI_TOKEN")),
          "url": (f"https://api.cloudflare.com/client/v4/accounts/"
@@ -27,11 +51,15 @@ def _providers():
          "headers": {"Authorization": f"Bearer {os.environ.get('CF_AI_TOKEN', '')}",
                      "Content-Type": "application/json"},
          "payload": None, "temp": 0.8, "rpm": 0},
-        {"name": "glm", "enabled": bool(os.environ.get("GLM_API_KEY")),
+        {"name": "glm", "enabled": bool(glm_key),
          "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-         "headers": {"Authorization": f"Bearer {os.environ.get('GLM_API_KEY', '')}",
+         "headers": {"Authorization": f"Bearer {glm_key}",
                      "Content-Type": "application/json"},
-         "model": "glm-4.6", "temp": 0.8, "rpm": 0},
+         "model": glm_model,
+         # 思考模式默认开启 → 首响应可超 30s；叙事场景关掉（快、且省心）
+         "extra": {"thinking": {"type": "disabled"}},
+         "timeout": 60, "temp": 0.8, "rpm": 0,
+         "backoff_429": 25},      # 免费档 RPM 限流实测需 ~25s 退避
         {"name": "kimi", "enabled": bool(os.environ.get("KIMI_API_KEY")),
          "url": "https://api.moonshot.cn/v1/chat/completions",
          "headers": {"Authorization": f"Bearer {os.environ.get('KIMI_API_KEY', '')}",
@@ -53,12 +81,13 @@ def _call(p, prompt, temperature, http_fn=None, max_chars=1600):
         body = {"model": p["model"], "temperature": temperature,
                 "max_tokens": max_chars // 2,
                 "messages": [{"role": "user", "content": prompt}]}
+        body.update(p.get("extra") or {})     # 家厂私有参数（如 glm thinking 开关）
     data = json.dumps(body).encode()
 
     def _post():
         req = urllib.request.Request(p["url"], data=data,
                                      headers={**p["headers"], "User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=p.get("timeout", 30)) as resp:
             return json.loads(resp.read().decode())
 
     post = http_fn or _post
@@ -76,7 +105,7 @@ def _call(p, prompt, temperature, http_fn=None, max_chars=1600):
         elif e.code == 429:
             if re.search(r"quota|balance|arrears|欠费|配额", err_body, re.I):
                 raise QuotaExhausted(p["name"])   # 配额 429 → 换家
-            time.sleep(2.0)                       # RPM 429 → 秒级退避
+            time.sleep(p.get("backoff_429", 2.0))  # RPM 429 → 退避重试
             out = post()
         elif e.code == 400 and "temperature" in err_body.lower():
             body["temperature"] = 0.5             # 400 invalid temperature → 降档
