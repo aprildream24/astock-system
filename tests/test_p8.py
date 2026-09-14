@@ -171,6 +171,9 @@ class TestWorkflowsZeroKeys(unittest.TestCase):
         self.assertEqual(y.count("- cron:"), 0, "主链 cron 应为 0")
         self.assertIn("workflow_dispatch", y)
         self.assertIn("secrets.SERVERCHAN_KEY", y)
+        # site 任务必须在「构建+推送」步骤早退（users.json 由「构建加密站点」
+        # 步骤写入，提前跑 build --task site 必挂——2026-09-14 实弹验证踩坑）
+        self.assertIn("站点任务不在本步骤推送", y)
         with open(os.path.join(BASE, ".github", "workflows", "executor.yml"),
                   encoding="utf-8") as f:
             e = f.read()

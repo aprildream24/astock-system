@@ -107,6 +107,13 @@ jobs:
             echo "[schedule] 该时点无对应任务，跳过构建与推送"
             exit 0
           fi
+          if [ "$TASK" = "site" ]; then
+            # site 任务只做站点构建+Pages 部署（由下方「构建加密站点」步骤负责，
+            # 它才会从 SITE_USERS 写入 config/users.json）——本步骤若执行
+            # build --task site 会因 users.json 未写入而失败（2026-09-14 修复）
+            echo "[site] 站点任务不在本步骤推送"
+            exit 0
+          fi
           python -m pipeline.build --task "$TASK"
       - name: 收盘复盘（自选股建议+AI叙事）
         if: >-
