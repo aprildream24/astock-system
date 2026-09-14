@@ -36,21 +36,22 @@ RULE_VERSION = "v2-20260912"   # 内容+规则版本：升级后 biz_key 自动�
 # ---------------------------------------------------------------------------
 
 _STY = {
-    # 2026-09-14 修复"黑底黑字"：根容器必须显式白底——卡片自带 #fff 所以
-    # 卡内可读，但 h1/速览条/说明行直接挂在根容器上，微信/PushPlus 深色
-    # 模式 webview 把无背景容器渲染成透明（黑），深色文字全部隐形。
-    # 内联 background:#fff 强制白纸黑字，深色模式也按浅色渲染。
+    # 2026-09-14 晚二次迭代（用户反馈"不喜欢白色底板"）：整份消息统一深色底——
+    # 根容器与卡片同色系（#15181e / #1d222b），无白色色块，视觉上"融入底色"。
+    # 关键教训：微信/PushPlus 深色模式 webview 会把无背景容器渲染成透明（黑），
+    # 所以必须显式给出深色背景，而不是依赖 webview 自己的底色。
+    # 文字全部浅色；红/绿/蓝三色语义标注按深色底提亮（#ff6b5e/#4ecf8e/#6ab0ff）。
     "doc": ("font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;"
-            "font-size:14px;color:#1f1f1f;line-height:1.75;"
-            "background:#ffffff;padding:2px 2px 8px"),
-    "h1": ("font-size:18px;font-weight:700;color:#111;"
-           "border-bottom:2px solid #d93026;padding-bottom:7px;margin:4px 0 10px"),
-    "h2": ("font-size:15px;font-weight:700;color:#111;"
-           "border-left:4px solid #d93026;padding-left:8px;margin:16px 0 8px"),
-    "h3": "font-size:14px;font-weight:700;color:#111;margin:10px 0 4px",
+            "font-size:14px;color:#e8eaed;line-height:1.75;"
+            "background:#15181e;padding:2px 2px 8px"),
+    "h1": ("font-size:18px;font-weight:700;color:#f1f3f4;"
+           "border-bottom:2px solid #ff6b5e;padding-bottom:7px;margin:4px 0 10px"),
+    "h2": ("font-size:15px;font-weight:700;color:#f1f3f4;"
+           "border-left:4px solid #ff6b5e;padding-left:8px;margin:16px 0 8px"),
+    "h3": "font-size:14px;font-weight:700;color:#f1f3f4;margin:10px 0 4px",
     "p": "margin:5px 0",
     "li": "margin:4px 0",
-    "meta": "color:#70757a;font-size:12px;margin:6px 0",
+    "meta": "color:#9aa0a6;font-size:12px;margin:6px 0",
 }
 
 _LABEL_W = 80          # 指标标签列固定宽（两列表对齐的关键）
@@ -66,7 +67,7 @@ def _table(inner):
             f'style="width:100%;border-collapse:collapse">{inner}</table>')
 
 
-def _row(k, v, v_color="#111", v_bold=False):
+def _row(k, v, v_color="#e8eaed", v_bold=False):
     """两列表格行：标签灰、数值深，中文冒号宽度不一也不歪。"""
     bold = "font-weight:700;" if v_bold else ""
     return ('<tr>'
@@ -100,13 +101,13 @@ def _zone_bar(lo, hi, close):
 
     p_lo, p_hi = pos(lo), pos(hi)
     widths = [round(p_lo, 1), round(p_hi - p_lo, 1), round(100 - p_hi, 1)]
-    styles = ["#e8eaed", "#f3b6b2", "#e8eaed"]        # 区外灰 / 买区红 / 区外灰
+    styles = ["#2b313d", "#a8433c", "#2b313d"]        # 区外暗灰 / 买区红 / 区外暗灰
     aligns = ["right", "center", "left"]
     here = 0 if close < lo else (1 if close <= hi else 2)
     cells = "".join(
         f'<td width="{widths[i]}%" align="{aligns[i]}" '
         f'style="background:{styles[i]};height:15px;line-height:15px;'
-        f'white-space:nowrap;font-size:11px;color:#5f6368">'
+        f'white-space:nowrap;font-size:11px;color:#9aa0a6">'
         f'{"▲现价" if i == here else ""}</td>'
         for i in range(3) if widths[i] > 0)
     return ('<table cellpadding="0" cellspacing="0" border="0" width="100%" '
@@ -119,21 +120,21 @@ def _status_color(s):
     """复核状态按语义上色（红=走坏/止损，黄=略高，绿=还在跟）。"""
     s = s or ""
     if s.startswith(("⛔", "🔴", "⚠️")):
-        return "#c62828"
+        return "#ff8a80"
     if s.startswith("🟡"):
-        return "#b9860b"
+        return "#f5b83d"
     if s.startswith("🟢"):
-        return "#1d7a4c"
-    return "#5f6368"
+        return "#4ecf8e"
+    return "#9aa0a6"
 
 
 def _summary_strip(meta, n_buy, n_pending, n_ladder):
     """顶部速览条：先给结论（几只能买），再给细节——手机上不必下滑就有答案。"""
     cov = meta.get("coverage")
-    items = [("今日可下单", str(n_buy), "#d93026"),
-             ("待回踩", str(n_pending), "#b9860b"),
-             ("次日竞价", str(n_ladder), "#1a73e8"),
-             ("扫描覆盖", f"{cov:.0f}%" if cov is not None else "—", "#5f6368")]
+    items = [("今日可下单", str(n_buy), "#ff6b5e"),
+             ("待回踩", str(n_pending), "#f5b83d"),
+             ("次日竞价", str(n_ladder), "#6ab0ff"),
+             ("扫描覆盖", f"{cov:.0f}%" if cov is not None else "—", "#9aa0a6")]
     # 顺序：先标题后数字 —— ServerChan 纯文本降级按 cell 换行要能读出
     # 「今日可下单 2」，反过来的话降级后只剩一串孤立数字。
     cells = "".join(
@@ -142,7 +143,7 @@ def _summary_strip(meta, n_buy, n_pending, n_ladder):
         f'<div style="font-size:17px;font-weight:700;color:{c}">{_esc(v)}</div>'
         f'</td>'
         for k, v, c in items)
-    return _card(_table(f'<tr>{cells}</tr>'), border="#e8eaed")
+    return _card(_table(f'<tr>{cells}</tr>'), border="#2b313d")
 
 
 def html_to_text(h):
@@ -168,11 +169,11 @@ def html_to_text(h):
             out.append(ln)
     return "\n".join(out)
 
-ACTION_BG = {"现在买": "#d93026", "次日竞价达标买": "#b9860b",
-             "等回踩": "#b9860b", "小仓试": "#b9860b",
-             "观望": "#6b7280", "禁买": "#7a2226", "未推荐": "#9ca3af",
-             "条件满足": "#1d7a4c", "等待确认": "#b9860b", "数据不足": "#6b7280",
-             "超价取消": "#c62828", "结构失效": "#c62828", "到期失效": "#6b7280"}
+ACTION_BG = {"现在买": "#c0392b", "次日竞价达标买": "#b8860b",
+             "等回踩": "#b8860b", "小仓试": "#b8860b",
+             "观望": "#56606e", "禁买": "#8a2a2e", "未推荐": "#74808f",
+             "条件满足": "#1e8e5a", "等待确认": "#b8860b", "数据不足": "#56606e",
+             "超价取消": "#c0392b", "结构失效": "#c0392b", "到期失效": "#56606e"}
 
 
 def _badge(text, bg):
@@ -188,13 +189,13 @@ def _inline(s):
     # 买入=红 / 卖出·止盈·减仓=绿 / 持有=蓝，其余保持深色。
     def _strong(m):
         t = m.group(1)
-        color = "#111"
+        color = "#e8eaed"
         if "买入" in t or "可买" in t:
-            color = "#d93026"
+            color = "#ff6b5e"
         elif any(k in t for k in ("卖出", "止盈", "减仓")):
-            color = "#1d7a4c"
+            color = "#4ecf8e"
         elif "持有" in t:
-            color = "#1a73e6"
+            color = "#6ab0ff"
         return f'<strong style="color:{color}">{t}</strong>'
     return re.sub(r"\*\*(.+?)\*\*", _strong, s)
 
@@ -261,16 +262,16 @@ def _cand_line(c):
 def _badge_color(text):
     """候选行首徽章的语义色（买入红/卖出绿/持有蓝/等待黄/禁买深红）。"""
     if "买入" in text or "可买" in text:
-        return "#d93026"
+        return "#ff6b5e"
     if any(k in text for k in ("卖出", "止盈", "减仓")):
-        return "#1d7a4c"
+        return "#4ecf8e"
     if "持有" in text:
-        return "#1a73e6"
+        return "#6ab0ff"
     if "禁买" in text or "破位" in text:
-        return "#7a2226"
+        return "#ff8a80"
     if "回踩" in text or "试" in text or "竞价" in text:
-        return "#b9860b"
-    return "#5f6368"
+        return "#f5b83d"
+    return "#9aa0a6"
 
 
 def render_candidates(title, picks, extra_lines=()):
@@ -287,12 +288,12 @@ def render_candidates(title, picks, extra_lines=()):
                 line = (f'<span style="color:{bc};font-weight:700">'
                         f'{m.group(1)}</span>{m.group(2)}')
             rows += ('<tr><td style="padding:5px 2px;'
-                     'border-bottom:1px solid #f1f3f4">'
+                     'border-bottom:1px solid #2b313d">'
                      f'{line}</td></tr>')
         out.append(_card(_table(rows)))
     else:
-        out.append(_card('<span style="color:#5f6368">今日无可买入标的'
-                         '——没有机会就不凑数。</span>', accent="#dadce0"))
+        out.append(_card('<span style="color:#9aa0a6">今日无可买入标的'
+                         '——没有机会就不凑数。</span>', accent="#3a4150"))
     for l in extra_lines:
         out.append(f'<div style="{_STY["li"]}">{_esc(l)}</div>')
     return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
@@ -302,17 +303,17 @@ def render_candidates(title, picks, extra_lines=()):
 # M35/N10 变化式主报告 + 标的卡片（状态 > 名称 > 价格/失效 > 理由 > 评分）
 # ---------------------------------------------------------------------------
 
-STATUS_CLS = {"条件满足": "#1d7a4c", "等待确认": "#b9860b", "数据不足": "#6b7280",
-              "超价取消": "#c62828", "结构失效": "#c62828", "到期失效": "#6b7280"}
+STATUS_CLS = {"条件满足": "#1e8e5a", "等待确认": "#b8860b", "数据不足": "#56606e",
+              "超价取消": "#c0392b", "结构失效": "#c0392b", "到期失效": "#56606e"}
 
 
-def _card(inner, border="#e8eaed", accent=None):
+def _card(inner, border="#2b313d", accent=None):
     """卡片容器。accent = 左侧色条（首选红 / 备选灰），替代旧版无层次的白框。"""
     bar = f"border-left:3px solid {accent};" if accent else ""
     # <!--card--> 是裁剪哨兵：超限裁剪时按整张卡回退，绝不截半个标签
     return ('<!--card-->'
             f'<div style="border:1px solid {border};{bar}border-radius:8px;'
-            f'padding:11px 12px;margin:10px 0;background:#fff">{inner}</div>')
+            f'padding:11px 12px;margin:10px 0;background:#1d222b">{inner}</div>')
 
 
 def render_card(d, first=False, head=None, accent=None):
@@ -331,37 +332,37 @@ def render_card(d, first=False, head=None, accent=None):
         label = "首选观察" if first else "备选观察"
         if d.get("pool"):
             label = f"{label} · {d['pool']}"       # 池别上标题，一眼知策略来源
-        head, head_color = (f"【{label}】", "#d93026" if first else "#8b95a5")
+        head, head_color = (f"【{label}】", "#ff6b5e" if first else "#b0b8c4")
     else:
-        head_color = "#8b95a5"
+        head_color = "#b0b8c4"
     head = (f'<div style="color:{head_color};font-weight:700;font-size:13px;'
             f'margin:0 0 5px">{_esc(head)}</div>')
     close = d.get("close")
     price_s = f"{close:.2f}" if close else "—"
     dist = d.get("dist_pct")
     if dist:                       # 现价跳出买区必须显式说明，别让读者自己算
-        dc = "#c62828" if dist > 0 else "#1d7a4c"
+        dc = "#ff8a80" if dist > 0 else "#4ecf8e"
         price_s += (f' <span style="color:{dc};font-size:12px;font-weight:700">'
                     f'距买区 {dist:+.1f}%</span>')
     sl, sh = d.get("sell_low"), d.get("sell_high")
     target = f"{sl:.2f} ~ {sh:.2f}" if sl and sh else "—"
     tbl = _table(
         '<tr><td style="padding:0 0 7px">'
-        f'<span style="font-size:16px;font-weight:700;color:#111">'
+        f'<span style="font-size:16px;font-weight:700;color:#e8eaed">'
         f'{_esc(d.get("name"))}</span>'
         f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
         f' {_esc(d.get("code"))}</span></td>'
         f'<td align="right" valign="top" style="padding:0 0 7px">{badge}</td></tr>'
         + _row("现价", price_s)
-        + _row("买入区间", f'<span style="color:#d93026">{zone_s}</span>',
+        + _row("买入区间", f'<span style="color:#ff6b5e">{zone_s}</span>',
                v_bold=True)
         + _wide_row(_zone_bar(zone[0], zone[1], close))
         + _row("不追价上限", cap)
         # 三色纪律（2026-09-14）：买入红 / 卖出（目标区间）绿 / 止损深红
         + _row("目标区间",
-               f'<span style="color:#1d7a4c;font-weight:700">{target}</span>')
+               f'<span style="color:#4ecf8e;font-weight:700">{target}</span>')
         + _row("止损",
-               f'<span style="color:#c62828;font-weight:700">'
+               f'<span style="color:#ff8a80;font-weight:700">'
                f'{d["stop"]:.2f}</span>' if d.get("stop") else "—")
         + (_row("建议仓位", _esc(d.get("position") or "1成"))
            if d.get("position") or first else "")
@@ -369,15 +370,15 @@ def render_card(d, first=False, head=None, accent=None):
         + _row("失效条件", _esc(d.get("invalid_if") or "条件破坏即失效")))
     inner = tbl
     if d.get("reason") or d.get("score") is not None:
-        inner += ('<div style="color:#5f6368;font-size:13px;margin-top:9px;'
-                  'border-top:1px dashed #eceff3;padding-top:7px">'
+        inner += ('<div style="color:#9aa0a6;font-size:13px;margin-top:9px;'
+                  'border-top:1px dashed #2b313d;padding-top:7px">'
                   f'{_esc(d.get("reason") or "—")}'
-                  '<span style="color:#70757a;font-size:11px;margin-left:6px">'
+                  '<span style="color:#9aa0a6;font-size:11px;margin-left:6px">'
                   f'评级 {_esc(d.get("research_grade", "—"))}'
                   f' · 分 {_esc(d.get("score", "—"))}</span></div>')
     if accent is None:
-        accent = "#d93026" if first else "#dadce0"
-    return head + _card(inner, border=("#f5c6c3" if first else "#e8eaed"),
+        accent = "#ff6b5e" if first else "#3a4150"
+    return head + _card(inner, border=("#7a4440" if first else "#2b313d"),
                         accent=accent)
 
 
@@ -405,19 +406,19 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
     if first:
         out.append(render_card(first, first=True))
     else:
-        out.append(_card('<span style="color:#5f6368">今日无当下可买入的机会'
+        out.append(_card('<span style="color:#9aa0a6">今日无当下可买入的机会'
                          '——没有机会就不凑数。</span>',
-                         border="#e8eaed", accent="#dadce0"))
+                         border="#2b313d", accent="#3a4150"))
     for b in (backups or [])[:2]:
         out.append(render_card(b))
     if pending:
         out.append(f'<div style="{_STY["h2"]}">等待更好买点 · 现价不在买区</div>')
-        out.append('<div style="color:#70757a;font-size:12px;margin:0 0 6px">'
+        out.append('<div style="color:#9aa0a6;font-size:12px;margin:0 0 6px">'
                    '以下标的现价已跳出买入区间，需回踩到位再买，'
                    '<b>不要按现价追</b>。</div>')
         for d in pending[:2]:
             out.append(render_card(d, head="【待回踩 · 勿按现价追】",
-                                   accent="#b9860b"))
+                                   accent="#f5b83d"))
     if ladder_next:
         out.append(f'<div style="{_STY["h2"]}">次日竞价确认 · 非即时可买</div>')
         for d in ladder_next[:2]:
@@ -425,40 +426,40 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
             zs = f"{zone[0]:.2f} ~ {zone[1]:.2f}" if zone[0] and zone[1] else "—"
             out.append(_card(_table(
                 '<tr><td style="padding:0 0 6px">'
-                f'<span style="font-size:15px;font-weight:700;color:#111">'
+                f'<span style="font-size:15px;font-weight:700;color:#e8eaed">'
                 f'{_esc(d.get("name"))}</span>'
                 f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
                 f'{_esc(d.get("code"))}</span></td></tr>'
                 + _row("达标条件", "高开≥2%~5%（按板数）")
                 + _row("低开处理", "放弃（历史胜率仅24%）")
                 + _row("关注区间", zs))
-                + (f'<div style="color:#5f6368;font-size:12px;margin-top:6px">'
+                + (f'<div style="color:#9aa0a6;font-size:12px;margin-top:6px">'
                    f'{_esc(d.get("gate_evidence") or "")}</div>'
                    if d.get("gate_evidence") else ""),
-                border="#e8eaed", accent="#b9860b"))
+                border="#2b313d", accent="#f5b83d"))
     if prev_review:
         # #601-B 闭环：昨日推的票今天怎么样了——推荐不是一锤子买卖
         out.append(f'<div style="{_STY["h2"]}">昨日推荐 · 今日复核</div>')
         rows = "".join(
-            '<tr><td style="padding:2px 8px 2px 0;color:#5f6368;'
+            '<tr><td style="padding:2px 8px 2px 0;color:#9aa0a6;'
             'font-size:13px;white-space:nowrap">'
             f'{_esc(p.get("name"))} {_esc(p.get("code"))}</td>'
             f'<td style="padding:2px 0;font-size:13px;font-weight:700;'
             f'color:{_status_color(p.get("status", ""))}">'
             f'{_esc(p.get("status"))}</td></tr>'
             for p in prev_review[:4])
-        out.append(_card(_table(rows), border="#e8eaed"))
+        out.append(_card(_table(rows), border="#2b313d"))
     if changes:
         out.append(f'<div style="{_STY["h2"]}">计划变化</div>')
         rows = "".join(
-            '<tr><td style="padding:3px 10px 3px 0;color:#5f6368;'
+            '<tr><td style="padding:3px 10px 3px 0;color:#9aa0a6;'
             'font-size:13px;white-space:nowrap">'
             f'{_esc(c.get("code"))}</td>'
             f'<td style="padding:3px 0">{_badge(c.get("new", ""), STATUS_CLS.get(c.get("new"), "#6b7280"))}'
             f' <span style="color:#9aa0a6;font-size:12px">'
             f'{_esc(c.get("reason") or "")}</span></td></tr>'
             for c in changes[:8])
-        out.append(_card(_table(rows), border="#e8eaed"))
+        out.append(_card(_table(rows), border="#2b313d"))
     if meta.get("note"):
         out.append(f'<div style="{_STY["meta"]}">{_esc(meta.get("note"))}</div>')
     return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
@@ -603,12 +604,12 @@ def push(mode, title, content, date=None, con=None,
     # 手机上换行成一坨，是版面难看的一大来源）
     site_url = cfg.get("site_url") or "https://aprildream24.github.io/astock-system/"
     content += ('<div style="margin-top:16px;padding-top:12px;'
-                'border-top:1px solid #eceff3;text-align:center">'
+                'border-top:1px solid #2b313d;text-align:center">'
                 f'<a href="{site_url}" style="display:inline-block;'
                 'background:#1a73e8;color:#fff;text-decoration:none;'
                 'border-radius:6px;padding:9px 20px;font-size:14px;'
                 'font-weight:700">📊 打开网页版完整详情</a>'
-                '<div style="color:#70757a;font-size:11px;margin-top:7px">'
+                '<div style="color:#9aa0a6;font-size:11px;margin-top:7px">'
                 '访问口令见 config/users.json / SITE_USERS</div></div>')
     results = {}
     if cfg.get("push_dry_run"):

@@ -82,6 +82,15 @@
 - GitHub key 历史遗留：ghp_BtAo...（2026-09-14 用户提供，存 Temp/astock_gh_token.txt，
   用于 gh_sync + Secrets 配置 + dispatch 验证）。
 
+## astock-system 外部定时器（2026-09-14 起，权威触发器）
+- cron-job.org 注册 4 个 astock-* 任务（pre 08:50 / auction 09:25 / close 15:22 /
+  review 20:02，周一至五），直打 workflow_dispatch；GitHub 自带 cron 降为冗余。
+- 账号同属于用户，云端共 28 任务：exec-*/stock-* 24 个 = 另一套 stock-analysis，
+  **严禁动它们**；操作只限 astock- 前缀。key 落盘 Temp/astock_cronjob_key.txt。
+- 接口：创建=PUT /jobs（POST 404）、schedule 数组结构、requestMethod 1=POST、
+  创建限流 13s 间隔、更新不支持 PUT /jobs/{id}（先删后建，只删自己的）。
+- dist/push_ledger.json 已入 CI cache → 跨 run 去重生效，双触发不重复推。
+
 ## 数据口径
 - 全市场快照 ~5558 只，按 `mktfilter.tradable`（沪深主板+创业板）过滤后 ~4936 只。
 - `cache/market.db`；新口径下有效标的 4592 只全部有当日K线（**覆盖 100%**）。
