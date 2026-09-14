@@ -69,10 +69,16 @@ copy config\holdings.example.json config\holdings.json   & rem 持仓（可选�
 ```bash
 py tools\setup_check.py                      # 一键体检
 py -X utf8 -m pipeline.fetch_daily           # 交易日收盘后：全市场增量更新
+py tools\coverage_audit.py                   # 覆盖率体检：是否真的扫全了
+py tools\push_preview.py                     # 先看版面再发（HTML+纯文本并排预览）
 py -X utf8 -m pipeline.build --task close    # 收盘构建+推送（含可买分组+自选建议）
 py -X utf8 -m pipeline.build --task site     # 加密站点
 py -X utf8 -m tools.executor --task scan     # 模拟盘巡逻
 ```
+
+> **改推送版面必先看预览**：`tools/push_preview.py` 用真实 K 线渲染一份推送
+> 到 `dist/reports/push_layout_preview.html`（左＝微信/PushPlus webview，
+> 右＝ServerChan 纯文本降级）。推送撤不回来，别靠脑补验收。
 
 数据源容灾：东财/腾讯被限流时自动切换，新浪日K兜底
 （2026-09-13 实测：东财+腾讯双封时新浪通道独立扛完全市场补齐）；
@@ -104,7 +110,19 @@ Secrets 配置：
 
 ## 可买性口径（用户拍板 2026-09-13）
 
-**主推荐只放「当下就能下单买入」的标的**：
+**主推荐只放「当下就能下单买入」的标的**。判断只有一句话的入口：
+`scoring.is_buyable_now(c)` —— 六重闸门全过才算可下单，渲染层禁止自己重判：
+
+| # | 闸门 | 不过的后果 |
+|---|---|---|
+| 1 | 市场准入（沪深主板/创业板） | 科创/北交/ETF/B股买不了 → 不推 |
+| 2 | 未闯熔断（observe / broken） | 胜率不达标或已破位 → 不推 |
+| 3 | 非当日涨停 | 封死买不进 → 归次日竞价通道 |
+| 4 | 引擎四态 = 现在买 | 等回踩/小仓试/观望 都不是可执行 |
+| 5 | 买区自洽（窄带≤8%/不倒挂/有盈利空间） | 伪区间推了也下不了单 |
+| 6 | 现价确实落在买区内（dist_pct==0） | 跳出买区 → 进「待回踩·勿按现价追」 |
+
+其余可买性口径：
 
 - 当日已涨停（一字/封死）→ 买不进 → 归「🎯次日竞价确认」独立分组（最多2只），
   推送与网页都不与"现在可买"混排；低开直接放弃（历史胜率仅24%）
@@ -148,11 +166,11 @@ pipeline/
   publish.py      M38 认证加密 / owner 字段裁剪 / 部署红线
   build.py        编排入口（四池扫描/可买分组/自选建议/结局回填/竞价裁决）
 tools/            check_strategy_lock / setup_check / verify_site / watchdog
-                  fetch_all / install_schedule.bat
+                  fetch_all / coverage_audit / push_preview / install_schedule.bat
 docs/STRATEGY_LOCK.md  策略锁清单（M20 可审计）
 .github/workflows/     stock.yml（9时点+Pages发布）/ executor.yml（16时点+守护）
 site_template/   零依赖前端（WebCrypto 认证加密 + 仪表盘 4 视图）
-tests/           回归测试 8 套件
+tests/           回归测试 10 套件（PASS=131 基线）
 ```
 
 ## 关键纪律（改动必读）
@@ -175,5 +193,7 @@ tests/           回归测试 8 套件
 
 - 54 技巧中 37 个 planned（妖股/缠论/退潮等需逐个按规格书移植）；
 - 炸板/涨停判定为日K近似口径；Actions 环境每日增量抓取；
+- 覆盖率分母只算「当日有成交的可交易标的」：名单源陈旧，含 340 只已退市老代码
+  与 4 只未上市新股（2026-09-13 实测），它们扫不到也买不了，单独留痕不计缺口；
 - 模拟盘为简化撮合；AI 叙事为可选单模型（未配 key 时规则引擎兜底）；
 - 竞价强时效任务在 Actions 上有分钟级延迟（N09：实测后决定是否迁移）。
