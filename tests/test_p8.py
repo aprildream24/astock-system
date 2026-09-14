@@ -166,14 +166,16 @@ class TestWorkflowsZeroKeys(unittest.TestCase):
         with open(os.path.join(BASE, ".github", "workflows", "stock.yml"),
                   encoding="utf-8") as f:
             y = f.read()
-        # 2026-09-14 起 6 个时点：删除了 09:26/10:07/14:07 三个"盘中异动"
-        # （build.py 无 anomaly 任务，属另一套系统功能残留，白烧额度）
-        self.assertEqual(y.count("- cron:"), 6, "主链 6 时点")
+        # 2026-09-14 晚起 GitHub 自带 schedule cron 全删（幽灵延迟触发造成
+        # 22:50 重复推送）——权威触发 = cron-job.org dispatches API。
+        self.assertEqual(y.count("- cron:"), 0, "主链 cron 应为 0")
+        self.assertIn("workflow_dispatch", y)
         self.assertIn("secrets.SERVERCHAN_KEY", y)
         with open(os.path.join(BASE, ".github", "workflows", "executor.yml"),
                   encoding="utf-8") as f:
             e = f.read()
-        self.assertEqual(e.count("- cron:"), 16, "模拟盘 16 时点")
+        self.assertEqual(e.count("- cron:"), 0, "模拟盘 cron 应为 0")
+        self.assertIn("workflow_dispatch", e)
 
 
 if __name__ == "__main__":

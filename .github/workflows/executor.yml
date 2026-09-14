@@ -1,24 +1,9 @@
-# 模拟盘调度：16 个时点（now 09:25 / scan×12 密集巡逻 / 尾盘确认 14:43 / 复盘 15:32）
+# 模拟盘执行器：仅手动/外部 dispatch 触发（now | scan×12 | tail | review）。
+# 2026-09-14 晚：GitHub 自带 schedule cron 全删——延迟 1-2h 不可控，晚间幽灵
+# 触发造成重复推送；模拟盘巡逻如需恢复，在 cron-job.org 补 dispatch 定时器。
 name: executor
 
 on:
-  schedule:
-    - cron: "25 1 * * 1-5"   # 09:25 now
-    - cron: "35 1 * * 1-5"   # 09:35 scan
-    - cron: "50 1 * * 1-5"   # 09:50 scan
-    - cron: "5 2 * * 1-5"    # 10:05 scan
-    - cron: "20 2 * * 1-5"   # 10:20 scan
-    - cron: "35 2 * * 1-5"   # 10:35 scan
-    - cron: "50 2 * * 1-5"   # 10:50 scan
-    - cron: "5 3 * * 1-5"    # 11:05 scan
-    - cron: "20 3 * * 1-5"   # 11:20 scan
-    - cron: "5 5 * * 1-5"    # 13:05 scan
-    - cron: "20 5 * * 1-5"   # 13:20 scan
-    - cron: "35 5 * * 1-5"   # 13:35 scan
-    - cron: "50 5 * * 1-5"   # 13:50 scan
-    - cron: "5 6 * * 1-5"    # 14:05 scan
-    - cron: "43 6 * * 1-5"  # 14:43 尾盘确认
-    - cron: "32 7 * * 1-5"  # 15:32 复盘
   workflow_dispatch:
     inputs:
       task:

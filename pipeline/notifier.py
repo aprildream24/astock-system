@@ -559,6 +559,36 @@ def biz_key(mode, date, codes):
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+def _daily_sent(con, mode, date):
+    """同 mode 同日期是否已有 sent 记录（state 账本 + dist 镜像双查）。
+
+    2026-09-14 晚新增：GitHub 自带 cron 幽灵延迟让同 mode 流水线一天跑多次
+    （当晚 build_close 20:47 与 22:50 各推一条），候选集合一变 biz_key 就拦不住。
+    这里按 mode+日期兜底——收盘复盘/盘前计划这类消息，一天一条才是正确语义。
+    """
+    try:
+        row = con.execute(
+            "SELECT 1 FROM push_ledger WHERE mode=? AND ts LIKE ? "
+            "AND status='sent' LIMIT 1",
+            (mode, date + "%")).fetchone()
+    except Exception:
+        row = None
+    if row:
+        return True
+    if os.path.exists(DIST_LEDGER):
+        try:
+            with open(DIST_LEDGER, "r", encoding="utf-8") as f:
+                dist = json.load(f)
+        except Exception:
+            return False
+        for v in dist.values():
+            if (isinstance(v, dict) and v.get("mode") == mode
+                    and str(v.get("ts", "")).startswith(date)
+                    and v.get("status") == "sent"):
+                return True
+    return False
+
+
 def _reconcile(con, key, mode, ts, dist_ok):
     """每次 push 前对账：dist 有今日而 state 缺 → 判重回补。"""
     dist = {}
@@ -597,6 +627,11 @@ def push(mode, title, content, date=None, con=None,
         channels = (primary,)
     codes = re.findall(r"\d{6}", content)
     key = biz_key(mode, date, codes)
+    # 日级保险丝：同 mode 同日期已 sent → 拦截（force=True 可绕过）。
+    # 触发端重复（GitHub cron 幽灵延迟）的最后一道防线——候选集合变了
+    # biz_key 不同照样拦。失败/不确定的首次推送不拦，次日触发可补发。
+    if not force and _daily_sent(con, mode, date):
+        return {"sent": False, "dedup": True, "key": key, "daily_gate": True}
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not force and _reconcile(con, key, mode, ts, True):
         return {"sent": False, "dedup": True, "key": key}

@@ -338,6 +338,96 @@ class TestGlmProvider(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# ④ 日级保险丝（2026-09-14 晚）：同 mode 同日期已 sent → 拦截
+#    背景：GitHub 自带 cron 幽灵延迟让 build_close 一天推了两条
+#    （20:47 与 22:50），候选一变 biz_key 去重失效——mode+日期兜底。
+# ---------------------------------------------------------------------------
+
+class TestDailyGate(unittest.TestCase):
+    """同类型消息一天只发一条：state 账本 / dist 镜像双查，force 可绕。"""
+
+    def setUp(self):
+        import json
+        import sqlite3
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dist_path = os.path.join(self._tmp.name, "push_ledger.json")
+        self._orig_ledger = notifier.DIST_LEDGER
+        notifier.DIST_LEDGER = self.dist_path
+        self.con = sqlite3.connect(":memory:")
+        self.con.execute(
+            "CREATE TABLE push_ledger (biz_key TEXT, mode TEXT, ts TEXT, "
+            "dist_ok INT, status TEXT, channel TEXT, detail TEXT)")
+
+    def tearDown(self):
+        notifier.DIST_LEDGER = self._orig_ledger
+        self.con.close()
+        self._tmp.cleanup()
+
+    def _sent_row(self, mode="build_close", ts="2026-09-14 20:47:14",
+                  status="sent"):
+        self.con.execute(
+            "INSERT INTO push_ledger VALUES(?,?,?,?,?,?,?)",
+            ("k" + ts.replace(" ", "").replace(":", ""), mode, ts, 1,
+             status, "pushplus", "{}"))
+
+    def _cfg(self, **kw):
+        cfg = {"push_dry_run": True, "push_tag": "T"}
+        cfg.update(kw)
+        return cfg
+
+    def test_state_ledger_blocks_same_mode_same_day(self):
+        self._sent_row()
+        self.assertTrue(
+            notifier._daily_sent(self.con, "build_close", "2026-09-14"))
+
+    def test_state_ledger_allows_other_mode_or_day(self):
+        self._sent_row()
+        self.assertFalse(
+            notifier._daily_sent(self.con, "watch_advice", "2026-09-14"))
+        self.assertFalse(
+            notifier._daily_sent(self.con, "build_close", "2026-09-15"))
+
+    def test_state_ledger_failed_first_push_allows_retry(self):
+        self._sent_row(status="failed")
+        self.assertFalse(
+            notifier._daily_sent(self.con, "build_close", "2026-09-14"))
+
+    def test_dist_mirror_blocks_when_state_missing(self):
+        """CI 无状态库回填场景：dist 镜像有 sent 记录同样拦截。"""
+        import json
+        with open(self.dist_path, "w", encoding="utf-8") as f:
+            json.dump({"abc": {"mode": "build_close",
+                               "ts": "2026-09-14 20:47:14",
+                               "status": "sent"}}, f)
+        self.assertTrue(
+            notifier._daily_sent(self.con, "build_close", "2026-09-14"))
+
+    def test_push_gate_returns_daily_flag(self):
+        self._sent_row()
+        orig_cfg = notifier.load_config
+        notifier.load_config = lambda: self._cfg()
+        try:
+            r = notifier.push("build_close", "t", "sh600100 买区 10.0~10.3",
+                              date="2026-09-14", con=self.con)
+        finally:
+            notifier.load_config = orig_cfg
+        self.assertFalse(r.get("sent"))
+        self.assertTrue(r.get("daily_gate"), "同日同类型第二条必须被拦")
+
+    def test_push_force_bypasses_daily_gate(self):
+        self._sent_row()
+        orig_cfg = notifier.load_config
+        notifier.load_config = lambda: self._cfg()
+        try:
+            r = notifier.push("build_close", "t", "sh600100 买区 10.0~10.3",
+                              date="2026-09-14", con=self.con, force=True)
+        finally:
+            notifier.load_config = orig_cfg
+        self.assertTrue(r.get("sent"), "force 必须能绕过日级保险丝")
+
+
+# ---------------------------------------------------------------------------
 # ④ CI 推送配置（2026-09-14）：无本地 notify.json 时 Secrets 必须真发
 #    修复前的两个 CI 哑火点：
 #    a) push_dry_run 默认 True → CI 上账本写了、消息永远不出

@@ -12,15 +12,10 @@
 name: stock
 
 on:
-  schedule:
-    - cron: "50 0 * * 1-5"   # 08:50 盘前计划
-    - cron: "25 1 * * 1-5"   # 09:25 竞价裁决
-    - cron: "22 7 * * 1-5"   # 15:22 收盘构建
-    - cron: "2 12 * * 1-5"   # 20:02 收盘复盘
-    - cron: "3 12 * * 0"     # 20:03 周日发酵
-    - cron: "5 0 * * 1"      # 08:05 周一预热
-    # 09:26 / 10:07 / 14:07 三个"盘中异动"时点已删——build.py 无 anomaly
-    # 任务（那是另一套系统的功能），每次触发只白跑回归就 skip，浪费额度。
+  # 2026-09-14 晚起 GitHub 自带 schedule cron 全部删除——它延迟 1-2h 且不可控，
+  # 当晚 20:02 复盘 cron 拖到 22:10 才跑，造成 build_close 重复推送。
+  # 权威触发 = cron-job.org（astock-pre/auction/close/review，走 dispatches API
+  # 带 task inputs，与本 workflow_dispatch 完全兼容）。
   workflow_dispatch:
     inputs:
       task:
