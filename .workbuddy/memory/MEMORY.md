@@ -61,8 +61,20 @@
   ⇒ 回归失败 = 全天零推送。这是该系统"静默不推送"的第一嫌疑点。
 - `stock.yml` 曾踩坑：`$GITHUB_SCHEDULE` 不是合法 Actions 变量（恒空），
   必须 `env: GH_SCHEDULE: ${{ github.event.schedule }}` 再 case。
+- **CI 推送哑火双坑（2026-09-14 修）**：CI 无本地 notify.json 时
+  ① `push_dry_run` 默认 True→配了 Secret 也只写账本不真发；
+  ② `primary_channel` 默认 wxpusher→没配 WxPusher 账户时 PushPlus 分支永远不进。
+  修在 `core.load_config()`：无 notify.json 时有 key 即真发 + 主通道跟随实际 key。
+- **CI runner 无状态**：cache/market.db 不持久化 → 每次冷库全量重拉 20 分钟超时被杀。
+  修法：`actions/cache@v4` 持久化 cache/（timeout 同时 20→45min）。
+- **测试禁网络**：test_absorb 的 cross_check 用例曾依赖"本地恰好断网"，
+  CI 能出网→境外 runner 访问新浪/腾讯超时→挂。已改确定性 mock 三源 return None。
+  规则：**回归用例一律 mock 网络，不得依赖环境网络状态**。
 - GitHub 自带 cron 在本仓库 **极不可靠**（建仓 2 天、8 个定时点只触发 1 次且延迟 ~2h）。
-  本机兜底目前 **未注册**（AStocker-* 无），需管理员跑 `tools/install_schedule.bat`。
+  本机兜底目前 **未注册**（AStocker-* 无），需管理员跑 `tools/install_schedule.bat`
+  （已含 08:55 盘前 / 09:27 竞价 / 15:40 收盘 / 20:10 复盘 + 守护，绝对路径 python）。
+- GitHub key 历史遗留：ghp_BtAo...（2026-09-14 用户提供，存 Temp/astock_gh_token.txt，
+  用于 gh_sync + Secrets 配置 + dispatch 验证）。
 
 ## 数据口径
 - 全市场快照 ~5558 只，按 `mktfilter.tradable`（沪深主板+创业板）过滤后 ~4936 只。
