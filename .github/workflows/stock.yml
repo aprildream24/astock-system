@@ -49,7 +49,9 @@ jobs:
       # cache/（market.db + fetch_stats.json）跨 run 复用，命中后增量秒级。
       - uses: actions/cache@v4
         with:
-          path: cache
+          path: |
+            cache
+            dist/push_ledger.json
           key: market-db-${{ github.run_id }}
           restore-keys: |
             market-db-
