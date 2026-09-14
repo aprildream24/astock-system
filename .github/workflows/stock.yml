@@ -40,23 +40,41 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # 行情库持久化：runner 无状态，每次冷库全量重拉必超时。
+      # cache/（market.db + fetch_stats.json）跨 run 复用，命中后增量秒级。
+      - uses: actions/cache@v4
+        with:
+          path: cache
+          key: market-db-${{ github.run_id }}
+          restore-keys: |
+            market-db-
       - name: 回归自检
         run: python tests/run_regression.py
       - name: 收盘数据抓取（全市场）
-        if: github.event_name == 'schedule' && github.event.schedule == '22 7 * * 1-5'
+        if: >-
+          (github.event_name == 'schedule' &&
+           github.event.schedule == '22 7 * * 1-5') ||
+          (github.event_name == 'workflow_dispatch' &&
+           (github.event.inputs.task == 'close' ||
+            github.event.inputs.task == 'site' ||
+            github.event.inputs.task == ''))
         run: python -m pipeline.fetch_daily
       - name: 盘前/竞价轻量增量抓取
         if: >-
           (github.event_name == 'schedule' &&
            (github.event.schedule == '50 0 * * 1-5' ||
-            github.event.schedule == '25 1 * * 1-5')) ||
-          github.event_name == 'workflow_dispatch'
+            github.event.schedule == '25 1 * * 1-5' ||
+            github.event.schedule == '5 0 * * 1')) ||
+          (github.event_name == 'workflow_dispatch' &&
+           (github.event.inputs.task == 'pre' ||
+            github.event.inputs.task == 'auction' ||
+            github.event.inputs.task == 'review'))
         run: python -m pipeline.fetch_daily --days 20
       - name: 构建+推送（WxPusher/PushPlus 多渠道）
         env:
@@ -123,7 +141,13 @@ jobs:
 
   deploy-pages:
     needs: build
-    if: github.event.schedule == '22 7 * * 1-5' || github.event.inputs.task == 'site'
+    if: >-
+      (github.event_name == 'schedule' &&
+       github.event.schedule == '22 7 * * 1-5') ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.task == 'site' ||
+        github.event.inputs.task == 'close' ||
+        github.event.inputs.task == ''))
     runs-on: ubuntu-latest
     environment:
       name: github-pages
