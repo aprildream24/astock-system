@@ -48,6 +48,9 @@
 - 微信/PushPlus/邮件 webview 对 float/flex 支持极不稳定 → **一律用 `<table>` 对齐**。
 - 纯文本通道（ServerChan）走 `notifier.html_to_text()` 结构化降级，不要剥标签。
 - `_card()` 输出的 `<!--card-->` 是裁剪哨兵，`_clip_html` 依赖它按整卡回退。
+- **可买票必须排在"等回踩/观望"前面**（2026-09-14 用户困惑整改）：高分等回踩票
+  放首位会让用户第一眼看到"不能买"，与后面的✅买入矛盾。picks 已按
+  buyable_now 排序。强制重发用 `ASTOCK_FORCE_PUSH=1`（默认关）。
 
 ## 两套系统严禁混淆（2026-09-14 用户明确强调）
 | | 本仓库 astock-system | 另一套 stock-analysis |

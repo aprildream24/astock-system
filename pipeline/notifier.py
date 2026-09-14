@@ -36,8 +36,13 @@ RULE_VERSION = "v2-20260912"   # 内容+规则版本：升级后 biz_key 自动�
 # ---------------------------------------------------------------------------
 
 _STY = {
+    # 2026-09-14 修复"黑底黑字"：根容器必须显式白底——卡片自带 #fff 所以
+    # 卡内可读，但 h1/速览条/说明行直接挂在根容器上，微信/PushPlus 深色
+    # 模式 webview 把无背景容器渲染成透明（黑），深色文字全部隐形。
+    # 内联 background:#fff 强制白纸黑字，深色模式也按浅色渲染。
     "doc": ("font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;"
-            "font-size:14px;color:#333;line-height:1.75"),
+            "font-size:14px;color:#1f1f1f;line-height:1.75;"
+            "background:#ffffff;padding:2px 2px 8px"),
     "h1": ("font-size:18px;font-weight:700;color:#111;"
            "border-bottom:2px solid #d93026;padding-bottom:7px;margin:4px 0 10px"),
     "h2": ("font-size:15px;font-weight:700;color:#111;"
@@ -45,7 +50,7 @@ _STY = {
     "h3": "font-size:14px;font-weight:700;color:#111;margin:10px 0 4px",
     "p": "margin:5px 0",
     "li": "margin:4px 0",
-    "meta": "color:#9aa0a6;font-size:12px;margin:6px 0",
+    "meta": "color:#70757a;font-size:12px;margin:6px 0",
 }
 
 _LABEL_W = 80          # 指标标签列固定宽（两列表对齐的关键）
@@ -106,7 +111,7 @@ def _zone_bar(lo, hi, close):
         for i in range(3) if widths[i] > 0)
     return ('<table cellpadding="0" cellspacing="0" border="0" width="100%" '
             f'style="border-collapse:collapse"><tr>{cells}</tr></table>'
-            '<div style="color:#bdc1c6;font-size:11px;margin-top:2px">'
+            '<div style="color:#80868b;font-size:11px;margin-top:2px">'
             '红段=买入区间｜灰段=不建议追价区</div>')
 
 
@@ -179,8 +184,19 @@ def _badge(text, bg):
 
 
 def _inline(s):
-    s = re.sub(r"\*\*(.+?)\*\*", r'<strong style="color:#111">\1</strong>', s)
-    return s
+    # 三色动作标注（用户需求 2026-09-14）：加粗文本按动作语义着色——
+    # 买入=红 / 卖出·止盈·减仓=绿 / 持有=蓝，其余保持深色。
+    def _strong(m):
+        t = m.group(1)
+        color = "#111"
+        if "买入" in t or "可买" in t:
+            color = "#d93026"
+        elif any(k in t for k in ("卖出", "止盈", "减仓")):
+            color = "#1d7a4c"
+        elif "持有" in t:
+            color = "#1a73e6"
+        return f'<strong style="color:{color}">{t}</strong>'
+    return re.sub(r"\*\*(.+?)\*\*", _strong, s)
 
 
 def md2html(md):
@@ -242,13 +258,37 @@ def _cand_line(c):
     return line[:CAND_LINE_CAP]
 
 
+def _badge_color(text):
+    """候选行首徽章的语义色（买入红/卖出绿/持有蓝/等待黄/禁买深红）。"""
+    if "买入" in text or "可买" in text:
+        return "#d93026"
+    if any(k in text for k in ("卖出", "止盈", "减仓")):
+        return "#1d7a4c"
+    if "持有" in text:
+        return "#1a73e6"
+    if "禁买" in text or "破位" in text:
+        return "#7a2226"
+    if "回踩" in text or "试" in text or "竞价" in text:
+        return "#b9860b"
+    return "#5f6368"
+
+
 def render_candidates(title, picks, extra_lines=()):
     """详情报告（落盘 dist/reports）：标题 + 候选表格卡 + 附加行。"""
     out = [f'<div style="{_STY["h1"]}">{_esc(title)}</div>']
     if picks:
-        rows = "".join(
-            '<tr><td style="padding:5px 2px;border-bottom:1px solid #f1f3f4">'
-            f'{_esc(_cand_line(c))}</td></tr>' for c in picks)
+        rows = ""
+        for c in picks:
+            line = _esc(_cand_line(c))
+            # 行首徽章（✅买入 等）按语义着色，三色纪律在详情报告同样生效
+            m = re.match(r"^([^\s]+)(.*)$", line, re.S)
+            if m:
+                bc = _badge_color(m.group(1))
+                line = (f'<span style="color:{bc};font-weight:700">'
+                        f'{m.group(1)}</span>{m.group(2)}')
+            rows += ('<tr><td style="padding:5px 2px;'
+                     'border-bottom:1px solid #f1f3f4">'
+                     f'{line}</td></tr>')
         out.append(_card(_table(rows)))
     else:
         out.append(_card('<span style="color:#5f6368">今日无可买入标的'
@@ -317,8 +357,12 @@ def render_card(d, first=False, head=None, accent=None):
                v_bold=True)
         + _wide_row(_zone_bar(zone[0], zone[1], close))
         + _row("不追价上限", cap)
-        + _row("目标区间", target)
-        + _row("止损", f'{d["stop"]:.2f}' if d.get("stop") else "—")
+        # 三色纪律（2026-09-14）：买入红 / 卖出（目标区间）绿 / 止损深红
+        + _row("目标区间",
+               f'<span style="color:#1d7a4c;font-weight:700">{target}</span>')
+        + _row("止损",
+               f'<span style="color:#c62828;font-weight:700">'
+               f'{d["stop"]:.2f}</span>' if d.get("stop") else "—")
         + (_row("建议仓位", _esc(d.get("position") or "1成"))
            if d.get("position") or first else "")
         + _row("有效期至", _esc(d.get("valid_until")))
@@ -328,7 +372,7 @@ def render_card(d, first=False, head=None, accent=None):
         inner += ('<div style="color:#5f6368;font-size:13px;margin-top:9px;'
                   'border-top:1px dashed #eceff3;padding-top:7px">'
                   f'{_esc(d.get("reason") or "—")}'
-                  '<span style="color:#bdc1c6;font-size:11px;margin-left:6px">'
+                  '<span style="color:#70757a;font-size:11px;margin-left:6px">'
                   f'评级 {_esc(d.get("research_grade", "—"))}'
                   f' · 分 {_esc(d.get("score", "—"))}</span></div>')
     if accent is None:
@@ -368,7 +412,7 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
         out.append(render_card(b))
     if pending:
         out.append(f'<div style="{_STY["h2"]}">等待更好买点 · 现价不在买区</div>')
-        out.append('<div style="color:#9aa0a6;font-size:12px;margin:0 0 6px">'
+        out.append('<div style="color:#70757a;font-size:12px;margin:0 0 6px">'
                    '以下标的现价已跳出买入区间，需回踩到位再买，'
                    '<b>不要按现价追</b>。</div>')
         for d in pending[:2]:
@@ -564,7 +608,7 @@ def push(mode, title, content, date=None, con=None,
                 'background:#1a73e8;color:#fff;text-decoration:none;'
                 'border-radius:6px;padding:9px 20px;font-size:14px;'
                 'font-weight:700">📊 打开网页版完整详情</a>'
-                '<div style="color:#bdc1c6;font-size:11px;margin-top:7px">'
+                '<div style="color:#70757a;font-size:11px;margin-top:7px">'
                 '访问口令见 config/users.json / SITE_USERS</div></div>')
     results = {}
     if cfg.get("push_dry_run"):
