@@ -321,5 +321,91 @@ class TestGlmProvider(unittest.TestCase):
         self.assertEqual(out, "ok")
 
 
+# ---------------------------------------------------------------------------
+# ④ CI 推送配置（2026-09-14）：无本地 notify.json 时 Secrets 必须真发
+#    修复前的两个 CI 哑火点：
+#    a) push_dry_run 默认 True → CI 上账本写了、消息永远不出
+#    b) primary_channel 默认 wxpusher → 没配 WxPusher 时 PushPlus 分支不进
+# ---------------------------------------------------------------------------
+
+class TestCIConfig(unittest.TestCase):
+    """模拟 CI：无本地 notify.json + env 注入 Secrets。"""
+
+    def setUp(self):
+        import tempfile
+        from pipeline import core
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig_config_dir = core.CONFIG_DIR
+        self._orig_env = {k: os.environ.get(k)
+                          for k in ("PUSHPLUS_TOKEN", "SERVERCHAN_KEY",
+                                    "WXPUSHER_CONF")}
+        core.CONFIG_DIR = self._tmp.name          # 指向空目录 = 无 notify.json
+        for k in self._orig_env:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        from pipeline import core
+        core.CONFIG_DIR = self._orig_config_dir
+        for k, v in self._orig_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self._tmp.cleanup()
+
+    def _cfg(self):
+        from pipeline import core
+        return core.load_config()
+
+    def test_ci_with_pushplus_secret_sends_for_real(self):
+        """CI + PUSHPLUS_TOKEN Secret ⇒ dry-run 解除、主通道 pushplus。"""
+        os.environ["PUSHPLUS_TOKEN"] = "PP_TOKEN_CI"
+        cfg = self._cfg()
+        self.assertFalse(cfg["push_dry_run"],
+                         "CI 配了 Secret 还停在 dry-run = 哑火")
+        self.assertEqual(cfg["primary_channel"], "pushplus")
+
+    def test_ci_with_serverchan_secret_sends(self):
+        os.environ["SERVERCHAN_KEY"] = "SC_KEY_CI"
+        cfg = self._cfg()
+        self.assertFalse(cfg["push_dry_run"])
+        self.assertEqual(cfg["primary_channel"], "serverchan")
+
+    def test_ci_with_wxpusher_conf(self):
+        os.environ["WXPUSHER_CONF"] = (
+            '[{"name":"主号","app_token":"AT_x","uids":["UID_x"]}]')
+        cfg = self._cfg()
+        self.assertFalse(cfg["push_dry_run"])
+        self.assertEqual(len(cfg["wxpusher_accounts"]), 1)
+        self.assertEqual(cfg["primary_channel"], "wxpusher")
+
+    def test_ci_zero_secrets_stays_dry_run(self):
+        """零密钥场景（本地开发）保持 dry-run，不误发。"""
+        cfg = self._cfg()
+        self.assertTrue(cfg["push_dry_run"])
+
+    def test_dry_run_string_normalized(self):
+        """notify.json 写 \"false\"（字符串）不得被当成真值 dry-run。"""
+        import json
+        from pipeline import core
+        with open(os.path.join(self._tmp.name, "notify.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"push_dry_run": "false",
+                       "pushplus_token": "PP_X"}, f)
+        cfg = self._cfg()
+        self.assertFalse(cfg["push_dry_run"])
+
+    def test_local_explicit_dry_run_respected(self):
+        """本地显式 dry-run（含密钥也不发）不被 CI 分支误解除。"""
+        import json
+        from pipeline import core
+        with open(os.path.join(self._tmp.name, "notify.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"push_dry_run": True,
+                       "pushplus_token": "PP_X"}, f)
+        cfg = self._cfg()
+        self.assertTrue(cfg["push_dry_run"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -71,8 +71,24 @@ def load_config():
     has_key = bool(cfg.get("serverchan_key") or cfg.get("pushplus_token")
                    or cfg.get("wxpusher_accounts")
                    or os.environ.get("WXPUSHER_CONF"))
+    # 归一化 push_dry_run：容忍 "false"/"true" 字符串写法
+    _dr = cfg.get("push_dry_run")
+    if isinstance(_dr, str):
+        cfg["push_dry_run"] = _dr.strip().lower() not in ("false", "0", "no", "")
     if not has_key:
         cfg["push_dry_run"] = True
+    elif cfg.get("push_dry_run") and \
+            not os.path.exists(os.path.join(CONFIG_DIR, "notify.json")):
+        # CI 场景：无本地配置文件、Secrets 已注入 key ⇒ 真发。
+        # （原来默认 dry-run 会把 CI 全部变哑火：账本写了、消息永远不出。）
+        cfg["push_dry_run"] = False
+    # CI 场景：主通道跟随实际配置的 key（原来恒默认 wxpusher，
+    # 没配 WxPusher 账户时 PushPlus 分支永远不进 → 同样哑火）
+    if not os.path.exists(os.path.join(CONFIG_DIR, "notify.json")):
+        if not cfg.get("wxpusher_accounts") and cfg.get("pushplus_token"):
+            cfg["primary_channel"] = "pushplus"
+        elif not cfg.get("wxpusher_accounts") and cfg.get("serverchan_key"):
+            cfg["primary_channel"] = "serverchan"
     return cfg
 
 

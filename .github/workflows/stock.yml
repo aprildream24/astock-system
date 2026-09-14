@@ -49,10 +49,14 @@ jobs:
       - name: 回归自检
         run: python tests/run_regression.py
       - name: 收盘数据抓取（全市场）
-        if: github.event.schedule == '22 7 * * 1-5'
+        if: github.event_name == 'schedule' && github.event.schedule == '22 7 * * 1-5'
         run: python -m pipeline.fetch_daily
       - name: 盘前/竞价轻量增量抓取
-        if: github.event.schedule == '50 0 * * 1-5' || github.event.schedule == '25 1 * * 1-5'
+        if: >-
+          (github.event_name == 'schedule' &&
+           (github.event.schedule == '50 0 * * 1-5' ||
+            github.event.schedule == '25 1 * * 1-5')) ||
+          github.event_name == 'workflow_dispatch'
         run: python -m pipeline.fetch_daily --days 20
       - name: 构建+推送（WxPusher/PushPlus 多渠道）
         env:
@@ -91,9 +95,17 @@ jobs:
           fi
           python -m pipeline.build --task "$TASK"
       - name: 收盘复盘（自选股建议+AI叙事）
-        if: github.event.schedule == '2 12 * * 1-5'
+        if: >-
+          (github.event_name == 'schedule' &&
+           github.event.schedule == '2 12 * * 1-5') ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.task == 'review')
         env:
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          WATCH_CODES: ${{ secrets.WATCH_CODES }}
+          HOLDINGS_CONF: ${{ secrets.HOLDINGS_CONF }}
           GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
           GLM_MODEL: ${{ secrets.GLM_MODEL }}
         run: python -m pipeline.build --task review

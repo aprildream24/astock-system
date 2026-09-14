@@ -105,11 +105,26 @@ class TestMktFilter(unittest.TestCase):
 
 class TestMultiSource(unittest.TestCase):
     def test_cross_check_offline_graceful(self):
-        # 无网络环境：逐源失败降级，不抛异常、不阻断
-        r = multi_source.cross_check(["600519", "000001"], sample=2, timeout=3)
+        # 无网络环境：逐源失败降级，不抛异常、不阻断。
+        # 确定性断网 mock（此前依赖"本地恰好访问不通"，CI 上能出网时
+        # 会真发请求：境外 runner 访问新浪/腾讯超时 → ex.map 抛
+        # TimeoutError → checked=0，ubuntu 上 3 用例必挂）。
+        # 模拟方式 = 三个源各自兜底返回 None（生产语义里的"单源失败"）。
+        from unittest import mock
+        with mock.patch.object(multi_source, "em_quote", return_value=None), \
+                mock.patch.object(multi_source, "sina_quote",
+                                  return_value=None), \
+                mock.patch.object(multi_source, "tencent_quote",
+                                  return_value=None):
+            r = multi_source.cross_check(["600519", "000001"], sample=2,
+                                        timeout=3)
         self.assertEqual(r["checked"], 2)
         self.assertIn("spec", r)
         self.assertEqual(r["spec"]["version"], multi_source.XCHECK_VERSION)
+        # 全源失败 → items 仍逐票生成（prices 空、不 flag）
+        for it in r["items"]:
+            self.assertEqual(it["prices"], {})
+            self.assertFalse(it["flag"])
 
     def test_spread_logic(self):
         # 纯逻辑：构造 items 验证中位数/价差判定（不依赖网络）
