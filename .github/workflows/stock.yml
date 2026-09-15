@@ -145,10 +145,20 @@ jobs:
         # → 构建+推送整步 skipped → 用户全天收不到盘前推送。
         # --premarket 明确告知这是盘前时段，全 0 属正常。
         # review 是盘后（20:02）跑，不属盘前，故不加该标志。
-        run: >-
-          python -m pipeline.fetch_daily --days 20
-          ${{ github.event.inputs.task == 'pre' ||
-              github.event.inputs.task == 'auction' ? '--premarket' : '' }}
+        #
+        # ⚠️ 2026-09-16 二次血案：**Actions 表达式不支持三元 `?:`**！
+        # 原写法 `${{ cond ? '--premarket' : '' }}`（JS 风格）导致
+        # workflow 整个**解析失败** → dispatch 返 422、run 零 job：
+        #   "failed to parse workflow: Unexpected symbol: '?'"
+        # 正是这个 YAML 让当晚所有定时触发都无法启动。改用 bash 条件展开
+        #（`case` 判断 task，仅 pre/auction 追加标志）——纯 shell，表达式简单。
+        run: |
+          EXTRA=""
+          case "${{ github.event.inputs.task }}" in
+            pre|auction) EXTRA="--premarket" ;;
+          esac
+          echo "task=${{ github.event.inputs.task }} extra=$EXTRA"
+          python -m pipeline.fetch_daily --days 20 $EXTRA
       - name: 构建+推送（WxPusher/PushPlus 多渠道）
         if: github.event.inputs.task != 'watch-sync'
         env:
