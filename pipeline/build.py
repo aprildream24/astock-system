@@ -445,9 +445,52 @@ def _notify_data_blocked(task, date, why, ready_why):
         print(f"[build] 数据未就绪告警发送失败（忽略）：{type(e).__name__} {e}")
 
 
+def _notify_holiday(date):
+    """休市日提示（2026-09-16 新增）：**一天最多一条**，不按 task 分流。
+
+    背景：外部定时器 cron-job.org 的 `wdays` 只能排除周六日（0=周日…
+    6=周六），**不认法定节假日** —— 国庆/春节照样点火，四个任务
+    pre/auction/close/review 全部走到「拒绝构建」。旧实现用
+    mode=`data_blocked_{task}` ⇒ 四个不同 mode 互不拦截 ⇒
+    **同一天发出 4 条「数据未就绪」告警**，把"系统正常休市"误报成"数据出问题"。
+
+    修法：休市统一用固定 mode `data_holiday`。日级保险丝按 **mode+date**
+    去重 ⇒ 当天第一条发出后，其余三条自动被拦 ⇒ 用户每天只收到一条
+    明确的休市提示，且措辞说明这是正常休市、不是故障。
+
+    与 `_notify_data_blocked` 的分工：
+      - 休市（日历判定为假）→ 本函数，一天一条，措辞=正常休市；
+      - 交易日但数据没到位 → `_notify_data_blocked`，按 task 分流，
+        那是真异常，需要用户知道去查数据源。
+    """
+    try:
+        from . import notifier
+        from .trade_calendar import why_closed
+        why = why_closed(date) or "非法定交易日"
+        t = f"休市提醒 · {date}（{why}），今日无分析推送"
+        body = notifier.md2html(
+            f"**{date}** {why}，A股今日不开市。\n\n"
+            "- 不抓取行情、不生成候选、不推送分析。\n"
+            "- 下一个交易日 08:50 会自动恢复盘前计划推送。\n"
+            "- 这是系统的**正常休市提示，不是故障**，无需处理。")
+        notifier.push("data_holiday", t, body, date=date)
+        print(f"[build] 已发休市提示：{date}（{why}）")
+    except Exception as e:  # noqa: BLE001 — 提示失败不得影响主流程
+        print(f"[build] 休市提示发送失败（忽略）：{type(e).__name__} {e}")
+
+
 def build(task="close", date=None):
     con = get_conn()
     date = date or today_str()
+    # ★ 2026-09-16 新增：休市日（周末 / 法定节假日）**第一道门**就早退。
+    # 放在所有就绪判定之前，避免休市日还去做快照/K线检查、更避免
+    # 四个任务各发一条告警（详见 _notify_holiday 注释）。
+    # 交易日完全不受影响（is_trade_day 为 True 时不进入本分支）。
+    from .trade_calendar import is_trade_day as _cal_trade
+    if not _cal_trade(date):
+        print(f"[build] {date} 非法定交易日 → 跳过构建（休市）")
+        _notify_holiday(date)
+        return None
     # M04 交易日守门：日历交叉确认 + 数据就绪判断（周六可复盘周五——
     # 条件：目标日是真实交易日、当日K线已入库、fetch_stats 不早于目标日）
     # 2026-09-15：pre/auction 走专用闸门（它们本就在当日收盘K线入库前运行，
