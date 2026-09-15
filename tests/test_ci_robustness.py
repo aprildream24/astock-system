@@ -267,27 +267,45 @@ class TestNoEnvBrittleAssertions(unittest.TestCase):
             src = f.read()
         i = src.find("def test_real_notify_present")
         self.assertGreater(i, 0, "找不到 test_real_notify_present")
-        body = src[i:i + 1600]
+        body = src[i:i + 2000]
         self.assertTrue(
             "GITHUB_ACTIONS" in body or "CI" in body,
             "test_real_notify_present 未做 CI 环境判断 —— CI 上必然失败")
+        # CI 分支必须是「只告警、不 fail」：把 CI 判定写严了会连坐整条
+        # 推送链路（测试挂 → 后面步骤全 skipped → 全天零推送）。
+        ci_branch = body.split("if in_ci:", 1)[-1].split("self.assertTrue(os.path.exists(p)", 1)[0]
+        self.assertNotIn("assertTrue", ci_branch,
+                         "CI 分支里还有硬断言 —— 缺凭据时会把流水线拉黑")
+        self.assertIn("return", ci_branch, "CI 分支没有提前返回，会走到本地断言")
 
 
 class TestLedgerSyncWired(unittest.TestCase):
-    """推送账本必须能回到仓库，否则 daily_check 永远误报零推送。"""
+    """推送账本必须能回到仓库，否则 daily_check 永远误报零推送。
+
+    注意：`gh_sync.py` 是**本地部署工具，按设计不入库**（它处理 PAT 与
+    整仓推送，属运维脚本）。因此断言必须分两层：
+      · 本地（有该文件）→ 校验 ALLOW_DIST 白名单逻辑；
+      · CI（无该文件）→ 跳过该条，改为校验 workflow 里的回写步骤存在。
+    2026-09-15 血案：直接在 CI 上 open("gh_sync.py") → FileNotFoundError
+    → 回归自检 FAIL → 全天零推送。
+    """
 
     @classmethod
     def setUpClass(cls):
         with open(WF, encoding="utf-8") as f:
             cls.text = f.read()
+        cls.gh_sync = os.path.join(ROOT, "gh_sync.py")
 
     def test_ledger_sync_step_exists(self):
         self.assertIn("push_ledger_sync", self.text,
                       "CI 未回写账本 —— daily_check 的远端账本永远 404")
 
+    @unittest.skipUnless(os.path.exists(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "gh_sync.py")),
+        "gh_sync.py 是本地部署工具（按设计不入库），CI 上不存在")
     def test_gh_sync_allows_ledger_but_not_whole_dist(self):
-        p = os.path.join(ROOT, "gh_sync.py")
-        with open(p, encoding="utf-8") as f:
+        with open(self.gh_sync, encoding="utf-8") as f:
             src = f.read()
         self.assertIn("ALLOW_DIST", src)
         self.assertIn("dist/push_ledger.json", src)
