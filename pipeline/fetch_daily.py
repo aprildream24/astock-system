@@ -93,12 +93,26 @@ def fetch_universe(max_stocks=None):
     return out
 
 
-def guard_snapshot(universe, today, con=None, partial=False):
+def guard_snapshot(universe, today, con=None, partial=False, premarket=False):
     """M02 分级守门：单位错误阻断；超历史分布→告警隔离复核（不自动改写）；
-    盘中/部分抓取不套用完整交易日阈值。返回 (level, reason)。"""
+    盘中/部分抓取不套用完整交易日阈值。返回 (level, reason)。
+
+    ⚠️ 2026-09-16 修（血案：CI run 34914806060 盘前任务 failure）：
+    原逻辑「pct 全 0 ⇒ 疑似休市日 ⇒ 抛异常」对**盘前时段**是**必然误判**——
+    08:50 集合竞价还没开始，快照接口返回的涨跌幅本来就是全 0。
+    实测当日 08:50 定时任务因此 ValueError → 抓取步骤 failure
+    → 后续「构建+推送」整步 skipped → **用户全天收不到盘前推送**。
+    修法：全 0 只在**非盘前**时才算休市嫌疑；盘前用 premarket=True 放行，
+    且此时**明确跳过成交额分级**（盘前成交额天然极低，分级无意义）。
+    """
     pcts = [v.get("pct") or 0 for v in universe.values()]
-    if pcts and all(abs(p) < 1e-9 for p in pcts):
+    all_zero = bool(pcts) and all(abs(p) < 1e-9 for p in pcts)
+    if all_zero and not premarket:
         raise ValueError("快照 pct 全 0：疑似休市日，拒绝写库")
+    if all_zero and premarket:
+        print(f"[quality] 盘前时段快照 pct 全 0（{len(universe)} 只）"
+              "→ 正常现象（集合竞价未开始），放行且跳过成交额分级")
+        return "ok", "premarket all-zero"
     if partial:
         print(f"[quality] 部分抓取（{len(universe)} 只）→ 跳过全日成交额分级")
         return "ok", "partial fetch"
@@ -110,7 +124,7 @@ def guard_snapshot(universe, today, con=None, partial=False):
     return level, reason
 
 
-def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False):
+def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False, premarket=False):
     con = get_conn()
     today = today_str()
     # 法定节假日日历守门（吸收原项目 trade_calendar）：节假日 cron 不白跑；
@@ -121,7 +135,8 @@ def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False):
         return {"date": today, "skipped": "holiday"}
     universe = fetch_universe(max_stocks=limit)
     level, _ = guard_snapshot(universe, today, con,
-                              partial=bool(limit and len(universe) < 3000))
+                              partial=bool(limit and len(universe) < 3000),
+                              premarket=premarket)
     codes = sorted(universe.keys())
     # 市场准入前置（#486）：科创板/北交所等不可交易代码不发请求——省一半无效抓取
     from . import mktfilter
@@ -348,5 +363,9 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true",
                     help="非交易日手动补数（build 侧守门不受影响）")
+    ap.add_argument("--premarket", action="store_true",
+                    help="盘前/竞价时段抓取：允许快照 pct 全 0"
+                         "（集合竞价未开始的正常状态），不据此判休市")
     a = ap.parse_args()
-    fetch_daily(days=a.days, limit=a.limit, force=a.force)
+    fetch_daily(days=a.days, limit=a.limit, force=a.force,
+                premarket=a.premarket)
