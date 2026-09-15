@@ -402,13 +402,21 @@ def _preauction_ready(con, date):
                          (date,)).fetchone()[0]
     if n_snap == 0:
         return False, f"{date} 无快照（竞价数据未入库）"
-    # 快照 pct 全零 = 疑休市日（沿用 M04 交叉确认）
-    total, nonzero = con.execute(
-        "SELECT COUNT(*), SUM(CASE WHEN ABS(COALESCE(pct,0))>0.0001 THEN 1 "
-        "ELSE 0 END) FROM snapshot WHERE date=?", (date,)).fetchone()
-    if total and (nonzero or 0) == 0:
-        return False, "快照 pct 全零：疑似休市日"
-    return True, f"盘前/竞价就绪（前值{prev} K线 {n_prev} 只 + 当日快照 {n_snap} 只）"
+    # ⚠️ 2026-09-16 修（血案：盘前任务被自家闸门挡住）：
+    # 本函数**曾经**有一处「快照 pct 全零 ⇒ 疑似休市日 ⇒ 拒绝构建」的分支。
+    # 它对 pre/auction 是**必然误判**——08:50 集合竞价尚未开始，快照涨跌幅
+    # 天然全 0；09:25 竞价刚结束时接口也可能尚未刷新。实测该判定让
+    # pre/auction 只能发出一条「数据未就绪」，用户拿不到盘前计划/竞价裁决，
+    # 与 fetch_daily.guard_snapshot 的 ValueError 同源（同一个错误判定的
+    # 第二处副本）。
+    # **现已彻底删除该分支**（不是加开关旁路）：留着死代码就是留一颗雷——
+    # 后人只要把开关翻成 True 就会重新踩坑。盘前时段「全零」是**时点属性**，
+    # 不是日历证据；休市由权威日历 `trade_calendar`（国务院放假安排）在
+    # 上方 `_cal_trade(date)` 把关，那才是可靠信号。
+    # 注：收盘路径（core.is_trading_day_cross）**保留**全零判定 ——
+    # 15:22 收盘后全零确实是休市/数据异常的真信号，两者语义不同。
+    return True, (f"盘前/竞价就绪（前值{prev} K线 {n_prev} 只 + "
+                  f"当日快照 {n_snap} 只）")
 
 
 def _notify_data_blocked(task, date, why, ready_why):
@@ -445,6 +453,13 @@ def build(task="close", date=None):
     # 2026-09-15：pre/auction 走专用闸门（它们本就在当日收盘K线入库前运行，
     # 见 _preauction_ready 注释）——此前套用收盘闸门导致这两个任务永不通过。
     if task in ("pre", "auction"):
+        # ⚠️ 2026-09-16：`pre`（08:50）集合竞价未开始、`auction`（09:25）集合
+        # 竞价刚结束/接口尚未刷新——两者都**可能出现快照 pct 全 0 或大面积 0**，
+        # 这不是休市证据。实测 09-16 08:50 定时任务因该判定被拒 ⇒ 用户只收到
+        # 一条「数据未就绪」而拿不到盘前计划（与 fetch 侧 ValueError 同源）。
+        # 修法：**pre/auction 一律不做全零判定**。休市由权威日历
+        # `trade_calendar`（国务院放假安排）在上方把关 —— 那是可靠信号，
+        # 快照全零只是**时点属性**，不是日历证据。
         ready, ready_why = _preauction_ready(con, date)
         certain, why = (ready, "盘前/竞价专用判定"
                         if ready else ready_why)
