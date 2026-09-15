@@ -71,9 +71,16 @@ jobs:
         id: cache-db
         with:
           path: cache
-          key: market-db-v2
+          # ⚠️ 2026-09-16 二次修（血案：CI run 35002284192 冷库全量重拉）：
+          # 固定 key `market-db-v2` + `cache/save@v4` 是**死锁组合**——
+          # save 不允许覆盖已存在的 key，所以**第一次**存进去的那份就永久
+          # 生效，之后再也不会更新（实测首次存的是 0 字节空缓存，于是每个
+          # run 都「库最新 空」→ 4937 只全量重拉 ~17 分钟）。
+          # 正解：**key 带 run_id（每次都能存新的）+ restore-keys 前缀回退
+          # （总能捞到最近一份）**，再配合「只保留最新 1 份」的清理步骤，
+          # 既持续更新又不膨胀。
+          key: market-db-${{ github.run_id }}
           restore-keys: |
-            market-db-v2
             market-db-
       - name: 安装测试/运行时依赖
         if: github.event.inputs.task != 'watch-sync'
@@ -220,15 +227,25 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
-      # 与上面的 restore 配对：固定 key → 同一条目被覆盖写，不再每 run
-      # 新增一份（原 key 含 run_id，实测累积 15 份 ≈ 469 MB）。
+      # key 带 run_id 才能持续更新（save 不覆盖已存在的 key）；膨胀由下面的
+      # 「清理旧行情库缓存」步骤兜住——只保留最新 1 份。
       # always() 保证抓取失败时也存库，避免整轮白拉。
       - name: 保存行情库缓存
         if: always() && github.event.inputs.task != 'watch-sync'
         uses: actions/cache/save@v4
         with:
           path: cache
-          key: market-db-v2
+          key: market-db-${{ github.run_id }}
+      # 清理旧缓存：GitHub 缓存有 10 GB 仓库上限，不清理会持续膨胀
+      # （实测旧策略累积 15 份 ≈ 469 MB，且每份都是整个 market.db）。
+      # 只删 market-db- 前缀且**不是本次 run** 的条目 → 长期稳定在 1 份。
+      - name: 清理旧行情库缓存
+        if: always() && github.event.inputs.task != 'watch-sync'
+        continue-on-error: true      # 清理失败不得影响主链
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+        run: python -m pipeline.cache_gc
 
   deploy-pages:
     needs: build
