@@ -156,7 +156,11 @@ def dispatch(token, task, wait=False):
 
 
 def set_secret(token, name, value):
-    """写入 Actions Secret（需 libsodium —— 未安装则给出提示）。"""
+    """写入 Actions Secret（需 PyNaCl；用 SealedBox 密封——GitHub 公钥加密惯例）。
+
+    注意：PyNaCl 的 `nacl.public` 里**没有** SecretBox（那在 nacl.secret 里），
+    对公钥加密正确做法是 SealedBox(pubkey).encrypt(...)。
+    """
     try:
         from nacl import encoding, public  # type: ignore
     except ImportError:
@@ -167,9 +171,8 @@ def set_secret(token, name, value):
         print("取公钥失败：", st, key)
         return False
     pk = public.PublicKey(key["key"].encode(), encoding.Base64Encoder())
-    box = public.SecretBox(public.Box(public.PrivateKey.generate(), pk),
-                           encoding.RawEncoder())
-    sealed = base64.b64encode(bytes(box)).decode()
+    sealed = base64.b64encode(public.SealedBox(pk).encrypt(
+        value.encode("utf-8"))).decode()
     st, r = _req("PUT", f"{API}/actions/secrets/{name}", token,
                  {"encrypted_value": sealed, "key_id": key["key_id"]})
     print(f"{'OK' if st in (201, 204) else 'FAIL'} {name} {st}")
