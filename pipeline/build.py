@@ -147,12 +147,20 @@ def split_universe(con, date, snap):
 LAST_SCAN_COVERAGE = {}     # scan_all 覆盖面快照（供 build/站点/测试读取）
 
 
-def scan_all(con, date):
+def scan_all(con, date, bar_anchor=None):
     """全市场三池扫描（趋势/区间/波段 + 连板）→ 候选池。
 
     前置过滤（规格书 3.2）：ST/退/N 新股按名称剔除；成交额<1.2亿剔除；
     当日涨停剔除（归连板池）。MIN_FMV 15亿 / MIN_TURN 近20日均0.5% 在池内判。
     剔除全留痕：任何一只不进池都必须有 reason（333-五），禁止静默 continue。
+
+    `bar_anchor`：新鲜度锚定日（默认 = date）。
+    ⚠️ 2026-09-16 修（血案：盘前推送「候选 0 只」）：
+    pre（08:50）/ auction（09:25）在设计上就跑在**当日收盘K线入库之前**，
+    此时 `klines` 最新只有上一交易日。旧实现用 `rows[-1][0] != date` 判陈旧
+    ⇒ 全市场 4937 只被判「K线未更新至{date}」⇒ 覆盖 0.0%、候选 0
+    ⇒ 用户收到一份**没有任何标的的盘前计划**（比收不到更让人困惑）。
+    修法：盘前任务把锚改到**上一交易日**（由 build 传入），收盘任务保持 date。
     """
     holdings = {h["code"] for h in load_holdings()}
     watch = {c if c[:2] in ("sh", "sz") else
@@ -163,10 +171,14 @@ def scan_all(con, date):
         "SELECT code, streak FROM zt_pool WHERE date=?", (date,)).fetchall()}
     cands, skipped = [], []
     stat = {"stale": 0, "no_history": 0, "fresh": 0}
-    # 数据新鲜度：宇宙中有多少只拿到了 date 当日K线（这才是"有没有扫到"的口径，
+    # 新鲜度锚：盘前任务（pre/auction）当日K线尚未产生，锚定上一交易日；
+    # 收盘/复盘任务锚定当日。两者语义不同，混用会全量误判（见函数注释）。
+    expected_bar = bar_anchor or date
+    # 数据新鲜度：宇宙中有多少只拿到了锚定日K线（这才是"有没有扫到"的口径，
     # 不能把名称/市值等策略过滤掉的票也算成数据缺口）
     have_bar = {r[0] for r in con.execute(
-        "SELECT DISTINCT code FROM klines WHERE date=?", (date,)).fetchall()}
+        "SELECT DISTINCT code FROM klines WHERE date=?",
+        (expected_bar,)).fetchall()}
 
     def mk_common(code, name, close):
         return {"code": code, "name": name, "close": close,
@@ -182,9 +194,10 @@ def scan_all(con, date):
             stat["no_history"] += 1
             reject(code, pool, f"历史K线不足30根（{len(rows)}）")
             return None
-        if rows[-1][0] != date:
+        if rows[-1][0] != expected_bar:
             stat["stale"] += 1
-            reject(code, pool, f"K线未更新至{date}（最新 {rows[-1][0]}）")
+            reject(code, pool,
+                   f"K线未更新至{expected_bar}（最新 {rows[-1][0]}）")
             return None
         stat["fresh"] += 1
         return rows
@@ -560,7 +573,14 @@ def build(task="close", date=None):
     env_w = scoring.env_weights(
         mood["promote_rate"] if mood else 0.5,
         mood["zhaban_rate"] if mood else 0.30, emotion_param)
-    cands, skipped = scan_all(con, date)
+    # ⚠️ 2026-09-16：pre/auction 的K线新鲜度锚定**上一交易日**——它们跑在
+    # 当日收盘K线入库之前，若锚定当日会把全市场判为陈旧 ⇒ 候选 0（详见
+    # scan_all 注释）。close/review 仍锚定当日（bar_anchor=None）。
+    _bar_anchor = (core.prev_trading_day(con, date)
+                   if task in ("pre", "auction") else None)
+    if _bar_anchor:
+        print(f"[build] 盘前任务：K线新鲜度锚定上一交易日 {_bar_anchor}")
+    cands, skipped = scan_all(con, date, bar_anchor=_bar_anchor)
     # 败因否决器（吸收 recveto）：放量候选标注式降权（V1 WARN），极端拦下（VETO）
     def _vol_ratio(c):
         rows = recent_rows(con, c["code"], n=6)
