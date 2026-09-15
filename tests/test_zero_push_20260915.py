@@ -799,8 +799,56 @@ class TestPremarketAllZeroNotHoliday(unittest.TestCase):
                       "否则 08:50 快照全零照样抛 ValueError")
         # 必须是「pre 或 auction 才加」的条件式，不能无条件加
         self.assertRegex(
-            y, r"task\s*==\s*'pre'|task\s*==\s*.pre.",
+            y, r"pre\|auction\)\s*EXTRA|task\s*==\s*'pre'|task\s*==\s*.pre.",
             "必须按 task 条件判断（review 是盘后，不该带该标志）")
+
+    def test_no_ternary_in_actions_expressions(self):
+        """★ 血案：**Actions 表达式不支持三元 `?:`**（JS 风格会整份解析失败）。
+
+        实证（2026-09-16 晚）：写着
+            ${{ cond ? '--premarket' : '' }}
+        的 workflow **整份无法解析**，dispatch 直接返
+            422 Invalid Argument - failed to parse workflow:
+            (Line: 148, Col: 14): Unexpected symbol: '?'
+        且 push 触发的 run **零 job**（`total_count: 0`）。
+        危害是**全局的**：任何触发方式都启动不了，等于当天所有定时任务全灭。
+        修法是改用 bash `case` 做条件展开（表达式保持简单）。
+
+        断言只扫**可执行行**——注释里为记录旧写法而引用 `?:` 是正常的
+        （这正是 strip_comments 存在的原因）。
+        """
+        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
+                  encoding="utf-8") as f:
+            y = f.read()
+        code = strip_comments(y)
+        bad = re.findall(r"\$\{\{[^}]*\?[^}]*\}\}", code)
+        self.assertEqual(
+            bad, [],
+            f"Actions 表达式不得用三元 `?:`（会整份解析失败、全部任务无法"
+            f"启动）。实际残留：{bad}。请改用 bash case/if 展开。")
+
+    def test_workflow_yaml_parses_and_has_build_steps(self):
+        """workflow 必须能被 YAML 解析且 build job 步骤齐全。
+
+        零 job 的 run 说明连 workflow 都没解析成功 —— 这类故障最难察觉
+        （run 显示 failure，但没有任何步骤日志可看）。
+        """
+        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
+                  encoding="utf-8") as f:
+            y = f.read()
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("无 pyyaml，跳过结构校验")
+        # PyYAML 会把裸 `on:` 解析成布尔 True —— 属正常，不影响校验
+        d = yaml.safe_load(y)
+        self.assertIn("jobs", d, "workflow 必须能解析出 jobs")
+        self.assertIn("build", d["jobs"], "必须有 build job")
+        steps = d["jobs"]["build"].get("steps", [])
+        self.assertGreaterEqual(len(steps), 10,
+                                f"build job 步骤数异常偏少（{len(steps)}）")
+        names = " ".join(s.get("name", "") for s in steps)
+        self.assertIn("构建+推送", names, "缺少「构建+推送」步骤")
 
     def test_preauction_gate_has_no_allzero_rejection(self):
         """★ 核心：_preauction_ready 不得再有全零拒绝分支。"""
