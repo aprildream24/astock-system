@@ -26,17 +26,36 @@ class TestPush(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             notifier.DIST_LEDGER = os.path.join(td, "ledger.json")
             con = get_conn(os.path.join(td, "t.db"))
-            r1 = notifier.push("m1", "标题", "候选 600000 000001", date="2026-09-12", con=con)
-            r2 = notifier.push("m1", "标题", "候选 600000 000001", date="2026-09-12", con=con)
-            self.assertTrue(r1["sent"])
-            self.assertTrue(r2.get("dedup"), "同 biz_key 二次推送必须拦截")
-            # 规则版本升级 → 新 key 放行
-            old = notifier.RULE_VERSION
-            notifier.RULE_VERSION = "v2-TEST-UP"
-            r3 = notifier.push("m1", "标题", "候选 600000 000001", date="2026-09-12", con=con)
-            notifier.RULE_VERSION = old
-            self.assertTrue(r3["sent"], "规则升级后自动新 key 放行")
-            con.close()
+            # 2026-09-15：用例考察「去重账本」，不得依赖本机 config/notify.json。
+            # CI 无该文件 → 通道列表为空 → sent=False（真实 HTTP 也无凭据）。
+            # 固定通道与发送结果，让断言确定。
+            from pipeline import wxpusher as wx
+            o_load, o_send = wx.load_accounts, wx.send
+            o_cfg = notifier.load_config
+            wx.load_accounts = lambda: [{"name": "A", "app_token": "AT",
+                                         "uids": ["U"]}]
+            wx.send = lambda acct, t, c, timeout=12: ("sent", "ok")
+            notifier.load_config = lambda *a, **k: {
+                "push_dry_run": False, "primary_channel": "wxpusher",
+                "push_tag": "Test"}
+            try:
+                r1 = notifier.push("m1", "标题", "候选 600000 000001",
+                                   date="2026-09-12", con=con)
+                r2 = notifier.push("m1", "标题", "候选 600000 000001",
+                                   date="2026-09-12", con=con)
+                self.assertTrue(r1["sent"])
+                self.assertTrue(r2.get("dedup"), "同 biz_key 二次推送必须拦截")
+                # 规则版本升级 → 新 key 放行
+                old = notifier.RULE_VERSION
+                notifier.RULE_VERSION = "v2-TEST-UP"
+                r3 = notifier.push("m1", "标题", "候选 600000 000001",
+                                   date="2026-09-12", con=con)
+                notifier.RULE_VERSION = old
+                self.assertTrue(r3["sent"], "规则升级后自动新 key 放行")
+            finally:
+                wx.load_accounts, wx.send = o_load, o_send
+                notifier.load_config = o_cfg
+                con.close()
 
     def test_cand_line_cap(self):
         c = _mk_cand(cycle_hint="急拉后高位横住" * 6, entry_hint="距买点 3% 回落至 9.9 再关注")

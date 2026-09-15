@@ -225,15 +225,19 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         try:
             if path == "/api/watch":
-                return self._send(save_watch(body.get("codes")))
-            if path == "/api/holdings":
-                return self._send(save_holdings(body.get("items")))
-            if path == "/api/users":
-                return self._send(save_users(body))
+                r = save_watch(body.get("codes"))
+            elif path == "/api/holdings":
+                r = save_holdings(body.get("items"))
+            elif path == "/api/users":
+                r = save_users(body)
+            else:
+                return self._send({"error": "not found"}, 404)
         except Exception as e:  # noqa: BLE001
             return self._send({"ok": False, "error": f"{type(e).__name__}: {e}"},
                               500)
-        return self._send({"error": "not found"}, 404)
+        # 校验失败必须反映到 HTTP 状态，否则前端只看 res.ok 会把
+        # {"ok": false} 当成功（2026-09-15 修复：坏码曾返回 200）。
+        return self._send(r, 200 if r.get("ok") else 400)
 
 
 def serve(port=8770, open_browser=True):

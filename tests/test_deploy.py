@@ -63,10 +63,19 @@ class TestDeployCollection(unittest.TestCase):
             self.assertIn(need, self.files, f"{need} 未纳入部署")
 
     def test_no_stray_temp_files(self):
-        """根目录不得残留 _reg_*.txt / *.log 这类临时产物。"""
+        """根目录不得残留 _reg_*.txt / *.log 这类临时产物。
+
+        注意：只扫**仓库根目录**。config/ 下的 *.bak 是用户手动备份，
+        不属于部署产物，不应误报。"""
         stray = [f for f in self.files
-                 if os.sep not in f and (f.startswith("_") or f.endswith(".log"))]
+                 if os.sep not in f and "/" not in f
+                 and (f.startswith("_") or f.endswith(".log"))]
         self.assertEqual(stray, [], f"临时文件混入部署：{stray}")
+
+    def test_backups_not_deployed(self):
+        """*.bak / *.ciparity_bak 之类的备份不得上线。"""
+        bad = [f for f in self.files if f.endswith((".bak", ".ciparity_bak"))]
+        self.assertEqual(bad, [], f"备份文件混入部署：{bad}")
 
 
 if __name__ == "__main__":

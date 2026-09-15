@@ -3,7 +3,15 @@
 # Secrets 一览：
 #   WXPUSHER_CONF   WxPusher 账户 JSON 数组（多账户）：
 #                   [{"name":"主号","app_token":"AT_xxx","uids":["UID_xxx"]}]
-#   SITE_USERS      站点口令 JSON：{"owner":"你的口令","guest":"访客口令"}
+#   SITE_USERS      站点口令 JSON（2026-09-15 起支持分角色形态）：
+#                   新形态（推荐）：
+#                     {"users":[{"id":"owner","name":"本人","pass":"...",
+#                                "roles":["all"]},
+#                               {"id":"zhang","name":"张三","pass":"...",
+#                                "roles":["watch","buy"]}]}
+#                   旧形态（仍兼容）：{"owner":"口令","guest":"口令"}
+#                   roles: all=全部 / watch=自选 / observe=观察池 / buy=持仓购入
+#                   —— 未授权分组在**密文层**被剥离，非前端隐藏。
 #   SERVERCHAN_KEY  可选备用通道
 #   PUSHPLUS_TOKEN  可选备用通道
 #   GLM_API_KEY     可选：智谱开放平台 key（免费模型 glm-4.7-flash，AI 叙事用）

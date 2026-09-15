@@ -61,22 +61,11 @@ def main():
     up = os.path.join(cfgdir, "users.json")
     if os.path.exists(up):
         raw = json.load(open(up, encoding="utf-8"))
-        if isinstance(raw.get("users"), list):
-            site = {it["id"]: it["pass"] for it in raw["users"]
-                    if it.get("id") and it.get("pass")}
-            roles = {it["id"]: it.get("roles", []) for it in raw["users"]
-                     if it.get("id")}
-        else:
-            site = {k: v for k, v in raw.items()
-                    if isinstance(v, str) and not k.startswith("_")}
-            roles = {}
-        # 站点门禁（明文口令，供构建时派生密文）
+        # SITE_USERS：直接把本地 users.json **原样**上传（保留 roles），
+        # CI 的「构建加密站点」步骤会 echo 成 config/users.json，
+        # pipeline.users 双形态解析即可拿到角色。旧扁平形态同样兼容。
         dep.set_secret(tok, "SITE_USERS",
-                       json.dumps(site, ensure_ascii=False))
-        # 站点索引（不含口令，浏览器端读）
-        if roles:
-            dep.set_secret(tok, "SITE_ROLES",
-                           json.dumps(roles, ensure_ascii=False))
+                       json.dumps(raw, ensure_ascii=False))
     wp = os.path.join(cfgdir, "watch.json")
     if os.path.exists(wp):
         dep.set_secret(tok, "WATCH_CODES",

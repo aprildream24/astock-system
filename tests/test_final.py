@@ -127,12 +127,17 @@ class TestChannels(unittest.TestCase):
             con = get_conn(os.path.join(td, "t.db"))
             o_accounts = wx.load_accounts
             o_send = wx.send
+            o_cfg = notifier.load_config
             wx.load_accounts = lambda: [{"name": "A", "app_token": "AT",
                                          "uids": ["U"]}]
             # 2026-09-15：必须 mock 实际发送。原用例未 mock → 走真实 HTTP
             # 且无凭据必失败；旧代码无条件报 sent=True 掩盖了这点，sent 语义
             # 收紧后暴露。本用例考察「通道路由」，须固定发送结果。
             wx.send = lambda acct, t, c, timeout=12: ("sent", "ok")
+            # 同理固定配置：CI 无 config/notify.json 时通道列表为空。
+            notifier.load_config = lambda *a, **k: {
+                "push_dry_run": False, "primary_channel": "wxpusher",
+                "push_tag": "Test"}
             try:
                 r = notifier.push("intraday", "盘中异动", "候选 600000",
                                   date="2026-09-12", con=con,
@@ -146,6 +151,7 @@ class TestChannels(unittest.TestCase):
             finally:
                 wx.load_accounts = o_accounts
                 wx.send = o_send
+                notifier.load_config = o_cfg
                 # 2026-09-15：必须先关连接再退出 TemporaryDirectory。
                 # 原实现 con.close() 在 with 块结束后才执行，导致 Windows 上
                 # TemporaryDirectory 清理 t.db 时遇 WinError 32（文件被占用）。

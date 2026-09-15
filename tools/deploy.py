@@ -33,7 +33,7 @@ EXCLUDE_DIRS = {"__pycache__", ".git", "cache", "dist", "site", ".zcode",
                 ".workbuddy", ".pytest_cache", "node_modules"}
 EXCLUDE_FILES = {"notify.json", "users.json", "holdings.json", "watch.json",
                  "models.json", "gh_sync.py"}
-EXCLUDE_EXT = {".db", ".bin", ".pyc", ".log", ".zip"}
+EXCLUDE_EXT = {".db", ".bin", ".pyc", ".log", ".zip", ".bak"}
 
 # 调试/回归产物：可能临时出现在根目录（_reg.txt 等），一律不上线。
 JUNK_PREFIXES = ("_reg", "_e2e", "_probe", "_dbg", "_tmp")
@@ -53,6 +53,12 @@ def _req(method, url, token, body=None, raw=False):
 
 
 def collect_files():
+    """收集待上线文件。
+
+    重要：本函数的结果**必须**覆盖仓库里所有应存在的文件——sync() 用
+    base_tree 全量提交，未列出的已跟踪文件会被删除。所以排除项只允许是
+    「本地产物/密钥/临时文件」，绝不能是源码或 CI 配置。
+    """
     files = []
     for dirpath, dirnames, filenames in os.walk(ROOT):
         # 注意：只剪 .git 本身，不能用 startswith(".git")——那会连 .github 一起剪掉。
@@ -62,8 +68,9 @@ def collect_files():
         for f in sorted(filenames):
             if f in EXCLUDE_FILES or os.path.splitext(f)[1] in EXCLUDE_EXT:
                 continue
-            if rel_dir == "." and f.startswith(JUNK_PREFIXES):
-                continue          # 根目录调试/回归产物不上线
+            if rel_dir == "." and (f.startswith(JUNK_PREFIXES)
+                                   or f.endswith((".bak", ".ciparity_bak"))):
+                continue          # 根目录调试/回归产物、备份不上线
             rel = f if rel_dir == "." else os.path.join(rel_dir, f)
             rel = rel.replace("\\", "/")
             if rel.startswith(("cache/", "dist/", "site/", ".workbuddy/")):
