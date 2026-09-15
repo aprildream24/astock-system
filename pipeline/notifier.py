@@ -680,6 +680,26 @@ def push(mode, title, content, date=None, con=None,
                                             f"【{tag}·PushPlus】{title}",
                                             f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
                 results["pushplus"] = {"status": st, "detail": detail}
+                # ⚠️ 2026-09-16 修（血案：PushPlus 是当前唯一通道，却无兜底）：
+                # 原实现只在 **wxpusher 全失败** 时才落 ServerChan 备用
+                #（第 672 行 `all_failed`），而**主通道是 PushPlus** 的部署里，
+                # PushPlus 一挂（额度耗尽/接口变更/被墙）就**直接零送达**——
+                # `results` 里只有一条 failed，聚合 worst=failed，
+                # 但用户端什么也收不到，且没有任何第二通道补位。
+                # 实测本仓库 config/notify.json 正是这种形态：
+                #   primary_channel=pushplus，wxpusher_accounts=[]，
+                #   serverchan_key=''（本地空）
+                # 而 CI 侧 `SERVERCHAN_KEY` **Secret 已注入**（workflow 已配），
+                # 只是代码从不读它作 PushPlus 的兜底 ⇒ 白白浪费一条备用通道。
+                # 修法：PushPlus 明确 failed（非 uncertain，避免双发）时，
+                # 若有 serverchan_key 则补发一条——与 wxpusher 的兜底对称。
+                if st == "failed" and cfg.get("serverchan_key"):
+                    st2, d2 = _send_serverchan(
+                        cfg["serverchan_key"],
+                        f"【{tag}·备用SC】{title}", content)
+                    results["serverchan"] = {"status": st2, "detail": d2,
+                                             "role": "fallback"}
+                    print(f"[notify] PushPlus failed → ServerChan 兜底 {st2}")
             elif "serverchan" in channels and cfg.get("serverchan_key"):
                 st, detail = _send_serverchan(cfg["serverchan_key"],
                                               f"【{tag}·SC】{title}", content)
