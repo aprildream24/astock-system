@@ -77,7 +77,10 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPO: ${{ github.repository }}
           WATCH_CODES_IN: ${{ github.event.inputs.codes }}
-        run: python -m pipeline.sync_watch
+        run: |
+          # PyNaCl 不在 runner 预装列表里（实测 ModuleNotFoundError: nacl）
+          python -m pip install --quiet pynacl
+          python -m pipeline.sync_watch
       - name: 收盘数据抓取（全市场）
         if: >-
           github.event.inputs.task != 'watch-sync' &&
