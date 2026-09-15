@@ -325,7 +325,10 @@ def main():
         print("今天各次 run：")
         for r in ci["runs"]:
             steps = " ".join(f"{k}={v}" for k, v in (r.get("steps") or {}).items())
-            print(f"   {r['created_at'][11:16]}  {r['conclusion']:<10} {steps}")
+            # conclusion 为 None = 仍在排队/运行中；原实现直接 :<10 格式化会
+            # TypeError 崩掉整个体检（2026-09-15 实测），这里兜底成状态词。
+            concl = r.get("conclusion") or r.get("status") or "进行中"
+            print(f"   {r['created_at'][11:16]}  {concl:<10} {steps}")
     print()
     if push.get("real"):
         print("今天已发出的生产推送：")

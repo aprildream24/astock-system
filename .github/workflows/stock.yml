@@ -72,6 +72,13 @@ jobs:
         run: python -m pip install --quiet pynacl pyyaml
       - name: 回归自检
         if: github.event.inputs.task != 'watch-sync'
+        env:
+          # 2026-09-15：回归用例会断言「CI 上至少有一种推送凭据」——
+          # 不注入这些 Secret，该断言在 CI 上必然 FAIL（实测 run 34987206020）。
+          # 这也顺带验证了 Secrets 真的配置到位。
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
         run: python tests/run_regression.py
       # ---- 网页自助加自选（2026-09-15）------------------------------------
       # owner 在站点上点「加入/删除」→ 前端发 workflow_dispatch(task=watch-sync,
@@ -184,6 +191,18 @@ jobs:
           mkdir -p config
           echo "$SITE_USERS" > config/users.json
           python -m pipeline.build --task site
+      # 2026-09-15：把推送账本提交回仓库。tools/daily_check.py 靠
+      # /contents/dist/push_ledger.json 判定「今天到底有没有真发出推送」；
+      # 不提交它，体检的远端账本永远 404 → 永远误报「零推送」。
+      # 只提交这一个文件，自选/持仓等隐私文件都在 .gitignore 里。
+      - name: 回写推送账本（供体检读取）
+        if: >-
+          github.event.inputs.task != 'watch-sync' &&
+          (success() || failure())
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+        run: python -m pipeline.push_ledger_sync
       - name: 上传 Pages 构件
         if: github.event.inputs.task != 'watch-sync'
         uses: actions/upload-pages-artifact@v3
