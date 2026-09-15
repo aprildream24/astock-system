@@ -209,11 +209,33 @@ def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False):
                   f"（本批 {ok}/{len(part)}）", flush=True)
             fail_codes.extend([c for c in part if c not in all_ok])
 
-    if "000001" not in all_ok:      # 指数单独补（同样受 MAX_FULL_DAYS 封顶）
+    # ⚠️ 2026-09-16 修（CI run 35000871359 的 build 崩溃真凶）：
+    # 原条件 `if "000001" not in all_ok:` —— `all_ok` 的 key 是**裸码**，
+    # 而裸码 `000001` 恰好是**平安银行（sz000001）**，它作为个股每轮都被正常
+    # 抓取并写进 `all_ok` ⇒ 该条件**恒为 False** ⇒ **上证指数 sh000001
+    # 的补拉被永久跳过**。
+    # 后果链：sh000001 停在旧日期（实测 260 行、末位 2026-09-14）⇒
+    # `trade_calendar()`（以 sh000001 为权威日历）不含当日 ⇒
+    # `build.py` 的 `cal.index(date)` 抛
+    # `ValueError: '2026-09-15' is not in list` ⇒ **构建崩溃、推送失败**。
+    # 注意：这只影响**指数日历**，个股数据完全正常（同次日志 覆盖 100%）。
+    # 修法：用**带前缀的指数标识**判断是否已有指数K线，与裸码空间彻底分开。
+    idx_code = "sh000001"
+    idx_last = con.execute(
+        "SELECT MAX(date) FROM klines WHERE code=?", (idx_code,)).fetchone()
+    need_idx = not (idx_last and idx_last[0] >= latest_td)
+    if need_idx:                    # 指数落后于断档锚 → 单独补（同样受封顶）
         idx_batch = kline_batch([("000001", "sh")], days=full_days, con=con)
         if "000001" in idx_batch:
-            upsert_klines(con, "sh000001", idx_batch["000001"])
-            all_ok["000001"] = idx_batch["000001"][-1]
+            upsert_klines(con, idx_code, idx_batch["000001"])
+            con.commit()            # ← 显式提交：指数是**日历唯一来源**，
+            #                          不 commit 会让日历继续缺当日（原代码漏了）
+            print(f"[fetch] 指数 {idx_code} 已补至 "
+                  f"{idx_batch['000001'][-1][0]}"
+                  f"（此前 {idx_last[0] if idx_last else '无'}）")
+            # ⚠️ **不写入 all_ok**：它的 key 是裸码，落进去会与
+            # 平安银行（sz000001）撞车 → 污染量纲修复（第 251 行取
+            # `all_ok[c][5]` 当流通股）与 self_heal 的补数范围。
     if fail_codes:
         print(f"[fetch] 未取到 {len(fail_codes)} 只（留待下轮补）："
               f"{fail_codes[:12]}{' ...' if len(fail_codes) > 12 else ''}")
