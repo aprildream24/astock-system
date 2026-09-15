@@ -376,15 +376,85 @@ def fill_outcomes(con, date):
     return n
 
 
+def _preauction_ready(con, date):
+    """盘前/竞价任务的专用就绪判定（2026-09-15 新增）。
+
+    语义纠错：pre（08:50）与 auction（09:25）在设计上就跑在**当日收盘
+    K线入库之前**——它们要的是「历史K线 + 当日竞价快照」，不是当日收盘K线。
+    而原实现统一套用 is_trading_day_cross + data_ready_for（二者都以
+    「指数日K含当日」为必要条件，日历源自指数K线），导致这两个任务在
+    正常情况下**永远无法通过闸门** → build 静默 return → 盘前/竞价永不推送。
+
+    本判定要求：① 日历/数据库里有上一交易日（保证历史K线可用）；
+    ② 当日快照已入库（保证竞价数据在新）；③ 日历确认 date 是工作日。
+    返回 (ok, reason)。"""
+    from .trade_calendar import is_trade_day as _cal_trade
+    if not _cal_trade(date):
+        return False, "非法定交易日"
+    prev = core.prev_trading_day(con, date)
+    if not prev:
+        return False, "无上一交易日（历史K线缺失）"
+    n_prev = con.execute("SELECT COUNT(*) FROM klines WHERE date=?",
+                         (prev,)).fetchone()[0]
+    if n_prev == 0:
+        return False, f"{prev} 无K线（历史数据未就绪）"
+    n_snap = con.execute("SELECT COUNT(*) FROM snapshot WHERE date=?",
+                         (date,)).fetchone()[0]
+    if n_snap == 0:
+        return False, f"{date} 无快照（竞价数据未入库）"
+    # 快照 pct 全零 = 疑休市日（沿用 M04 交叉确认）
+    total, nonzero = con.execute(
+        "SELECT COUNT(*), SUM(CASE WHEN ABS(COALESCE(pct,0))>0.0001 THEN 1 "
+        "ELSE 0 END) FROM snapshot WHERE date=?", (date,)).fetchone()
+    if total and (nonzero or 0) == 0:
+        return False, "快照 pct 全零：疑似休市日"
+    return True, f"盘前/竞价就绪（前值{prev} K线 {n_prev} 只 + 当日快照 {n_snap} 只）"
+
+
+def _notify_data_blocked(task, date, why, ready_why):
+    """数据未就绪时主动告警（2026-09-15 新增，堵「全天零提示」静默洞）。
+
+    背景：原实现在 not certain or not ready 时仅 print + return None，
+    推送端完全静默。当日抓取若超时/失败 → 数据未入库 → 构建拒绝 → 用户
+    一整天收不到任何消息且毫不知情（8:50 failure / 9:25 cancel 实证）。
+    现改为：数据未就绪一律发一条明确的「数据未就绪」告警，让用户知道
+    系统活着但数据没上来，而不是无声无息。告警失败不阻断主流程。"""
+    try:
+        from . import notifier
+        t = (f"⚠️ {date} 数据未就绪，本次 {task} 未生成"
+             f"（{ready_why or why}）")
+        body = notifier.md2html(
+            f"**{task}** 任务已触发，但目标日 `{date}` 的数据未通过就绪校验，"
+            f"为避免用错数据误导决策，本次**不生成候选也不推送分析**。\n\n"
+            f"- 日历判定:{why}\n"
+            f"- 就绪判定:{ready_why}\n\n"
+            "常见原因：当日行情抓取超时/失败，或非交易日。"
+            "系统会在下个时点自动重试；若连续多次收到本提示，"
+            "请检查数据源连通性。")
+        notifier.push(f"data_blocked_{task}", t, body, date=date)
+        print(f"[build] 已发数据未就绪告警：{date} {task}")
+    except Exception as e:  # noqa: BLE001 — 告警失败不得影响主流程
+        print(f"[build] 数据未就绪告警发送失败（忽略）：{type(e).__name__} {e}")
+
+
 def build(task="close", date=None):
     con = get_conn()
     date = date or today_str()
     # M04 交易日守门：日历交叉确认 + 数据就绪判断（周六可复盘周五——
     # 条件：目标日是真实交易日、当日K线已入库、fetch_stats 不早于目标日）
-    certain, why = is_trading_day_cross(con, date)
-    ready, ready_why = data_ready_for(con, date)
+    # 2026-09-15：pre/auction 走专用闸门（它们本就在当日收盘K线入库前运行，
+    # 见 _preauction_ready 注释）——此前套用收盘闸门导致这两个任务永不通过。
+    if task in ("pre", "auction"):
+        ready, ready_why = _preauction_ready(con, date)
+        certain, why = (ready, "盘前/竞价专用判定"
+                        if ready else ready_why)
+    else:
+        certain, why = is_trading_day_cross(con, date)
+        ready, ready_why = data_ready_for(con, date)
     if not certain or not ready:
         print(f"[build] {date} 拒绝构建（{why}/{ready_why}）")
+        # 2026-09-15：拒绝构建不再静默——主动告警用户（详见函数注释）
+        _notify_data_blocked(task, date, why, ready_why)
         return None
     # 技巧只增不减：注册表基线守门（数量跌了直接拒绝构建）
     _tb = os.path.join(core.BASE_DIR, "tools", "baseline_techniques.json")
@@ -817,6 +887,12 @@ def build_data_for_site(con, date):
             _n += 1
         valid_until = _d.isoformat()
     cov = coverage_snapshot(con, date)
+    # 持仓明细（buy 角色专属，含成本/浮盈——apply_roles 会按角色剥离）
+    try:
+        holdings_detail = _build_holdings_detail(con, date)
+    except Exception as e:  # noqa: BLE001
+        print(f"[site] holdings detail failed: {e}")
+        holdings_detail = []
     return {"date": date,
             "meta": {"reviewed": n_reviewed, "universe": n_universe,
                      "buyable": n_buyable,
@@ -832,6 +908,7 @@ def build_data_for_site(con, date):
             "candidates": shown,
             "ladder_next": ladder_next,
             "watch_advice": watch_advice,
+            "holdings_detail": holdings_detail,
             "signals": sigs,
             "changes": changes,
             "triggers": trigs,
@@ -839,16 +916,39 @@ def build_data_for_site(con, date):
             "skipped": muted + rejected[:SITE_SKIP_CAP]}
 
 
+def _build_holdings_detail(con, date):
+    """持仓明细 + 浮动盈亏（buy 角色专属数据）。
+
+    浮盈口径：最新收盘 vs 买入价，不含费用/滑点（与 meta.disclosure 一致）。"""
+    out = []
+    for h in load_holdings():
+        code = h.get("code")
+        if not code:
+            continue
+        row = con.execute(
+            "SELECT c FROM klines WHERE code=? AND date=?", (code, date)
+        ).fetchone()
+        close = row[0] if row else None
+        bp = h.get("buy_price")
+        pnl_pct = (round((close / bp - 1) * 100, 2)
+                   if close and bp else None)
+        out.append({"code": code, "name": h.get("name", ""),
+                    "buy_date": h.get("buy_date"), "buy_price": bp,
+                    "shares": h.get("shares"), "stop": h.get("stop"),
+                    "close": close, "pnl_pct": pnl_pct})
+    return out
+
+
 def build_site(date=None):
     con = get_conn()
     date = date or today_str()
     data = build_data_for_site(con, date)
-    passwords = {}
-    for uid, pwd in load_json("users.json", {}).items():
-        passwords[uid] = pwd
-    if not passwords:
-        raise SystemExit("config/users.json 为空：请先设置口令（含 owner）")
-    publish.build_site(data, passwords)
+    from . import users as users_mod
+    users = users_mod.load_users(os.path.join(core.CONFIG_DIR, "users.json"))
+    if not users:
+        raise SystemExit("config/users.json 为空或格式错误：请先设置口令（含 owner）")
+    passwords = users_mod.passwords_of(users)
+    publish.build_site(data, passwords, users=users)
     issues = publish.verify_site()
     if issues:
         raise SystemExit("部署红线终止：\n" + "\n".join(issues))

@@ -51,11 +51,38 @@ window.AStocker = (function () {
     return JSON.parse(new TextDecoder().decode(pt));
   }
 
-  async function open(password) {
-    const res = await fetch("data/owner.bin");
-    if (!res.ok) throw new Error("数据包未部署");
-    return decrypt(await res.arrayBuffer(), password);
+  async function loadIndex() {
+    // 用户索引（无口令）：列出可登录身份；缺失时回退为仅 owner
+    try {
+      const r = await fetch("users.json");
+      if (r.ok) {
+        const j = await r.json();
+        if (j && Array.isArray(j.users) && j.users.length) return j.users;
+      }
+    } catch (e) { /* 索引可选，缺失不阻断 */ }
+    return [{ id: "owner", name: "管理员", groups: ["watch", "observe", "buy"], is_owner: true }];
   }
 
-  return { open, decrypt };
+  async function open(password) {
+    // 逐个用户密文包试解：口令正确的那份会通过 HMAC 校验。
+    // 旧实现硬编码 fetch("data/owner.bin") —— 非 owner 用户永远打不开。
+    const idx = await loadIndex();
+    let lastErr = null;
+    for (const u of idx) {
+      let res;
+      try {
+        res = await fetch("data/" + u.id + ".bin");
+      } catch (e) { lastErr = e; continue; }
+      if (!res.ok) { lastErr = new Error("数据包未部署：" + u.id); continue; }
+      try {
+        const data = await decrypt(await res.arrayBuffer(), password);
+        data._user = { id: u.id, name: u.name, groups: u.groups || [],
+                       is_owner: !!u.is_owner };
+        return data;
+      } catch (e) { lastErr = e; }
+    }
+    throw (lastErr || new Error("口令错误或密文被篡改"));
+  }
+
+  return { open, decrypt, loadIndex };
 })();

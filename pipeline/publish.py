@@ -71,9 +71,67 @@ def strip_owner_fields(data: dict, is_owner: bool):
     return d
 
 
-def encrypt_data(data: dict, passwords: dict):
-    """passwords: {user_id: 口令}；每用户一份 <id>.bin。返回 [(uid, blob)]。"""
+def apply_roles(data: dict, user):
+    """按用户角色裁剪数据分组（2026-09-15 分用户分级权限）。
+
+    分组口径：
+      watch    自选股（data["watch_advice"]）
+      observe  观察池（data["candidates"] / skipped 等扫描产出）
+      buy      持仓购入（data["holdings_detail"]，含成本浮盈——敏感）
+    owner(all) 全见；其余按角色并集。无对应角色的分组直接**从载荷中移除**，
+    不是前端隐藏——密文里就没有，杜绝「前端隐藏但数据仍在」的泄露。
+
+    同时写入 data["_access"]：该用户可见分组与角色名，供前端渲染标题栏。"""
+    from . import users as users_mod
+    is_owner = getattr(user, "is_owner", False) or user == "owner"
+    d = json.loads(json.dumps(data))
+    roles = list(getattr(user, "roles", [])) if not isinstance(user, str) \
+        else users_mod.LEGACY_ROLE_MAP.get(user, ["observe"])
+    uid = getattr(user, "uid", user) if not isinstance(user, str) else user
+    name = getattr(user, "name", uid) if not isinstance(user, str) else uid
+
+    def _can(group):
+        if is_owner:
+            return True
+        return group in roles
+
+    if not _can("watch"):
+        d.pop("watch_advice", None)
+        d.pop("watch", None)
+    if not _can("observe"):
+        d.pop("candidates", None)
+        d.pop("ladder_next", None)
+        d.pop("skipped", None)
+        d.pop("changes", None)
+        d.pop("triggers", None)
+    if not _can("buy"):
+        d.pop("holdings_detail", None)
+        d.pop("holdings", None)
+    # 成本/浮盈：仅 buy 或 all 可见（observe 角色即使看观察池也不含成本）
+    if not _can("buy"):
+        for c in d.get("candidates", []) or []:
+            c.pop("cost", None)
+            c.pop("float_pnl", None)
+    d["_access"] = {"uid": uid, "name": name,
+                    "roles": roles if not is_owner else ["all"],
+                    "is_owner": is_owner,
+                    "groups": (["watch", "observe", "buy"] if is_owner
+                               else [g for g in ("watch", "observe", "buy")
+                                     if g in roles])}
+    return d
+
+
+def encrypt_data(data: dict, passwords: dict, users=None):
+    """每个用户一份密文。users 为 User 列表时按角色裁剪；缺省按旧 owner/guest。
+
+    返回 [(uid, blob)]。"""
     out = []
+    if users:
+        for u in users:
+            payload = json.dumps(apply_roles(data, u),
+                                 ensure_ascii=False).encode()
+            out.append((u.uid, encrypt_bytes(payload, u.password)))
+        return out
     for uid, pwd in passwords.items():
         payload = json.dumps(strip_owner_fields(data, uid == "owner"),
                              ensure_ascii=False).encode()
@@ -81,14 +139,18 @@ def encrypt_data(data: dict, passwords: dict):
     return out
 
 
-def build_site(data: dict, passwords: dict):
+def build_site(data: dict, passwords: dict, users=None):
     """dist/data/* → site/ 静态站。真源是 dist/，site/ 只是打包暂存。
 
     原地覆盖写入（不整目录删除）：本地 http.server 预览时目录被占用，
     rmtree 会失败；覆盖写对静态站是幂等的——模板里删除过的旧文件由
-    clear_stale 处理。"""
+    clear_stale 处理。
+
+    users（User 列表）存在时按角色一人一份密文，并写入 site/users.json
+    （仅含 uid/加密包名/角色名——**不含口令**，口令永不出现在站点）。
+    """
     os.makedirs(os.path.join(DIST_DIR, "data"), exist_ok=True)
-    for uid, blob in encrypt_data(data, passwords):
+    for uid, blob in encrypt_data(data, passwords, users):
         with open(os.path.join(DIST_DIR, "data", f"{uid}.bin"), "wb") as f:
             f.write(blob)
     os.makedirs(SITE_DIR, exist_ok=True)
@@ -109,10 +171,18 @@ def build_site(data: dict, passwords: dict):
             if os.path.exists(dst):
                 shutil.rmtree(dst, ignore_errors=True)
             shutil.copytree(src, dst)
-    for uid, blob in encrypt_data(data, passwords):
-        os.makedirs(os.path.join(SITE_DIR, "data"), exist_ok=True)
+    os.makedirs(os.path.join(SITE_DIR, "data"), exist_ok=True)
+    for uid, blob in encrypt_data(data, passwords, users):
         with open(os.path.join(SITE_DIR, "data", f"{uid}.bin"), "wb") as f:
             f.write(blob)
+    # 用户索引（无口令）：前端据此列出可登录身份 + 各自可见分组说明
+    if users:
+        index = [{"id": u.uid, "name": u.name,
+                  "groups": u.visible_groups(),
+                  "is_owner": u.is_owner} for u in users]
+        with open(os.path.join(SITE_DIR, "users.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"users": index}, f, ensure_ascii=False, indent=1)
 
 
 SITE_DIR_SRC = os.path.join(BASE_DIR, "site_template")

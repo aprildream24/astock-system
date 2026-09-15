@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>自选 / 持仓 管理面板 · astock-system</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#151b24; --line:#2b313d; --txt:#e8eaed;
+  --dim:#9aa0a6; --blue:#6ab0ff; --red:#ff6b5e; --green:#4ecf8e; --gold:#f5b83d;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px}
+.wrap{max-width:760px;margin:0 auto;padding:16px 14px 60px}
+h1{font-size:19px;margin:6px 0 2px;color:#fff}
+h1 .tag{color:var(--blue);font-size:12px;vertical-align:middle;
+  border:1px solid var(--line);border-radius:4px;padding:2px 7px;margin-left:8px}
+.sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:14px;margin:14px 0}
+.panel h2{font-size:15px;margin:0 0 4px}
+.panel .hint{color:var(--dim);font-size:12px;margin:0 0 10px}
+table{width:100%;border-collapse:collapse}
+th{font-size:11.5px;color:var(--dim);text-align:left;font-weight:600;
+  border-bottom:1px solid var(--line);padding:5px 4px}
+td{padding:4px 3px;border-bottom:1px solid #1e2430}
+input{width:100%;background:#0d1117;color:var(--txt);border:1px solid var(--line);
+  border-radius:5px;padding:6px 7px;font-size:13px;font-family:inherit}
+input:focus{outline:none;border-color:var(--blue)}
+input.bad{border-color:var(--red)}
+button{background:#1a73e8;color:#fff;border:none;border-radius:6px;
+  padding:8px 16px;font-size:13px;cursor:pointer;font-family:inherit;margin:4px 6px 0 0}
+button.ghost{background:#232b38;color:var(--txt);border:1px solid var(--line)}
+button.del{background:#8a2a2e;padding:5px 10px;font-size:12px}
+button:hover{filter:brightness(1.12)}
+.bar{margin-top:10px}
+.msg{font-size:12.5px;margin-top:8px;min-height:16px}
+.ok{color:var(--green)} .err{color:var(--red)} .info{color:var(--gold)}
+kbd{background:#232b38;border:1px solid var(--line);border-radius:4px;
+  padding:1px 5px;font-size:11px;color:var(--blue)}
+.secertext{width:100%;height:64px;background:#0d1117;color:var(--dim);
+  border:1px dashed var(--line);border-radius:6px;font-size:11.5px;
+  font-family:Consolas,monospace;padding:6px;margin-top:8px;resize:vertical}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>自选 / 持仓 管理面板<span class="tag">astock-system</span></h1>
+  <p class="sub">编辑后点 <b>保存到文件</b> 写回 <kbd>config\watch.json</kbd> / <kbd>config\holdings.json</kbd>；
+     再把下方 <b>云端同步码</b> 发给助手（或手动更新 GitHub Secrets）完成 CI 同步。</p>
+
+  <div class="panel">
+    <h2>① 自选清单 <span style="font-size:12px;color:var(--dim)">watch.json</span></h2>
+    <p class="hint">每天 15:22 收盘 / 20:02 复盘推送「自选股操作建议」。代码格式：<kbd>sh600000</kbd> / <kbd>sz000001</kbd></p>
+    <table id="wt"><thead><tr><th style="width:32%">代码</th><th>备注</th><th style="width:70px"></th></tr></thead><tbody></tbody></table>
+    <div class="bar">
+      <button class="ghost" onclick="addW()">+ 加自选</button>
+      <button class="ghost" onclick="openFile('w')">📂 打开 watch.json</button>
+      <button onclick="saveW()">💾 保存到文件</button>
+    </div>
+    <textarea id="wsecret" class="secertext" readonly placeholder="云端同步码（WATCH_CODES）——保存后自动生成"></textarea>
+    <button class="ghost" onclick="copyEl('wsecret')">📋 复制同步码</button>
+    <div class="msg" id="wmsg"></div>
+  </div>
+
+  <div class="panel">
+    <h2>② 持仓清单 <span style="font-size:12px;color:var(--dim)">holdings.json</span></h2>
+    <p class="hint">持仓票自动切换为持仓语境（止损 / 持有 / 减仓），并参与止盈提醒。止损可留空（系统按买区自动算）。</p>
+    <table id="hd">
+      <thead><tr>
+        <th style="width:20%">代码</th><th style="width:16%">名称</th>
+        <th style="width:20%">买入日期</th><th style="width:14%">买入价</th>
+        <th style="width:12%">股数</th><th style="width:12%">止损</th><th style="width:52px"></th>
+      </tr></thead><tbody></tbody></table>
+    <div class="bar">
+      <button class="ghost" onclick="addH()">+ 加持仓</button>
+      <button class="ghost" onclick="openFile('h')">📂 打开 holdings.json</button>
+      <button onclick="saveH()">💾 保存到文件</button>
+    </div>
+    <textarea id="hsecret" class="secertext" readonly placeholder="云端同步码（HOLDINGS_CONF）——保存后自动生成"></textarea>
+    <button class="ghost" onclick="copyEl('hsecret')">📋 复制同步码</button>
+    <div class="msg" id="hmsg"></div>
+  </div>
+
+  <p class="sub" style="margin-top:18px">流程：编辑 → 保存到文件 → 复制同步码发给助手 → 助手更新 GitHub Secret → 当天收盘推送即生效。</p>
+</div>
+
+<script>
+"use strict";
+const handles = {w:null, h:null};
+const CODE_RE = /^(sh|sz)\d{6}$/;
+const $ = id => document.getElementById(id);
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function addW(code){ const tb=$("wt").tBodies[0];
+  tb.insertAdjacentHTML("beforeend",
+   `<tr><td><input class="wcode" placeholder="sh600000" value="${esc(code||"")}"></td>
+       <td><input class="wnote" placeholder="备注（可不填）"></td>
+       <td><button class="del" onclick="this.closest('tr').remove()">删</button></td></tr>`);}
+function addH(h){ h=h||{}; const tb=$("hd").tBodies[0];
+  tb.insertAdjacentHTML("beforeend",
+   `<tr><td><input class="hcode" placeholder="sh600000" value="${esc(h.code||"")}"></td>
+       <td><input class="hname" value="${esc(h.name||"")}"></td>
+       <td><input class="hdate" placeholder="2026-09-10" value="${esc(h.buy_date||"")}"></td>
+       <td><input class="hprice" placeholder="10.00" value="${esc(h.buy_price??"")}"></td>
+       <td><input class="hshares" placeholder="100" value="${esc(h.shares??"")}"></td>
+       <td><input class="hstop" placeholder="留空自动" value="${esc(h.stop??"")}"></td>
+       <td><button class="del" onclick="this.closest('tr').remove()">删</button></td></tr>`);}
+
+function collectW(){
+  const out=[], bad=[];
+  document.querySelectorAll("#wt tbody tr").forEach(tr=>{
+    const c=tr.querySelector(".wcode").value.trim().toLowerCase();
+    if(!c) return;
+    const inp=tr.querySelector(".wcode");
+    if(!CODE_RE.test(c)){inp.classList.add("bad");bad.push(c);}
+    else{inp.classList.remove("bad");out.push(c);}
+  });
+  return {codes:[...new Set(out)], bad};
+}
+function collectH(){
+  const out=[], bad=[];
+  document.querySelectorAll("#hd tbody tr").forEach(tr=>{
+    const g=c=>tr.querySelector(c).value.trim();
+    const code=g(".hcode").toLowerCase(); if(!code) return;
+    const inp=tr.querySelector(".hcode");
+    if(!CODE_RE.test(code)){inp.classList.add("bad");bad.push(code);return;}
+    inp.classList.remove("bad");
+    const o={code};
+    if(g(".hname")) o.name=g(".hname");
+    if(g(".hdate")) o.buy_date=g(".hdate");
+    if(g(".hprice")&&!isNaN(+g(".hprice"))) o.buy_price=+g(".hprice");
+    if(g(".hshares")&&!isNaN(+g(".hshares"))) o.shares=+g(".hshares");
+    if(g(".hstop")&&!isNaN(+g(".hstop"))) o.stop=+g(".hstop");
+    out.push(o);
+  });
+  return {items:out, bad};
+}
+function flash(id,text,cls){const el=$(id);el.textContent=text;el.className="msg "+(cls||"");}
+
+async function pickHandle(){
+  if(!window.showOpenFilePicker) return null;
+  const [h]=await window.showOpenFilePicker({types:[{description:"JSON",
+    accept:{"application/json":[".json"]}}]});
+  return h;
+}
+async function loadInto(kind, text){
+  try{
+    if(kind==="w"){
+      const arr=JSON.parse(text);
+      $("wt").tBodies[0].innerHTML="";
+      (Array.isArray(arr)?arr:[]).forEach(c=>addW(c));
+      $("wsecret").value=JSON.stringify(collectW().codes);
+      flash("wmsg","已载入 "+(arr.length||0)+" 只自选","ok");
+    }else{
+      const arr=JSON.parse(text);
+      $("hd").tBodies[0].innerHTML="";
+      (Array.isArray(arr)?arr:[]).forEach(h=>addH(h));
+      $("hsecret").value=JSON.stringify(collectH().items);
+      flash("hmsg","已载入 "+(arr.length||0)+" 条持仓","ok");
+    }
+  }catch(e){flash(kind==="w"?"wmsg":"hmsg","JSON 解析失败："+e.message,"err");}
+}
+async function openFile(kind){
+  try{
+    const h=await pickHandle();
+    if(h){handles[kind]=h; await loadInto(kind, await h.getFile().then(f=>f.text()));}
+  }catch(e){/* 用户取消 */}
+}
+async function writeText(kind, text, fallbackName){
+  const h=handles[kind];
+  if(h){ const w=await h.createWritable(); await w.write(text); await w.close();
+    return {ok:true, name:h.name}; }
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([text],{type:"application/json"}));
+  a.download=fallbackName; a.click();
+  return {ok:true, name:fallbackName+"（浏览器下载，请手动放回 config\\ 目录）"};
+}
+async function saveW(){
+  const {codes,bad}=collectW();
+  if(bad.length) return flash("wmsg","代码格式错误："+bad.join("、")+"（应为 sh/sz + 6 位数字）","err");
+  const text=JSON.stringify(codes,null,2)+"\n";
+  const r=await writeText("w",text,"watch.json");
+  $("wsecret").value=JSON.stringify(codes);
+  flash("wmsg","已保存 "+r.name+"（"+codes.length+" 只）。下一步：复制同步码发给助手。","ok");
+}
+async function saveH(){
+  const {items,bad}=collectH();
+  if(bad.length) return flash("hmsg","代码格式错误："+bad.join("、")+"（应为 sh/sz + 6 位数字）","err");
+  const text=JSON.stringify(items,null,2)+"\n";
+  const r=await writeText("h",text,"holdings.json");
+  $("hsecret").value=JSON.stringify(items);
+  flash("hmsg","已保存 "+r.name+"（"+items.length+" 条）。下一步：复制同步码发给助手。","ok");
+}
+function copyEl(id){
+  const el=$(id); if(!el.value) return flash(id==="wsecret"?"wmsg":"hmsg","先保存再复制","info");
+  navigator.clipboard.writeText(el.value).then(()=>flash(id==="wsecret"?"wmsg":"hmsg","已复制，粘贴发给助手即可","ok"));
+}
+addW(); addH();
+</script>
+</body>
+</html>

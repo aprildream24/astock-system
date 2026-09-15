@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>管理面板 · 自选 / 持仓 / 用户权限</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#151b24; --line:#2b313d; --txt:#e8eaed;
+  --dim:#9aa0a6; --blue:#6ab0ff; --red:#ff6b5e; --green:#4ecf8e; --gold:#f5b83d;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px}
+.wrap{max-width:820px;margin:0 auto;padding:16px 14px 60px}
+h1{font-size:19px;margin:6px 0 2px;color:#fff}
+h1 .tag{color:var(--blue);font-size:12px;border:1px solid var(--line);
+  border-radius:4px;padding:2px 7px;margin-left:8px}
+.sub{color:var(--dim);font-size:12.5px;margin:0 0 14px;line-height:1.6}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:14px;margin:14px 0}
+.panel h2{font-size:15px;margin:0 0 4px}
+.panel .hint{color:var(--dim);font-size:12px;margin:0 0 10px;line-height:1.6}
+table{width:100%;border-collapse:collapse}
+th{font-size:11.5px;color:var(--dim);text-align:left;font-weight:600;
+  border-bottom:1px solid var(--line);padding:5px 4px}
+td{padding:4px 3px;border-bottom:1px solid #1e2430;vertical-align:middle}
+input[type=text],input[type=password],input[type=number]{
+  width:100%;background:#0d1117;color:var(--txt);border:1px solid var(--line);
+  border-radius:5px;padding:6px 7px;font-size:13px;font-family:inherit}
+input:focus{outline:none;border-color:var(--blue)}
+input.bad{border-color:var(--red)}
+button{background:#1a73e8;color:#fff;border:none;border-radius:6px;
+  padding:8px 16px;font-size:13px;cursor:pointer;font-family:inherit;margin:4px 6px 0 0}
+button.ghost{background:#232b38;color:var(--txt);border:1px solid var(--line)}
+button.del{background:#8a2a2e;padding:5px 10px;font-size:12px;margin:0}
+button:hover{filter:brightness(1.12)}
+.bar{margin-top:10px}
+.msg{font-size:12.5px;margin-top:8px;min-height:16px}
+.ok{color:var(--green)} .err{color:var(--red)} .info{color:var(--gold)}
+kbd{background:#232b38;border:1px solid var(--line);border-radius:4px;
+  padding:1px 5px;font-size:11px;color:var(--blue)}
+.chk{display:inline-flex;align-items:center;gap:4px;margin-right:9px;
+  font-size:12.5px;color:var(--txt);cursor:pointer;white-space:nowrap}
+.chk input{width:auto}
+.role{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;
+  margin-right:3px}
+.role.all{background:#3a2c1a;color:var(--gold);border:1px solid #6b5228}
+.role.watch{background:#10304a;color:var(--blue);border:1px solid #1d5580}
+.role.observe{background:#2a2f38;color:var(--dim);border:1px solid var(--line)}
+.role.buy{background:#123626;color:var(--green);border:1px solid #1d6440}
+.note{background:#141c26;border-left:3px solid var(--blue);padding:9px 11px;
+  border-radius:0 6px 6px 0;font-size:12.5px;color:var(--dim);margin:10px 0 0;
+  line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>管理面板<span class="tag">astock-system</span></h1>
+  <p class="sub">本地可视化入口：增删<b>自选 / 持仓</b>，并给不同的人分配
+     <b>自选 · 观察 · 购入</b> 的查看权限。改完点保存即写入
+     <kbd>config\</kbd>，下次收盘构建自动生效。</p>
+
+  <div class="panel">
+    <h2>① 自选清单 <span style="font-size:12px;color:var(--dim)">watch.json</span></h2>
+    <p class="hint">每个交易日收盘与复盘推送「自选股操作建议」。
+       代码格式：<kbd>sh600000</kbd> / <kbd>sz000001</kbd></p>
+    <table id="wt"><thead><tr>
+      <th style="width:38%">代码</th><th>备注（可留空）</th>
+      <th style="width:60px"></th></tr></thead><tbody></tbody></table>
+    <div class="bar">
+      <button class="ghost" onclick="addW()">+ 加自选</button>
+      <button onclick="saveW()">保存自选</button>
+    </div>
+    <div class="msg" id="wmsg"></div>
+  </div>
+
+  <div class="panel">
+    <h2>② 持仓清单 <span style="font-size:12px;color:var(--dim)">holdings.json</span></h2>
+    <p class="hint">持仓票自动切到持仓语境（止损 / 持有 / 减仓）并参与止盈提醒。
+       止损可留空（系统按买区自动算）。<b>成本与浮盈仅「购入」权限者可见。</b></p>
+    <table id="hd"><thead><tr>
+      <th style="width:19%">代码</th><th style="width:15%">名称</th>
+      <th style="width:18%">买入日期</th><th style="width:14%">买入价</th>
+      <th style="width:12%">股数</th><th style="width:12%">止损</th>
+      <th style="width:52px"></th>
+    </tr></thead><tbody></tbody></table>
+    <div class="bar">
+      <button class="ghost" onclick="addH()">+ 加持仓</button>
+      <button onclick="saveH()">保存持仓</button>
+    </div>
+    <div class="msg" id="hmsg"></div>
+  </div>
+
+  <div class="panel">
+    <h2>③ 用户与访问权限 <span style="font-size:12px;color:var(--dim)">users.json</span></h2>
+    <p class="hint">给每个人分配可见分组。口令留空 = 不修改原口令。
+       用户口令本身就是网页版登录口令（PBKDF2 加密，站点上不存明文）。</p>
+    <table id="ut"><thead><tr>
+      <th style="width:20%">用户名</th><th style="width:18%">显示名</th>
+      <th style="width:20%">口令</th><th>可见分组</th>
+      <th style="width:52px"></th>
+    </tr></thead><tbody></tbody></table>
+    <div class="bar">
+      <button class="ghost" onclick="addU()">+ 加用户</button>
+      <button onclick="saveU()">保存用户</button>
+    </div>
+    <div class="msg" id="umsg"></div>
+    <div class="note">
+      <b>分组含义</b>：
+      <span class="role watch">自选</span> 只看自己关注票的建议 ·
+      <span class="role observe">观察</span> 看全市场扫描出的观察池 ·
+      <span class="role buy">购入</span> 看持仓与成本浮盈 ·
+      <span class="role all">全部</span> 相当于管理员。
+      一个人可勾多个（取并集）。<b>未授权的分组在密文里就被剥掉</b>，
+      不是前端隐藏——对方拿不到那份数据。
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const CODE_RE = /^(sh|sz)\d{6}$/;
+const ROLES = [["watch","自选"],["observe","观察"],["buy","购入"],["all","全部"]];
+
+function flash(id, text, cls){ const el=$(id); el.textContent=text; el.className="msg "+(cls||""); }
+async function api(path, body){
+  const r = await fetch(path, body===undefined ? {} : {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body)});
+  return r.json();
+}
+
+/* ---------- 自选 ---------- */
+function addW(code){ $("wt").tBodies[0].insertAdjacentHTML("beforeend",
+  `<tr><td><input class="wcode" placeholder="sh600000" value="${esc(code||"")}"></td>
+       <td><input class="wnote" placeholder="备注"></td>
+       <td><button class="del" onclick="this.closest('tr').remove()">删</button></td></tr>`); }
+function saveW(){
+  const codes=[], bad=[];
+  document.querySelectorAll("#wt tbody tr").forEach(tr=>{
+    const inp=tr.querySelector(".wcode");
+    const c=inp.value.trim().toLowerCase();
+    if(!c) return;
+    if(!CODE_RE.test(c)){ inp.classList.add("bad"); bad.push(c); }
+    else { inp.classList.remove("bad"); codes.push(c); }
+  });
+  if(bad.length) return flash("wmsg","格式错误："+bad.join("、")+"（应为 sh/sz + 6 位）","err");
+  api("/api/watch",{codes}).then(r=>{
+    if(r.ok) flash("wmsg","已保存 "+r.count+" 只自选","ok");
+    else flash("wmsg",r.error||"保存失败","err");
+  }).catch(e=>flash("wmsg","请求失败："+e.message,"err"));
+}
+
+/* ---------- 持仓 ---------- */
+function addH(h){ h=h||{}; $("hd").tBodies[0].insertAdjacentHTML("beforeend",
+  `<tr><td><input class="hcode" placeholder="sh600000" value="${esc(h.code||"")}"></td>
+       <td><input class="hname" value="${esc(h.name||"")}"></td>
+       <td><input class="hdate" placeholder="2026-09-10" value="${esc(h.buy_date||"")}"></td>
+       <td><input class="hprice" placeholder="10.00" value="${esc(h.buy_price??"")}"></td>
+       <td><input class="hshares" placeholder="100" value="${esc(h.shares??"")}"></td>
+       <td><input class="hstop" placeholder="自动" value="${esc(h.stop??"")}"></td>
+       <td><button class="del" onclick="this.closest('tr').remove()">删</button></td></tr>`); }
+function saveH(){
+  const items=[], bad=[];
+  document.querySelectorAll("#hd tbody tr").forEach(tr=>{
+    const g=c=>tr.querySelector(c).value.trim();
+    const inp=tr.querySelector(".hcode");
+    const code=g(".hcode").toLowerCase();
+    if(!code) return;
+    if(!CODE_RE.test(code)){ inp.classList.add("bad"); bad.push(code); return; }
+    inp.classList.remove("bad");
+    const o={code};
+    if(g(".hname")) o.name=g(".hname");
+    if(g(".hdate")) o.buy_date=g(".hdate");
+    if(g(".hprice")&&!isNaN(+g(".hprice"))) o.buy_price=+g(".hprice");
+    if(g(".hshares")&&!isNaN(+g(".hshares"))) o.shares=+g(".hshares");
+    if(g(".hstop")&&!isNaN(+g(".hstop"))) o.stop=+g(".hstop");
+    items.push(o);
+  });
+  if(bad.length) return flash("hmsg","格式错误："+bad.join("、"),"err");
+  api("/api/holdings",{items}).then(r=>{
+    if(r.ok) flash("hmsg","已保存 "+r.count+" 条持仓","ok");
+    else flash("hmsg",r.error||"保存失败","err");
+  }).catch(e=>flash("hmsg","请求失败："+e.message,"err"));
+}
+
+/* ---------- 用户 ---------- */
+function roleBoxes(sel){
+  return ROLES.map(([k,label])=>
+    `<label class="chk"><input type="checkbox" class="urole" value="${k}"
+      ${sel.includes(k)?"checked":""}>${label}</label>`).join("");
+}
+function addU(u){ u=u||{};
+  $("ut").tBodies[0].insertAdjacentHTML("beforeend",
+  `<tr><td><input class="uid" placeholder="zhang" value="${esc(u.id||"")}"></td>
+       <td><input class="uname" placeholder="张三" value="${esc(u.name||"")}"></td>
+       <td><input type="password" class="upass"
+            placeholder="${u.has_pass?"已设（留空不改）":"至少8位"}"></td>
+       <td>${roleBoxes(u.roles||[])}</td>
+       <td><button class="del" onclick="this.closest('tr').remove()">删</button></td></tr>`); }
+function saveU(){
+  const users=[];
+  document.querySelectorAll("#ut tbody tr").forEach(tr=>{
+    const id=tr.querySelector(".uid").value.trim();
+    if(!id) return;
+    const roles=[...tr.querySelectorAll(".urole:checked")].map(x=>x.value);
+    users.push({id, name:tr.querySelector(".uname").value.trim(),
+                pass:tr.querySelector(".upass").value, roles});
+  });
+  api("/api/users",{users}).then(r=>{
+    if(r.ok){ flash("umsg","已保存 "+r.count+" 个用户","ok"); load(); }
+    else flash("umsg",r.error||"保存失败","err");
+  }).catch(e=>flash("umsg","请求失败："+e.message,"err"));
+}
+
+/* ---------- 初始化 ---------- */
+async function load(){
+  try{
+    const s = await api("/api/state");
+    $("wt").tBodies[0].innerHTML=""; (s.watch||[]).forEach(c=>addW(c));
+    $("hd").tBodies[0].innerHTML=""; (s.holdings||[]).forEach(h=>addH(h));
+    $("ut").tBodies[0].innerHTML=""; (s.users||[]).forEach(u=>addU(u));
+    if(!(s.watch||[]).length) addW();
+    if(!(s.holdings||[]).length) addH();
+    if(!(s.users||[]).length){ addU({role_placeholder:1}); }
+  }catch(e){
+    flash("wmsg","无法连接本地服务（请确认管理面板已启动）","err");
+  }
+}
+load();
+</script>
+</body>
+</html>

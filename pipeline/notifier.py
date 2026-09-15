@@ -713,7 +713,11 @@ def push(mode, title, content, date=None, con=None,
     except Exception:   # state 写失败 → 告警行 + 即时自愈（dist 已有镜像）
         results["_ledger_alert"] = {"status": "failed",
                                     "detail": "state ledger write failed"}
-    return {"sent": True, "key": key, "status": worst, "results": results}
+    # 2026-09-15 修复：原实现无条件 return {"sent": True}，即使 worst=="failed"
+    # （所有通道都拒收）也对外报成功 → 调用方 print 看到 sent=True，全通道失败
+    # 被伪装成已送达，属于静默失败。sent 必须真实反映 worst 聚合结果。
+    return {"sent": worst == "sent", "key": key, "status": worst,
+            "results": results}
 
 
 def _send_serverchan(key, title, content):

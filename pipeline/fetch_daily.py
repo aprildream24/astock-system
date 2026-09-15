@@ -105,28 +105,46 @@ def fetch_daily(days=260, limit=None, force=False):
     codes = [c for c in codes if mktfilter.tradable(c)]
     # 增量同步：已同步到最近交易日的只补近端尾巴（INC_DAYS 根），
     # 新票/断档票才全量拉——依托历史库做增量，不每轮重拉全部历史
+    #
+    # 2026-09-15 修复（全天零推送根因）：原判定锚 latest_td = "今日往前推的
+    # 最近交易日"，而当日数据此时尚未入库 → last(09-14) < latest_td(09-15)
+    # ⇒ 全市场 4993 只全被判"断档"走 days=260 全量路径，--days 20 的轻量
+    # 盘前/竞价任务实际耗时 ≈53 分钟 > timeout 45 分钟被 cancel（或网络异常
+    # 抛 failure），第 8 步「构建+推送」整步 skipped ⇒ 用户全天零推送。
+    # 正确锚 = 库中已有的最新交易日：库已跟上上一交易日 ⇒ 只补近端尾巴。
     import datetime as _dt
     last_dates = dict(con.execute(
         "SELECT code, MAX(date) FROM klines WHERE code!='sh000001' "
         "GROUP BY code").fetchall())
+    # 今日应达交易日（用于文案与就绪判断，不作断档锚）
     _d = _dt.date.fromisoformat(today)
     while not holiday_cal.is_trade_day(_d.isoformat()):
         _d -= _dt.timedelta(days=1)
-    latest_td = _d.isoformat()
+    due_td = _d.isoformat()
+    # 断档锚：库中最新日期与「上一交易日」取较新者——当日未入库不算断档。
+    db_latest = max(last_dates.values()) if last_dates else ""
+    prev_d = _dt.date.fromisoformat(due_td)
+    prev_d -= _dt.timedelta(days=1)
+    while not holiday_cal.is_trade_day(prev_d.isoformat()):
+        prev_d -= _dt.timedelta(days=1)
+    latest_td = max(db_latest, prev_d.isoformat())
     inc_codes, full_codes = [], []
     for c in codes:
         last = last_dates.get(("sh" if c.startswith("6") else "sz") + c)
         (inc_codes if last and last >= latest_td else full_codes).append(c)
     print(f"[fetch] universe={len(codes)} 增量={len(inc_codes)} 全量={len(full_codes)}"
-          f" @ {today}（最近交易日 {latest_td}）")
+          f" @ {today}（断档锚 {latest_td} / 库最新 {db_latest or '空'}）")
     pfx_of = lambda c: "sh" if c.startswith("6") else "sz"  # noqa: E731
     batch = {}
+    # 轻量任务（--days 20 及以下）全量拉也封顶 40 根，避免冷库/长假期后
+    # 首次补数把盘前任务拖成 53 分钟超时。历史补数请显式 --days 260。
+    full_days = min(days, 40) if days <= 20 else days
     if inc_codes:
         batch.update(kline_batch([(c, pfx_of(c)) for c in inc_codes],
                                  days=min(days, 20), con=con))
     if full_codes:
         batch.update(kline_batch([(c, pfx_of(c)) for c in full_codes],
-                                 days=days, con=con))
+                                 days=full_days, con=con))
     written = 0
     idx_codes = [c for c in codes if c in batch]
     for code in idx_codes:

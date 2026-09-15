@@ -424,7 +424,33 @@ class TestDailyGate(unittest.TestCase):
                               date="2026-09-14", con=self.con, force=True)
         finally:
             notifier.load_config = orig_cfg
-        self.assertTrue(r.get("sent"), "force 必须能绕过日级保险丝")
+        # 本用例验证 force 绕过日级保险丝：daily_gate 必须消失。
+        # 注意 2026-09-15 起 sent 语义收紧——dry-run 不再算已送达
+        # （原实现无条件返回 sent=True，把全通道失败/dry-run 伪装成成功），
+        # 故此处断言 daily_gate 而非 sent。
+        self.assertFalse(r.get("daily_gate"), "force 必须能绕过日级保险丝")
+        self.assertEqual(r.get("status"), "dry-run",
+                         "本用例配置为 dry-run，不得谎报 sent")
+
+    def test_push_all_channels_failed_reports_not_sent(self):
+        """2026-09-15 静默洞回归：全通道拒收时 sent 必须为 False。
+
+        原实现无条件 return {"sent": True} → 调用方 print 看到 sent=True，
+        全通道失败被伪装成已送达。"""
+        orig_cfg = notifier.load_config
+        orig_send = notifier._send_pushplus
+        notifier.load_config = lambda: {
+            "push_dry_run": False, "push_tag": "T",
+            "primary_channel": "pushplus", "pushplus_token": "x" * 32}
+        notifier._send_pushplus = lambda *a, **kw: ("failed", "boom")
+        try:
+            r = notifier.push("build_close", "t", "sh600100 买区 10.0~10.3",
+                              date="2026-09-14", con=self.con, force=True)
+        finally:
+            notifier.load_config = orig_cfg
+            notifier._send_pushplus = orig_send
+        self.assertEqual(r.get("status"), "failed")
+        self.assertFalse(r.get("sent"), "全通道失败不得谎报 sent=True")
 
 
 # ---------------------------------------------------------------------------

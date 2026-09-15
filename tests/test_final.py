@@ -121,14 +121,18 @@ class TestOutcomes(unittest.TestCase):
 class TestChannels(unittest.TestCase):
     def test_wxpusher_only_discipline(self):
         """模拟盘/盘中异动只走 WxPusher 单通道（额度纪律的现形态）。"""
-        from unittest import mock
         import pipeline.wxpusher as wx
         with tempfile.TemporaryDirectory() as td:
             notifier.DIST_LEDGER = os.path.join(td, "ledger.json")
             con = get_conn(os.path.join(td, "t.db"))
             o_accounts = wx.load_accounts
+            o_send = wx.send
             wx.load_accounts = lambda: [{"name": "A", "app_token": "AT",
                                          "uids": ["U"]}]
+            # 2026-09-15：必须 mock 实际发送。原用例未 mock → 走真实 HTTP
+            # 且无凭据必失败；旧代码无条件报 sent=True 掩盖了这点，sent 语义
+            # 收紧后暴露。本用例考察「通道路由」，须固定发送结果。
+            wx.send = lambda acct, t, c, timeout=12: ("sent", "ok")
             try:
                 r = notifier.push("intraday", "盘中异动", "候选 600000",
                                   date="2026-09-12", con=con,
@@ -141,7 +145,11 @@ class TestChannels(unittest.TestCase):
                 self.assertTrue(r2.get("dedup"))
             finally:
                 wx.load_accounts = o_accounts
-            con.close()
+                wx.send = o_send
+                # 2026-09-15：必须先关连接再退出 TemporaryDirectory。
+                # 原实现 con.close() 在 with 块结束后才执行，导致 Windows 上
+                # TemporaryDirectory 清理 t.db 时遇 WinError 32（文件被占用）。
+                con.close()
 
     def test_candidate_line_ladder(self):
         c = {"code": "600400", "name": "涨停票", "pool": "连板", "streak": 2,
