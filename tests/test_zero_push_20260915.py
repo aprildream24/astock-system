@@ -201,5 +201,113 @@ class TestWorkflowNoFailFast(unittest.TestCase):
                       "应为冷库全量留足余量（75 分钟）")
 
 
+class TestSilentZeroPushOnGreenRun(unittest.TestCase):
+    """D. 「run 全绿但零推送」这一类最隐蔽的静默失败（2026-09-16 实证）。
+
+    实证：CI run 34994141036 全部 14 步 success，但第 10 步「构建+推送」
+    耗时 **0 秒**，远端账本未新增任何记录 —— 用户零感知。
+
+    两个已确认的机制（都属"合法"路径，故必须靠**留痕**而非 rc 判定）：
+      ① 日级保险丝 `_daily_sent`：同 mode 同日期已 sent → 拦截。
+         这是设计正确的去重，但返回 `{sent: False, dedup: True}` 后
+         build 仍 rc=0 → 只看退出码会误判成"推送成功"。
+      ② `_daily_sent` 双查 state 表 + dist 镜像。**本地与远端账本会分叉**
+         （本地库缺 09-15 build_close，远端有）→ 同一代码在两边
+         判定结果不同。这是"本地复现不出 CI 现象"的又一类根因。
+    """
+
+    def test_daily_gate_result_is_distinguishable(self):
+        """日级保险丝拦截时，返回值必须能与真发成功区分。"""
+        src = self._notifier_src()
+        self.assertIn('"daily_gate": True', src,
+                      "保险丝拦截必须在返回值里留痕（daily_gate 标记）")
+        # 拦截分支必须 sent=False，不得伪装成成功
+        i = src.index("if not force and _daily_sent(con, mode, date):")
+        self.assertIn('"sent": False', src[i:i + 160],
+                      "保险丝拦截必须 sent=False")
+
+    def _notifier_src(self):
+        with open(os.path.join(ROOT, "pipeline", "notifier.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_daily_sent_checks_dist_mirror(self):
+        """保险丝必须双查 dist 镜像 —— 否则本地/远端分叉会漏拦或误拦。"""
+        src = self._notifier_src()
+        i = src.index("def _daily_sent(")
+        j = src.index("def _reconcile(")
+        body = src[i:j]
+        self.assertIn("DIST_LEDGER", body,
+                      "保险丝须同时查 dist 镜像账本")
+        self.assertIn("push_ledger", body,
+                      "保险丝须同时查 state 表")
+
+    def test_daily_gate_offline_behaviour(self):
+        """离线真验：伪造已 sent 记录 → 拦截；换日期 → 放行。"""
+        import importlib
+        import tempfile
+        notifier = importlib.import_module("pipeline.notifier")
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE push_ledger(biz_key TEXT, mode TEXT,"
+                    " ts TEXT, ok INT, status TEXT, src TEXT, note TEXT)")
+        # 无记录 → 不拦
+        self.assertFalse(notifier._daily_sent(con, "build_close", "2026-09-15"))
+        # 造一条 09-15 的 sent
+        con.execute("INSERT INTO push_ledger VALUES('k','build_close',"
+                    "'2026-09-15 10:58:23',1,'sent','x','y')")
+        con.commit()
+        self.assertTrue(notifier._daily_sent(con, "build_close", "2026-09-15"),
+                        "同 mode 同日期已 sent 必须拦截（防止重复推送）")
+        self.assertFalse(notifier._daily_sent(con, "build_close", "2026-09-16"),
+                         "换日期必须放行（次日可正常推送）")
+        self.assertFalse(notifier._daily_sent(con, "narrative", "2026-09-15"),
+                         "不同 mode 不得互相拦截")
+
+
+class TestFetchDepthIsSufficient(unittest.TestCase):
+    """E. 抓取深度必须覆盖引擎真实最大回看（2026-09-16 260→40 改造）。"""
+
+    def _fetch_src(self):
+        with open(os.path.join(ROOT, "pipeline", "fetch_daily.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_default_depth_covers_engine_lookback(self):
+        """默认深度必须 ≥ 引擎最大回看（engines.py 实测 30 根）。"""
+        max_lookback = 0
+        for fn in ("engines.py", "publish.py", "scoring.py"):
+            p = os.path.join(ROOT, "pipeline", fn)
+            if not os.path.exists(p):
+                continue
+            with open(p, encoding="utf-8") as f:
+                src = f.read()
+            for m in re.finditer(r"\[-(\d+):\]", src):
+                n = int(m.group(1))
+                if 2 <= n <= 400:      # 排除 key[:32] 之类非 K线切片
+                    max_lookback = max(max_lookback, n)
+        self.assertGreater(max_lookback, 0, "未扫描到任何回看深度，测试失效")
+        m = re.search(r"^DEFAULT_DAYS\s*=\s*(\d+)", self._fetch_src(), re.M)
+        self.assertIsNotNone(m, "缺少 DEFAULT_DAYS")
+        self.assertGreaterEqual(
+            int(m.group(1)), max_lookback,
+            f"默认抓取深度({m.group(1)}) 必须 ≥ 引擎最大回看({max_lookback})")
+
+    def test_inc_days_covers_lookback_too(self):
+        """增量尾巴也必须够长，否则增量票的指标会算在截断数据上。"""
+        src = self._fetch_src()
+        m = re.search(r"^INC_DAYS\s*=\s*(\d+)", src, re.M)
+        self.assertIsNotNone(m, "缺少 INC_DAYS")
+        self.assertGreaterEqual(int(m.group(1)), 20,
+                                "增量尾巴至少 20 根（覆盖 -20 类回看）")
+
+    def test_history_is_never_deleted(self):
+        """抓取深度只影响"新拉多少根"，不得出现删除历史 K线的语句。"""
+        src = self._fetch_src()
+        self.assertNotRegex(
+            src, r"DELETE\s+FROM\s+klines",
+            "抓取路径不得删除历史 K线（历史是只增不改的资产）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
