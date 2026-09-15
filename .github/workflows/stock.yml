@@ -140,7 +140,15 @@ jobs:
              github.event.inputs.task == 'auction' ||
              github.event.inputs.task == 'review')))
         continue-on-error: true
-        run: python -m pipeline.fetch_daily --days 20
+        # 2026-09-16 修（血案 run 34914806060）：盘前 08:50 快照 pct 天然全 0
+        # （集合竞价未开始）→ 旧逻辑判「疑似休市日」抛异常 → 抓取 failure
+        # → 构建+推送整步 skipped → 用户全天收不到盘前推送。
+        # --premarket 明确告知这是盘前时段，全 0 属正常。
+        # review 是盘后（20:02）跑，不属盘前，故不加该标志。
+        run: >-
+          python -m pipeline.fetch_daily --days 20
+          ${{ github.event.inputs.task == 'pre' ||
+              github.event.inputs.task == 'auction' ? '--premarket' : '' }}
       - name: 构建+推送（WxPusher/PushPlus 多渠道）
         if: github.event.inputs.task != 'watch-sync'
         env:
