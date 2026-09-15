@@ -87,6 +87,44 @@ em/tx 10/s。`kline_batch(workers=20)`；**主源双死时单通道跑满 20 并
 ——**退出码仍是 0**。判定必须三条件齐备：rc==0 + 不含「拒绝构建」
 + 有成功产出标志（见 `e2e_drill._judge`）。
 
+## ★★ 排 CI 挂的首选入口（2026-09-16 实证）
+- **`GET /repos/{o}/{r}/actions/runs/{id}/logs` 可用**（run 级，返回 zip）。
+  此前踩的 **403 是 jobs 级** `/jobs/{jid}/logs`。zip 里 `build/6_回归自检.txt`
+  直接给出 FAIL 的文件名+**行号**+断言原文。
+- `runs` API **不暴露 `inputs` 字段**（所有 run 都显示 `{}`，含真发了推送的）
+  → **不能**用它判断 dispatch 参数是否送达；只能看副作用物证（账本/站点/耗时）。
+
+## ★★ 测试禁止依赖工作区真实数据（2026-09-16 第二次踩）
+`_daily_sent` 双查 state 表 + `notifier.DIST_LEDGER` **真实文件**。
+用例只 mock 了内存库 ⇒ CI 上 checkout 的仓库账本含 `09-15 build_close sent`
+⇒ 断言挂；本地账本没这条 ⇒ **本地全绿**。这类"本地绿 CI 红"的共同特征：
+**测试读了工作区数据**。
+- 规则：模块级路径常量（`DIST_LEDGER` 这类）必须 `mock.patch.object` 到临时路径；
+  目录用 `addCleanup(rmtree)`。
+- 同类前科：`test_absorb` 的 cross_check 曾依赖"本地恰好断网" → 已改确定性 mock。
+
+## ★★ 账本/状态类文件的「唯一写入者」原则（2026-09-16 血案）
+`dist/push_ledger.json` 曾有**三个写入者**：本地 `gh_sync` 全量推送、
+CI `push_ledger_sync`、`actions/checkout`（在 `cache` 之前跑，用仓库陈旧快照填入）。
+⇒ 远端从 14 条被覆盖成 3 条，**丢掉真实收盘推送记录** ⇒
+`_daily_sent` 文件分支读不到当日记录 ⇒ **日级保险丝失效、重复推送回归**
+（09-14 晚 build_close 连推两条的病根）。
+- 修法：① `push_ledger_sync` 改 **GET → `merged = remote ∪ local` → PUT**（只增不减）；
+  ② `gh_sync.ALLOW_DIST = set()` 撤掉放行；③ 账本移出 cache `path:`。
+- 规则：**任何"账本/状态"文件在动手前先定唯一写入者**，其余路径一律排除。
+
+## ★★ GitHub Actions 缓存（2026-09-16 实测勘误）
+- **缓存是压缩存储** —— 别用"缓存体积 < 源文件"推断缓存不完整。
+  实测 market.db 177 MB → gzip-6 **52.6 MB（29.7%）**，Actions 用 zstd
+  → 缓存 44.2 MB 是**完整的**（此前判断"存不下"是错的）。
+- **`key` 含 `github.run_id` = 每 run 新增一份** → 必膨胀。实测 15 条 469 MB。
+  改用 `actions/cache/restore@v4`（固定 `key: market-db-v2`）
+  + 末尾 `actions/cache/save@v4`（同 key 覆盖写）；`if: always()` 保证失败也存。
+- 清理：`DELETE /repos/{o}/{r}/actions/caches/{id}`，保留最新即可
+  （`restore-keys: market-db-` 前缀能恢复）。实测释放 425 MB。
+- **`actions/checkout` 与 `actions/cache` 会争同一文件** —— 缓存 `path`
+  别与仓库被追踪文件重叠（checkout 先跑，它的版本胜出）。
+
 ## 实盘体检工具
 - `tools/daily_check.py`：CI/数据/推送/站点 四查，硬指标（CI、推送）红即
   PROBLEM。推送查**远端账本优先**（用户常不开机，本地镜像不可信）。

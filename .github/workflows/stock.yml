@@ -55,13 +55,25 @@ jobs:
           python-version: "3.12"
       # 行情库持久化：runner 无状态，每次冷库全量重拉必超时。
       # cache/（market.db + fetch_stats.json）跨 run 复用，命中后增量秒级。
-      - uses: actions/cache@v4
+      #
+      # ⚠️ 2026-09-16 修（账本被抹血案）：
+      # ① `dist/push_ledger.json` **移出** cache 的 path。它同时被
+      #    actions/checkout 从仓库 checkout 到工作区，两个来源会打架；
+      #    而 checkout 先跑、cache 后跑，实际以 checkout 的**陈旧快照**为准
+      #    → CI 跑完只剩几条 → push_ledger_sync PUT 上去把远端历史整片抹掉
+      #    （实测本地 14 条 vs 远端 3 条）。账本改用「GET 远端 → 合并 → PUT」
+      #    单向收敛，不再借道 cache。
+      # ② key 里原本含 run_id（每 run 新 key）→ 每次都写一份新缓存，
+      #    实测累积 15 份 ≈ 469 MB，逼近 10 GB 免费额度。改为按内容不变
+      #    的原则：用 restore-keys 前缀恢复，key 固定复用（内容变化由
+      #    post 步骤以同一 key 覆盖写，不新增条目）。
+      - uses: actions/cache/restore@v4
+        id: cache-db
         with:
-          path: |
-            cache
-            dist/push_ledger.json
-          key: market-db-${{ github.run_id }}
+          path: cache
+          key: market-db-v2
           restore-keys: |
+            market-db-v2
             market-db-
       - name: 安装测试/运行时依赖
         if: github.event.inputs.task != 'watch-sync'
@@ -208,6 +220,15 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
+      # 与上面的 restore 配对：固定 key → 同一条目被覆盖写，不再每 run
+      # 新增一份（原 key 含 run_id，实测累积 15 份 ≈ 469 MB）。
+      # always() 保证抓取失败时也存库，避免整轮白拉。
+      - name: 保存行情库缓存
+        if: always() && github.event.inputs.task != 'watch-sync'
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: market-db-v2
 
   deploy-pages:
     needs: build

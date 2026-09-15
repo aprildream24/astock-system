@@ -369,5 +369,119 @@ class TestFetchDepthIsSufficient(unittest.TestCase):
             "抓取路径不得删除历史 K线（历史是只增不改的资产）")
 
 
+class TestLedgerNeverLost(unittest.TestCase):
+    """F. 账本只增不减 + 缓存不膨胀（2026-09-16 结构性缺陷修复）。
+
+    血案：`push_ledger_sync` 单向覆盖 + `dist/push_ledger.json` 同时被
+    checkout 与 cache 两个来源写入（checkout 先跑 → 陈旧快照胜出）⇒
+    CI 跑完只剩本次 run 的少量记录 ⇒ PUT 上去把远端历史**整片抹掉**。
+    实测本地 14 条 vs 远端 3 条，丢的含 09-13/09-14 真实收盘推送。
+
+    危害不止"少日志"：`_daily_sent` 文件分支读不到当日记录 →
+    **日级保险丝失效 → 重复推送回归**（09-14 晚 build_close 连推两条的病根）。
+    """
+
+    def _sync_src(self):
+        with open(os.path.join(ROOT, "pipeline", "push_ledger_sync.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_sync_merges_remote_instead_of_overwriting(self):
+        """提交前必须先 GET 远端并**合并**，同 key 以本地为准。"""
+        src = self._sync_src()
+        self.assertIn("remote_map", src,
+                      "必须读回远端账本（否则会抹掉历史）")
+        self.assertIn("merged = dict(remote_map)", src,
+                      "必须先铺远端再 update 本地 —— 合并而非覆盖")
+        self.assertIn("merged.update(local_map)", src,
+                      "同 key 冲突以本地为准（本地是本次 run 的新记录）")
+        self.assertIn("base64.b64encode(payload)", src,
+                      "提交的必须是合并后的 payload，不是原始 raw")
+
+    def test_sync_put_uses_merged_payload(self):
+        """PUT 的 content 不得回退成 raw（防以后有人改回去）。"""
+        src = self._sync_src()
+        # 取 main() 里 PUT 之前那段
+        i = src.index("st2, res = _gh(\"PUT\"")
+        head = src[max(0, i - 700):i]
+        self.assertNotIn("base64.b64encode(raw)", head,
+                         "PUT 不得直接提交本地 raw（会覆盖远端历史）")
+        self.assertIn("base64.b64encode(payload)", head,
+                      "PUT 必须提交合并后的 payload")
+
+    def test_workflow_ledger_not_in_cache_path(self):
+        """dist/push_ledger.json 不得作为**缓存路径**被缓存。
+
+        它同时被 checkout 写入 —— 两个来源打架时 checkout 胜出，
+        cache 恢复的是陈旧快照，账本因而倒退。
+        注意：注释里会提到该文件名（解释为何移出），所以只断言
+        真正的 `path:` 块内容，不扫全文。
+        """
+        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
+                  encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        # 找每个 actions/cache* 步骤的 with.path: 块
+        hits = []
+        i = 0
+        while i < len(lines):
+            if "actions/cache" in lines[i] and "uses" in lines[i]:
+                j = i + 1
+                while j < len(lines) and not lines[j].strip().startswith("- "):
+                    if lines[j].strip().startswith("path:"):
+                        # path: 可能是单行，也可能是 `|` 起头的多行块
+                        val = lines[j].split("path:", 1)[1].strip()
+                        if val in ("|", ">"):
+                            k = j + 1
+                            while k < len(lines) and (
+                                    not lines[k].strip().startswith("- ")
+                                    and lines[k].startswith(" " * 10)):
+                                hits.append(lines[k].strip())
+                                k += 1
+                        elif val:
+                            hits.append(val)
+                    j += 1
+                i = j
+            else:
+                i += 1
+        joined = " ".join(hits)
+        self.assertNotIn(
+            "dist/push_ledger.json", joined,
+            f"账本必须移出 cache path（实测 path 项：{hits}）——"
+            "与 checkout 双源冲突会让账本倒退，"
+            "进而使 _daily_sent 保险丝失效、重复推送回归")
+
+    def test_workflow_cache_key_is_stable(self):
+        """cache key 不得含 run_id（否则每 run 新增一份，额度爆炸）。"""
+        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
+                  encoding="utf-8") as f:
+            y = f.read()
+        self.assertNotIn("key: market-db-${{ github.run_id }}", y,
+                         "key 含 run_id → 每 run 新缓存，实测累积 15 份 469 MB")
+        self.assertIn("key: market-db-v2", y,
+                      "应用固定 key，由 save 覆盖写同一条目")
+        self.assertIn("actions/cache/restore@v4", y,
+                      "用 restore 才能配 save 精确控制写入时机")
+        self.assertIn("actions/cache/save@v4", y,
+                      "restore 之后必须显式 save，否则缓存永不更新、库被冻结")
+
+
+    def test_gh_sync_does_not_touch_ledger(self):
+        """gh_sync 不得再推 dist/push_ledger.json（三写冲突的第三只手）。
+
+        实测：本地 gh_sync 全量推送把 CI 刚写的 3 条覆盖回开发机的 14 条，
+        随后 CI 又在其上滚动 —— 账本形状取决于"谁最后跑"，不可预测。
+        账本只能由 push_ledger_sync（GET→合并→PUT）独占写入。
+        """
+        with open(os.path.join(ROOT, "gh_sync.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("ALLOW_DIST = set()", src,
+                      "ALLOW_DIST 必须为空 —— 账本不得随 gh_sync 全量推送")
+        # 确认可执行行里没有把账本加回放行集合
+        code = "\n".join(l.split("#", 1)[0] for l in src.splitlines())
+        self.assertNotIn("dist/push_ledger.json", code.split("ALLOW_DIST")[1][:80]
+                         if "ALLOW_DIST" in code else "",
+                         "ALLOW_DIST 不得再放行账本（会造成三写冲突）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
