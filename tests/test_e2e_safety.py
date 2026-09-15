@@ -206,7 +206,26 @@ class TestRealConfigUntouched(unittest.TestCase):
                          f"真实 config/ 残留 .e2e_bak：{left}")
 
     def test_real_notify_present(self):
+        """本地必须有 notify.json（否则静默退化成无凭据 dry-run）。
+
+        2026-09-15 修：CI 上这个文件**必然不存在**——它是隐私文件，
+        在 .gitignore 里，CI 靠 Secrets（PUSHPLUS_TOKEN 等）注入配置。
+        原断言不分环境一律要求存在，导致 CI 回归自检必挂 → 后面 7 个
+        步骤全 skipped → 全天零推送（实测 run 34985391295）。
+        判据：本地（有 .git 且非 CI）要求存在；CI 要求 Secret 已注入。
+        """
+        in_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
         p = os.path.join(REAL_CFG, "notify.json")
+        if in_ci:
+            # CI 环境下凭据走 Secrets：至少要有一种推送凭据的 env
+            has_secret = any(os.environ.get(k) for k in (
+                "PUSHPLUS_TOKEN", "SERVERCHAN_KEY", "WXPUSHER_CONF"))
+            self.assertTrue(
+                has_secret or os.path.exists(p),
+                "CI 环境既没有 config/notify.json，也没有任何推送 Secret "
+                "（PUSHPLUS_TOKEN / SERVERCHAN_KEY / WXPUSHER_CONF）——"
+                "会静默退化成 dry-run，不推送")
+            return
         self.assertTrue(os.path.exists(p),
                         "真实 config/notify.json 缺失——本地任务会静默退化"
                         "成无凭据 dry-run，正是血案现场")

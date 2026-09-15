@@ -17,6 +17,22 @@ from pipeline import sync_watch as sw  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WF = os.path.join(ROOT, ".github", "workflows", "stock.yml")
 
+# 2026-09-15 教训：CI runner 预装列表里**没有** PyNaCl 和 PyYAML。
+# 若测试直接 import 它们，CI 上会 ERROR（不是 skip）→ 回归自检挂 →
+# 后面所有构建推送步骤 skipped → 全天零推送（实测 run 85391295）。
+# 所以一律用 skipUnless 探测，本地全跑、CI 自动降级。
+try:
+    import nacl  # noqa: F401
+    HAS_NACL = True
+except ImportError:
+    HAS_NACL = False
+
+try:
+    import yaml  # noqa: F401
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
 
 class TestNormalize(unittest.TestCase):
     def test_plain_6_digit_sh(self):
@@ -69,6 +85,7 @@ class TestParseCodes(unittest.TestCase):
         self.assertEqual(len(sw.parse_codes(raw)), sw.MAX_CODES)
 
 
+@unittest.skipUnless(HAS_NACL, "PyNaCl 未安装（CI runner 预装列表无此包）")
 class TestSealCrypto(unittest.TestCase):
     """GitHub 用 libsodium sealed box 收 Secret。这里用 PyNaCl 反向解开，
     证明我们发的密文 GitHub 侧真能读——不是只「格式看着对」。"""
@@ -149,15 +166,15 @@ class TestWorkflowWiring(unittest.TestCase):
     def setUpClass(cls):
         with open(WF, encoding="utf-8") as f:
             cls.text = f.read()
-        try:
+        if HAS_YAML:
             import yaml
             cls.doc = yaml.safe_load(cls.text)
-        except ImportError:
+        else:
             cls.doc = None
 
     def test_yaml_parses(self):
         if self.doc is None:
-            self.skipTest("no pyyaml")
+            self.skipTest("no pyyaml（CI 无此包，文本级断言仍生效）")
         self.assertIn("jobs", self.doc)
 
     def test_codes_input_declared(self):
