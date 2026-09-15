@@ -17,6 +17,7 @@
 """
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -48,12 +49,30 @@ class TestFetchIncrementAnchor(unittest.TestCase):
             "断档锚必须是 max(db_latest, 上一交易日)，不得直接等于今日应达日")
 
     def test_light_task_full_pull_is_capped(self):
-        """轻量任务（days<=20）的全量兜底必须封顶，防止 53 分钟超时。"""
+        """全量兜底必须封顶，防止 53 分钟超时。
+
+        2026-09-16 调整：原断言钉死字面写法 `min(days, 40)`，而实现已改为
+        走常量 `min(days, MAX_FULL_DAYS)`（默认 40）。改为**语义断言**：
+        ① 常量存在且值 = 40；② full_days 由该常量取 min（不再裸写 40，
+           也绝不再出现 `else days` 那种「天数大就真的拉满」的旧写法）。
+        """
         src = self._src()
-        self.assertIn("full_days", src, "缺少轻量任务全量兜底上限变量")
+        self.assertIn("full_days", src, "缺少全量兜底上限变量")
+        m = re.search(r"^MAX_FULL_DAYS\s*=\s*(\d+)", src, re.M)
+        self.assertIsNotNone(m, "缺少 MAX_FULL_DAYS 常量（全量路径根数硬上限）")
+        self.assertEqual(m.group(1), "40",
+                         "全量兜底应封顶 40 根 K 线（53 分钟超时的直接对策）")
         self.assertRegex(
-            src, r"full_days\s*=\s*min\(days,\s*40\)",
-            "轻量任务全量兜底应封顶 40 根 K 线")
+            src, r"full_days\s*=\s*min\(days,\s*MAX_FULL_DAYS\)",
+            "full_days 必须 min(days, MAX_FULL_DAYS)，不得让 days 越界")
+        # 断言「可执行行」不得再有裸 else days 回退（注释里提到旧写法不算）
+        code = "\n".join(l.split("#", 1)[0] for l in src.splitlines())
+        self.assertNotRegex(
+            code, r"full_days\s*=\s*min\(days,\s*\d+\)\s*if\s+.*else\s+days",
+            "禁止 `min(days, 40) if days <= 20 else days` 旧写法——"
+            "默认 days 一大就真的拉满，冷库首拉必超时")
+        self.assertIn("DEFAULT_DAYS = 40", src,
+                      "抓取默认深度应为 40 根（引擎最大回看 32 根的 +25% 余量）")
 
     def test_anchor_semantics_offline(self):
         """离线语义验证：库最新=上一交易日时，全部票判增量（非全量）。"""

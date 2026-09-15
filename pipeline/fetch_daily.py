@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
 """数据抓取入口：全市场日K + 收盘快照 → SQLite（含全部质量防线）。
 
-用法：python -m pipeline.fetch_daily [--days 260] [--limit N]
+用法：python -m pipeline.fetch_daily [--days 40] [--limit N]
+
+## 抓取深度（2026-09-16 调整：260 → 40）
+
+「--days N」= 每只票往回拉 N 个交易日的日K（每天 1 根）。
+260 根 ≈ 一年历史（A股年均 ~243 个交易日）。
+
+**为什么从 260 降到 40**：全仓代码扫描确认，所有引擎/指标的最大回看是
+`[-32:]`（publish.py），次高 `[-30:]`（engines.py），其余都在 20 以内。
+即「用 32 根、拉 260 根」—— 解析/写库量白耗 8 倍。降到 40 根仍留
++25% 余量（40 vs 32）。CI 里盘前/竞价任务本就跑 `--days 20`，40 比它宽一倍。
+
+**历史数据不受影响**：库里 1996 年以来的存量 K线是**只增不改**的，
+本参数只决定「每次新拉多少根」，不删旧数据。所以要算更长周期
+（如 250 日年线）依然有料可用 —— 只是不再每天重复拉旧数据。
 """
 import argparse
 import json
@@ -14,6 +28,15 @@ from . import trade_calendar as holiday_cal
 from .core import (get_conn, fetch_text, kline_batch, trade_calendar,
                    is_trading_day, today_str, upsert_klines,
                    corp_action_scan, BROWSER_UA)
+
+# 默认回看根数（每票每次新拉的日K数）。见模块 docstring 的调参依据。
+DEFAULT_DAYS = 40
+# 增量路径的尾巴根数：够覆盖最长回看（32）再留余量。
+# 增量票只需补最近几根，不必按 FULL 的量级拉。
+INC_DAYS = 20
+# 全量路径的硬上限：新票/断档票最多拉这么多，防冷库首拉拖爆 timeout。
+MAX_FULL_DAYS = 40
+
 
 EM_SNAPSHOT = ("https://push2delay.eastmoney.com/api/qt/clist/get?"
                "pn=1&pz=6000&po=1&np=1&fltt=2&invt=2&"
@@ -87,7 +110,7 @@ def guard_snapshot(universe, today, con=None, partial=False):
     return level, reason
 
 
-def fetch_daily(days=260, limit=None, force=False):
+def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False):
     con = get_conn()
     today = today_str()
     # 法定节假日日历守门（吸收原项目 trade_calendar）：节假日 cron 不白跑；
@@ -135,9 +158,11 @@ def fetch_daily(days=260, limit=None, force=False):
     print(f"[fetch] universe={len(codes)} 增量={len(inc_codes)} 全量={len(full_codes)}"
           f" @ {today}（断档锚 {latest_td} / 库最新 {db_latest or '空'}）")
     pfx_of = lambda c: "sh" if c.startswith("6") else "sz"  # noqa: E731
-    # 轻量任务（--days 20 及以下）全量拉也封顶 40 根，避免冷库/长假期后
-    # 首次补数把盘前任务拖成 53 分钟超时。历史补数请显式 --days 260。
-    full_days = min(days, 40) if days <= 20 else days
+    # 全量路径（新票/断档票）的根数上限。此前写 `min(days, 40) if days <= 20
+    # else days` → 默认 days=260 时全量真的拉 260 根，冷库/长假期首拉拖成
+    # 53 分钟超时。现在统一封顶 MAX_FULL_DAYS，显式传更大的 --days 也不越过
+    # （历史补数请用 tools/ 里的专用脚本，不要靠日常抓取越界）。
+    full_days = min(days, MAX_FULL_DAYS)
 
     # 2026-09-15：**分批流式写库**（此前是一次性囤全市场再写）。
     # 原实现把 4937 只 × 最多 260 根日K 全堆在 `batch` 字典里，实测本机
@@ -175,7 +200,7 @@ def fetch_daily(days=260, limit=None, force=False):
         got.clear()
         return n
 
-    for tag, group, d in (("增量", inc_codes, min(days, 20)),
+    for tag, group, d in (("增量", inc_codes, min(days, INC_DAYS)),
                           ("全量", full_codes, full_days)):
         for i in range(0, len(group), CHUNK):
             part = group[i:i + CHUNK]
@@ -184,8 +209,8 @@ def fetch_daily(days=260, limit=None, force=False):
                   f"（本批 {ok}/{len(part)}）", flush=True)
             fail_codes.extend([c for c in part if c not in all_ok])
 
-    if "000001" not in all_ok:      # 指数单独补
-        idx_batch = kline_batch([("000001", "sh")], days=days, con=con)
+    if "000001" not in all_ok:      # 指数单独补（同样受 MAX_FULL_DAYS 封顶）
+        idx_batch = kline_batch([("000001", "sh")], days=full_days, con=con)
         if "000001" in idx_batch:
             upsert_klines(con, "sh000001", idx_batch["000001"])
             all_ok["000001"] = idx_batch["000001"][-1]
@@ -292,7 +317,7 @@ def data_ready_for(con, date):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=260)
+    ap.add_argument("--days", type=int, default=DEFAULT_DAYS)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true",
                     help="非交易日手动补数（build 侧守门不受影响）")

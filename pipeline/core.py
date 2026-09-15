@@ -541,8 +541,14 @@ def _kline_one_sina(num, pfx, days):
     return out
 
 
-def kline_batch(codes, days=260, con=None, workers=20):
+def kline_batch(codes, days=40, con=None, workers=20):
     """③ 双源轮转 + 双通道并发（吸收原项目 backfill.py）。
+
+    `days` 默认 40（2026-09-16 从 260 下调）：这是**安全上限**性质的默认值，
+    防止遗漏传参的调用方静默拉一年历史。引擎/指标最大回看 32 根
+    （publish.py 的 `[-32:]`），40 根留 +25% 余量。
+    需要更长历史请显式传 days（如 tools/fetch_all.py 的 --days 120），
+    或依赖库里**只增不改**的存量 K线——本参数不删旧数据。
 
     东财/腾讯交错各领一半，互不抢同一 host 令牌桶；任一通道主源
     熔断（BanBlocked）→ 本票直接改走对侧；对侧也熔断 → 放弃本票
