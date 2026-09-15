@@ -22,5 +22,118 @@
   "channels": {
    "pushplus": "sent"
   }
+ },
+ "075185c9c21b3fda": {
+  "mode": "narrative",
+  "ts": "2026-09-13 08:05:09",
+  "status": "dry-run",
+  "channels": {
+   "serverchan": "dry-run",
+   "pushplus": "dry-run"
+  }
+ },
+ "f7d81dfa34f1c2b2": {
+  "mode": "channel_test_20260913",
+  "ts": "2026-09-13 21:53:06",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "0f114ebb6fa8a1ab": {
+  "mode": "build_close",
+  "ts": "2026-09-13 23:07:31",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "2c7936778c73b24d": {
+  "mode": "watch_advice",
+  "ts": "2026-09-13 23:07:32",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "9f25957b68aad711": {
+  "mode": "build_close",
+  "ts": "2026-09-14 20:47:14",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "9de53c514014b7ab": {
+  "mode": "watch_advice",
+  "ts": "2026-09-14 22:50:48",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "4ccb94326943d2c9": {
+  "mode": "build_close",
+  "ts": "2026-09-14 22:50:47",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "1b051887eed4a645": {
+  "mode": "narrative",
+  "ts": "2026-09-14 21:51:44",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "f81b61e27277754c": {
+  "mode": "selftest",
+  "ts": "2026-09-15 00:41:04",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "77d374c104b92d3c": {
+  "mode": "data_blocked_pre",
+  "ts": "2026-09-15 10:53:59",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "2a6272ebd3e2a7bf": {
+  "mode": "selftest_20260915b",
+  "ts": "2026-09-15 11:04:34",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "9481a64fafd54595": {
+  "mode": "data_blocked_close",
+  "ts": "2026-09-15 22:09:50",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "ae7e56b0f211b21a": {
+  "mode": "selftest_depth40",
+  "ts": "2026-09-16 00:18:50",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "191c3e24c3799f20": {
+  "mode": "data_blocked_close",
+  "ts": "2026-09-16 00:25:43",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
  }
 }
