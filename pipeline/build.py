@@ -592,7 +592,20 @@ def build(task="close", date=None):
     con.commit()
     # 信号生命周期（333-三）：推进旧信号 → 变化记录；今日 picks 建/更新决策
     cal = trade_calendar(con)
-    idx = cal.index(date)
+    # ⚠️ 2026-09-16 修（CI run 35000871359 实证）：
+    # 原写法 `idx = cal.index(date)` 在日历不含 date 时抛
+    # `ValueError: '2026-09-15' is not in list` → 整个 build 崩 → 推送失败。
+    # 触发场景真实存在：K线已入库但 `trade_calendar()`（基于**指数**日K）
+    # 尚未含当日——指数补拉失败/滞后时会这样，数据本身是好的
+    # （同一次日志里 扫描覆盖=100.0%、宇宙4588只 全部正常）。
+    # 改为**容错定位**：找不到就用「最后一个 ≤ date 的交易日」，
+    # 日历为空则退化为只算 VALID_DAYS 之外的宽松窗口，绝不抛异常。
+    try:
+        idx = cal.index(date)
+    except ValueError:
+        idx = max((i for i, d in enumerate(cal) if d <= date), default=-1)
+        print(f"[build] 交易日历不含 {date}（日历末位 "
+              f"{cal[-1] if cal else '空'}）→ 退化用 idx={idx} 计有效窗口")
     valid_until = cal[min(idx + decisions.VALID_DAYS, len(cal) - 1)]
     for c in picks:
         d = decisions.make_decision(c, date, missing_fields=())
