@@ -34,6 +34,145 @@ function esc(s) {
     c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 }
 
+// ---------------------------------------------------------------------------
+// 网页自助加自选（2026-09-15 / v2）
+// 用户诉求原话：「我能够在网络上单独添加自选的版本」「不要命令行」
+//   「我自己会进行添加删除」。
+//
+// v1 曾让浏览器端用 libsodium 做 crypto_box_seal 再直写 GitHub Secret ——
+// 实测不可行：npm 的 libsodium-wrappers 只有 CommonJS 形态，裸 <script>
+// 引不进页面；手工拼接 wasm 版又报 base64 解码失败。把服务端加密职责塞进
+// 前端本身就脆弱。
+//
+// v2（本版）：浏览器**只发一个 workflow_dispatch**，把自选清单当文本 input
+// 传给 Actions，由 CI 侧 Python PyNaCl 写 Secret（CI 环境 100% 可靠）。
+// 浏览器零加密依赖、零第三方库 —— 只需一次普通 fetch。
+//   ① POST /repos/{repo}/actions/workflows/{wf}/dispatches
+//        {"ref":"main","inputs":{"task":"watch-sync","codes":"sh600519,sz000001"}}
+//   ② CI 跑 pipeline.sync_watch 写 Secret WATCH_CODES
+//   ③ 下一交易时点 fetch/build 即读到新自选
+// 令牌只来自 owner 密文包（DATA._admin.token），不落明文页面、不入库。
+// ---------------------------------------------------------------------------
+const WATCH_ADMIN = { codes: [], busy: false, msg: "", ok: true };
+
+function _normCode(raw) {
+  let s = String(raw || "").trim().toLowerCase().replace(/\s+/g, "");
+  if (/^(sh|sz)\d{6}$/.test(s)) return s;
+  if (/^\d{6}$/.test(s)) return (s[0] === "6" ? "sh" : "sz") + s;
+  return null;
+}
+
+async function _ghApi(path, opts) {
+  const adm = DATA._admin || {};
+  const r = await fetch("https://api.github.com" + path, {
+    ...opts,
+    headers: {
+      "Authorization": "Bearer " + adm.token,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(opts && opts.headers ? opts.headers : {}),
+    },
+  });
+  if (!r.ok) {
+    let d = "";
+    try { d = (await r.json()).message || ""; } catch (e) { /* 忽略 */ }
+    throw new Error(`GitHub ${r.status}${d ? "：" + d : ""}`);
+  }
+  return r.status === 204 ? {} : r.json();
+}
+
+async function _pushWatchToCloud(codes) {
+  const adm = DATA._admin || {};
+  const wf = adm.workflow || "stock.yml";
+  const repo = adm.repo || "aprildream24/astock-system";
+  // 触发 CI 的 watch-sync 任务；codes 走 input，CI 侧写 Secret
+  await _ghApi(`/repos/${repo}/actions/workflows/${wf}/dispatches`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      ref: adm.ref || "main",
+      inputs: {task: "watch-sync", codes: codes.join(",")},
+    }),
+  });
+}
+
+async function watchAdminAct(fn) {
+  if (WATCH_ADMIN.busy) return;
+  WATCH_ADMIN.busy = true;
+  WATCH_ADMIN.msg = "同步中…";
+  watchAdminPaint();
+  try {
+    await fn();
+    WATCH_ADMIN.ok = true;
+    WATCH_ADMIN.msg = "已提交云端，1-2 分钟内写入，下个交易时点生效";
+  } catch (e) {
+    WATCH_ADMIN.ok = false;
+    WATCH_ADMIN.msg = "失败：" + (e.message || e);
+  }
+  WATCH_ADMIN.busy = false;
+  watchAdminPaint();
+}
+
+function watchAdminPaint() {
+  const box = document.getElementById("wadm");
+  if (!box) return;
+  const list = WATCH_ADMIN.codes;
+  box.innerHTML = `
+    <div class="row" style="display:flex;gap:8px;margin-bottom:8px">
+      <input id="wadm-in" placeholder="股票代码，如 600519" style="flex:1">
+      <button id="wadm-add">加入</button>
+    </div>
+    ${list.length ? `<table>${list.map(c => `<tr>
+        <td><span class="tag">${esc(c)}</span></td>
+        <td style="text-align:right"><button class="wadm-del" data-c="${esc(c)}"
+            style="background:#2c3440;padding:4px 12px;font-size:13px">删除</button></td>
+      </tr>`).join("")}</table>`
+      : `<div class="empty">暂无自选，输入代码添加</div>`}
+    <div class="small ${WATCH_ADMIN.ok ? "muted" : "up"}"
+         style="margin-top:8px;min-height:18px">${esc(WATCH_ADMIN.msg)}</div>`;
+  const inp = document.getElementById("wadm-in");
+  const add = () => {
+    const c = _normCode(inp.value);
+    if (!c) { WATCH_ADMIN.ok = false; WATCH_ADMIN.msg = "代码格式不对（6位数字）";
+              watchAdminPaint(); return; }
+    if (WATCH_ADMIN.codes.includes(c)) {
+      WATCH_ADMIN.ok = false; WATCH_ADMIN.msg = c + " 已在自选中";
+      watchAdminPaint(); return;
+    }
+    WATCH_ADMIN.codes = WATCH_ADMIN.codes.concat([c]);
+    watchAdminAct(() => _pushWatchToCloud(WATCH_ADMIN.codes));
+  };
+  document.getElementById("wadm-add").onclick = add;
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+  box.querySelectorAll(".wadm-del").forEach(b => {
+    b.onclick = () => {
+      WATCH_ADMIN.codes = WATCH_ADMIN.codes.filter(x => x !== b.dataset.c);
+      watchAdminAct(() => _pushWatchToCloud(WATCH_ADMIN.codes));
+    };
+  });
+}
+
+function watchManageCard() {
+  const adm = DATA._admin;
+  if (!adm) return "";                        // 非 owner：整块不渲染
+  WATCH_ADMIN.codes = (DATA.watch_advice || [])
+    .map(w => w.code).filter(Boolean);
+  if (!adm.enabled) {
+    return `<div class="card"><h3>自选股管理</h3>
+      <div class="small muted">未配置写入令牌（SITE_EDIT_TOKEN），
+      当前仅可查看。在仓库 Secrets 加上该令牌后即可在此直接增删自选。</div>
+    </div>`;
+  }
+  setTimeout(watchAdminPaint, 0);
+  return `<div class="card">
+    <h3>自选股管理 · 网页直接增删</h3>
+    <div class="small muted" style="margin-bottom:10px">
+      改动直接写入云端（${esc(adm.repo)}），下一个交易时点自动生效，
+      无需命令行、无需本机开机。</div>
+    <div id="wadm"></div>
+  </div>`;
+}
+
 function render() {
   document.getElementById("gate").style.display = "none";
   const app = document.getElementById("app");
@@ -63,7 +202,8 @@ function render() {
 
 const VIEWS = {
   overview() {
-    return emoCard() + planCards() + watchCard() + changeCard() + triggerCard() + banner();
+    return emoCard() + watchManageCard() + planCards() + watchCard()
+      + changeCard() + triggerCard() + banner();
   },
   signals() {
     const sigs = DATA.signals || [];

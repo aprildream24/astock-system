@@ -135,36 +135,64 @@ def fetch_daily(days=260, limit=None, force=False):
     print(f"[fetch] universe={len(codes)} 增量={len(inc_codes)} 全量={len(full_codes)}"
           f" @ {today}（断档锚 {latest_td} / 库最新 {db_latest or '空'}）")
     pfx_of = lambda c: "sh" if c.startswith("6") else "sz"  # noqa: E731
-    batch = {}
     # 轻量任务（--days 20 及以下）全量拉也封顶 40 根，避免冷库/长假期后
     # 首次补数把盘前任务拖成 53 分钟超时。历史补数请显式 --days 260。
     full_days = min(days, 40) if days <= 20 else days
-    if inc_codes:
-        batch.update(kline_batch([(c, pfx_of(c)) for c in inc_codes],
-                                 days=min(days, 20), con=con))
-    if full_codes:
-        batch.update(kline_batch([(c, pfx_of(c)) for c in full_codes],
-                                 days=full_days, con=con))
+
+    # 2026-09-15：**分批流式写库**（此前是一次性囤全市场再写）。
+    # 原实现把 4937 只 × 最多 260 根日K 全堆在 `batch` 字典里，实测本机
+    # 两次在「增量 3256 只已拉完、全量 1681 只处理中」时段被系统 SIGKILL
+    #（等价 CI runner 被杀）—— 峰值 ~300MB 纯数据 + 原始 JSON 解码瞬时副本，
+    # 叠加 20 并发线程栈后触顶。改为每 CHUNK 拉一批、立刻入库并释放，
+    # 内存占用恒定；且**每批 commit**，中途被杀也能保住已完成部分。
+    CHUNK = 400
     written = 0
-    idx_codes = [c for c in codes if c in batch]
-    for code in idx_codes:
-        rows = batch[code]
-        flags = corp_action_scan(rows)
-        if len(flags) > 50:
-            print(f"[warn] {code} 单日>50 只跳变 = 市场级 qfq 基准切换，只披露不排除")
-        full = ("sh" if code.startswith("6") else "sz") + code
-        written += upsert_klines(con, full, rows)
-        # 换手率落入 klines（区间池 MIN_TURN 用近20日均换手）
-        turn = universe[code].get("turn")
-        if turn:
-            con.execute("UPDATE klines SET turn=? WHERE code=? AND date=?",
-                        (turn, full, today))
-    if "000001" in batch:
-        upsert_klines(con, "sh000001", batch["000001"])
-    else:
+    all_ok = {}                 # code → 末行（下游量纲修复/覆盖率用，轻量）
+    fail_codes = []             # 拉不到的票，留痕不静默
+
+    def _drain(pairs, d):
+        """拉一批 → 立即写库 → 释放。返回本批成功票数。"""
+        nonlocal written
+        got = kline_batch(pairs, days=d, con=con)
+        n = 0
+        for code, rows in got.items():
+            if not rows:
+                continue
+            flags = corp_action_scan(rows)
+            if len(flags) > 50:
+                print(f"[warn] {code} 单日>50 只跳变 = 市场级 qfq 基准切换，"
+                      "只披露不排除")
+            full = ("sh" if code.startswith("6") else "sz") + code
+            written += upsert_klines(con, full, rows)
+            turn = universe[code].get("turn")
+            if turn:
+                con.execute(
+                    "UPDATE klines SET turn=? WHERE code=? AND date=?",
+                    (turn, full, today))
+            all_ok[code] = rows[-1]
+            n += 1
+        con.commit()
+        got.clear()
+        return n
+
+    for tag, group, d in (("增量", inc_codes, min(days, 20)),
+                          ("全量", full_codes, full_days)):
+        for i in range(0, len(group), CHUNK):
+            part = group[i:i + CHUNK]
+            ok = _drain([(c, pfx_of(c)) for c in part], d)
+            print(f"[fetch] {tag} {i + len(part)}/{len(group)}"
+                  f"（本批 {ok}/{len(part)}）", flush=True)
+            fail_codes.extend([c for c in part if c not in all_ok])
+
+    if "000001" not in all_ok:      # 指数单独补
         idx_batch = kline_batch([("000001", "sh")], days=days, con=con)
         if "000001" in idx_batch:
             upsert_klines(con, "sh000001", idx_batch["000001"])
+            all_ok["000001"] = idx_batch["000001"][-1]
+    if fail_codes:
+        print(f"[fetch] 未取到 {len(fail_codes)} 只（留待下轮补）："
+              f"{fail_codes[:12]}{' ...' if len(fail_codes) > 12 else ''}")
+    idx_codes = list(all_ok.keys())
     # M03 量纲修复：真实流通股本 = 流通市值÷股价（不可用换手率反推）。
     # 腾讯K线量为「手」：q=量/股本 ≈ 换手率/100 <0.01 正常；源异常返「股」→ q>0.01
     float_shares = {}
@@ -175,10 +203,10 @@ def fetch_daily(days=260, limit=None, force=False):
         except Exception:  # noqa: BLE001
             continue
     factor, records = quality.repair_volume_units(
-        [(c, batch[c][-1][5]) for c in idx_codes if batch[c]],
+        [(c, all_ok[c][5]) for c in idx_codes if all_ok.get(c)],
         float_shares, rule_version=quality.RULE_VERSION)
     if factor != 1.0:
-        for c, _v in [(c, batch[c][-1][5]) for c in idx_codes if batch[c]]:
+        for c in [c for c in idx_codes if all_ok.get(c)]:
             con.execute("UPDATE klines SET v=v/? WHERE code=? AND date=?",
                         (factor, ("sh" if c.startswith("6") else "sz") + c,
                          today))
@@ -234,11 +262,20 @@ def is_trading_day_today(con=None):
 
 def data_ready_for(con, date):
     """build 就绪判断（#605-⑦ 的正确语义）：
-    ① date 必须是真实交易日；② date 当日K线已入库；
+    ① date 必须是**真实交易日**（用权威节假日日历，见下）；
+    ② date 当日K线已入库；
     ③ fetch_stats 不早于 date（周六抓到的周五数据 → 可复盘周五）。
-    返回 (ok, reason)。"""
-    if date not in trade_calendar(con):
-        return False, "非交易日"
+    返回 (ok, reason)。
+
+    ⚠️ 2026-09-15 循环依赖修复：原第①关写 `date not in trade_calendar(con)`
+    → "非交易日"，而 `trade_calendar(con)` 完全由 `klines` 表推导，
+    **当日指数K线入库前必然不含当天** ⇒ 每天在抓取完成前，闸门都把
+    "今天"判成非交易日 ⇒ `close` 拒绝构建（rc=0，静默）⇒ 零推送。
+    抓取超时 ⇒ 指数K线不入库 ⇒ 闸门永远拒绝，形成死锁。
+    现在第①关改用独立于本地数据的权威日历。
+    """
+    if not core.is_real_trade_day(date):
+        return False, "权威日历：非交易日（法定休市/周末）"
     n = con.execute("SELECT COUNT(*) FROM klines WHERE date=?",
                     (date,)).fetchone()[0]
     if n == 0:

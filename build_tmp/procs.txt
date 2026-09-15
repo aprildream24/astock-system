@@ -1,0 +1,18 @@
+﻿
+
+ProcessId   : 38904
+CommandLine : C:\Users\Basshunter-j\.workbuddy\binaries\python\versions\3.13.12
+              \python.exe -X utf8 -u -c "
+              import sys,time,json,os
+              sys.path.insert(0,'.')
+              # 后台常驻：任务写完再退出，避免 CLI 提前收摊
+              from pipeline import fetch_daily as fd
+              t0=time.time()
+              st=fd.fetch_daily(days=60)
+              dt=time.time()-t0
+              print(f'=== 完成 {dt:.1f}s written={st.get(\"rows_written\")} fetch
+              ed={st.get(\"fetched\")}/{st.get(\"universe\")}')
+              "
+
+
+

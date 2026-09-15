@@ -183,23 +183,60 @@ def trade_calendar(con):
     return [r[0] for r in rows]
 
 
+def is_real_trade_day(date):
+    """该日期**本身**是否为沪深交易日（用权威节假日日历判断）。
+
+    ⚠️ 2026-09-15 循环依赖修复：`trade_calendar(con)` 由 `klines` 表推导，
+    **当日指数K线入库前它必然不含当天**。而 `is_trading_day_cross` /
+    `data_ready_for` 第一关都是 `date in trade_calendar(con)` ⇒
+    当天数据尚未抓到时，"今天"被判成「非交易日」→ `close` 拒绝构建
+    →（rc=0，静默）→ 用户零推送。
+    这是"闸门依赖被闸门管控的数据"的循环依赖：
+    抓取超时 ⇒ 指数K线不入库 ⇒ 闸门永远判非交易日。
+
+    所以判断"是不是交易日"必须回退到**独立于本地数据的权威日历**
+    （`trade_calendar.is_trade_day`，源自国务院放假安排），
+    而不是"我的库里有没有这根K线"。
+    """
+    from .trade_calendar import is_trade_day
+    try:
+        return bool(is_trade_day(date))
+    except Exception:  # noqa: BLE001 —— 日历异常时保守放行，绝不因日历故障漏推
+        return True
+
+
 def is_trading_day(con, date):
+    """本地库里是否已有该交易日的指数K线（数据口径，非日历口径）。
+
+    语义澄清：这是"数据到位"判断。要问"这天客观上是否开市"，
+    用 `is_real_trade_day(date)`。
+    """
     return date in trade_calendar(con)
 
 
 def is_trading_day_cross(con, date):
     """M04：交易日历交叉确认——单一指数日K不是唯一权威。
-    指数日K命中 且 当日全市场快照 pct 非全零 → 交易日。
-    返回 (certain: bool, reason)。"""
-    if date not in trade_calendar(con):
-        return False, "指数日K无此日期"
+
+    判定顺序（2026-09-15 修复循环依赖后）：
+      ① **权威日历**说这天是交易日吗？不是 → 直接拒（无需本地数据）；
+      ② 本地已有该日快照？有 → 看 pct 是否全零（全零=疑似休市）；
+      ③ 本地**暂无**该日数据 → 不代表休市，只代表**还没抓**。
+         此时若权威日历说是交易日，返回"待抓取"，由调用方决定是否等待，
+         **不得直接判成"非交易日"**（那正是零推送的成因）。
+    返回 (certain: bool, reason)。
+    """
+    if not is_real_trade_day(date):
+        return False, "权威日历：非交易日（法定休市/周末）"
     row = con.execute(
         "SELECT COUNT(*), SUM(CASE WHEN ABS(COALESCE(pct,0))>0.0001 THEN 1 "
         "ELSE 0 END) FROM snapshot WHERE date=?", (date,)).fetchone()
     total, nonzero = row[0], row[1] or 0
-    if total and nonzero == 0:
-        return False, "快照 pct 全零：疑似休市日"
-    return True, "指数日K与快照交叉确认"
+    if total:
+        if nonzero == 0:
+            return False, "快照 pct 全零：疑似休市日"
+        return True, "权威日历 + 当日快照 pct 交叉确认"
+    # 权威日历说是交易日，但本地还没数据 —— 这是"待数据"，不是"非交易日"
+    return False, f"{date} 是交易日但本地尚无快照（待抓取入库）"
 
 
 def redact(text, *secrets):
@@ -336,13 +373,55 @@ _GUARDS = {}
 _M = threading.Lock()
 
 EM_HOST = "push2his.eastmoney.com"
-# 裸域名 ifzq 与 web.ifzq 是独立 WAF 策略：2026-09-13 实测 web 被封时裸域名可用
-TX_HOST = "ifzq.gtimg.cn"
+# 裸域名 ifzq 与 web.ifzq 是独立 WAF 策略，且**会各自单独失效**：
+#   2026-09-13 实测 web.ifzq 被封、裸域名 ifzq 可用 → 当时选了裸域名；
+#   2026-09-14/15 反转：裸域名 ifzq 全面返回 **HTTP 501**（端点已下线），
+#   web.ifzq 恢复可用。而 501 不在熔断码（403/429/418）里 → 裸域名
+#   **永远不会被熔断**，每只股票都要白等 6–15 秒重试退避，
+#   全市场 4900 只 ⇒ 抓取被拖爆 timeout，第 8 步「构建+推送」整步 skipped
+#   ⇒ 用户全天零推送。这是"每天说没问题、实盘就出问题"的真凶。
+# 结论：**不能写死单个域名**。TX_HOSTS 按顺序尝试，谁先给出有效行就用谁，
+# 且把 501/404 一并计入 guard 失败（端点级失效必须能被熔断）。
+TX_HOSTS = ("web.ifzq.gtimg.cn", "ifzq.gtimg.cn")
+TX_HOST = TX_HOSTS[0]        # 兼容旧引用；实际请求走 TX_HOSTS 轮转
+# 端点级失效码：501 未实现 / 404 不存在 / 410 已下线 —— 必须能让 guard 熔断，
+# 否则会像裸域名 ifzq 那样「每次请求都白等重试」，把整个抓取拖死。
+DEAD_CODES = (404, 410, 501)
+
+# ---------------------------------------------------------------------------
+# 限速档位（2026-09-15 实测标定，**这是全市场抓取耗时的唯一决定因素**）
+# ---------------------------------------------------------------------------
+# 背景：RateLimiter 默认 rate=10 req/s，且按 host 全局共享。当日 em/tx 双死、
+# 只剩 sina 独活时，12~24 并发也被这个令牌桶压回 10 req/s ⇒ 4937 只理论下限
+# 494s，实测叠加往返/自适应抖动漂到 16~19 分钟，再叠任何重试就冲破超时
+#（E2E 里 fetch 被掐在 3000s；CI 里 45min 步超时同样吃紧）。
+#
+# 实测（quotes.sina.cn，单请求 ~0.47s）：
+#   rate=10 w=12 → 0.196s/票 → 全市场 16.1min
+#   rate=20 w=20 → 0.169s/票 → 全市场 13.9min
+# 且全程 ok=240/240，无封禁迹象。sina 是**独立 CDN、与腾讯/东财互不影响**，
+# 故给它单独的高速率档；EM/TX 维持保守值（它们随时可能复活，复活后
+# 双通道并行，每 host 10/s 的保守值反而是正确的）。
+RATE_PROFILES = {
+    # host: (rate, lo, hi)
+    "quotes.sina.cn":                (20.0, 8.0, 26.0),
+    "money.finance.sina.com.cn":     ( 6.0, 2.0,  8.0),  # 该域名易 456，必须保守
+    "hq.sinajs.cn":                  ( 8.0, 3.0, 12.0),
+    "push2his.eastmoney.com":        (10.0, 3.0, 20.0),
+    "web.ifzq.gtimg.cn":             (10.0, 3.0, 20.0),
+    "ifzq.gtimg.cn":                 (10.0, 3.0, 20.0),
+    "qt.gtimg.cn":                   (10.0, 3.0, 20.0),
+}
+RATE_DEFAULT = (10.0, 3.0, 20.0)
 
 
 def limiter(host):
     with _M:
-        return _LIMITERS.setdefault(host, RateLimiter())
+        l = _LIMITERS.get(host)
+        if l is None:
+            l = RateLimiter(*RATE_PROFILES.get(host, RATE_DEFAULT))
+            _LIMITERS[host] = l
+        return l
 
 
 def guard(host):
@@ -356,7 +435,13 @@ def guards_health():
 
 def fetch_text(url, timeout=10, retries=2, referer=None):
     """带浏览器 UA 的 GET；限流/失败计入 guard；BanBlocked 短路。
-    referer：部分源（EM 数据中心）强制校验 Referer，缺失返回 403。"""
+    referer：部分源（EM 数据中心）强制校验 Referer，缺失返回 403。
+
+    2026-09-15 修复：**端点级失效（404/410/501）不重试**。
+    裸域名 ifzq 返回 501 时，旧逻辑把它当普通失败，每票重试 2 次 + 指数退避，
+    单票白等 6–15 秒；全市场 4900 只 ⇒ 抓取被拖爆 timeout ⇒ 全天零推送。
+    现在这类码直接 note_fail 后抛出，交给上游换源，不浪费退避时间。
+    """
     host = re.sub(r"https?://([^/]+).*", r"\1", url)
     g, lim = guard(host), limiter(host)
     if g.blocked():
@@ -379,6 +464,10 @@ def fetch_text(url, timeout=10, retries=2, referer=None):
             if e.code in (403, 429, 418):
                 lim.note_throttled()
                 g.note_fail()
+            elif e.code in DEAD_CODES:
+                # 端点已下线：重试无意义，计入失败让 guard 熔断本 host
+                g.note_fail()
+                raise
             if e.code in (403, 429, 418) and g.blocked():
                 raise BanBlocked(host)
         except Exception as e:  # noqa: BLE001
@@ -403,13 +492,27 @@ def _kline_one_em(num, pfx, days):
 
 
 def _kline_one_tx(num, pfx, days):
-    url = (f"https://{TX_HOST}/appstock/app/fqkline/get?"
-           f"param={pfx}{num},day,,,{days},qfq")
-    js = json.loads(fetch_text(url))
-    node = js.get("data", {}).get(f"{pfx}{num}", {})
-    rows = node.get("qfqday") or node.get("day") or []
-    return [[r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]),
-             float(r[5])] for r in rows if len(r) >= 6]
+    """腾讯日K。域名会单独失效（见 TX_HOSTS 注释），逐个尝试直到拿到有效行。"""
+    last_err = None
+    for host in TX_HOSTS:
+        url = (f"https://{host}/appstock/app/fqkline/get?"
+               f"param={pfx}{num},day,,,{days},qfq")
+        try:
+            js = json.loads(fetch_text(url))
+        except BanBlocked:
+            last_err = BanBlocked(host)
+            continue                     # 该域名被熔断/失效 → 换下一个
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+        node = js.get("data", {}).get(f"{pfx}{num}", {})
+        rows = node.get("qfqday") or node.get("day") or []
+        if rows:
+            return [[r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]),
+                     float(r[5])] for r in rows if len(r) >= 6]
+    if last_err:
+        raise last_err
+    return []
 
 
 def _kline_one_sina(num, pfx, days):
@@ -438,55 +541,100 @@ def _kline_one_sina(num, pfx, days):
     return out
 
 
-def kline_batch(codes, days=260, con=None, workers=6):
+def kline_batch(codes, days=260, con=None, workers=20):
     """③ 双源轮转 + 双通道并发（吸收原项目 backfill.py）。
 
     东财/腾讯交错各领一半，互不抢同一 host 令牌桶；任一通道主源
     熔断（BanBlocked）→ 本票直接改走对侧；对侧也熔断 → 放弃本票
     留待下轮（宁可缺数据也不打封禁源）。RateLimiter/SourceGuard
-    线程安全，聚合速率仍受每 host 10 req/s 约束。"""
-    em_g, tx_g = guard(EM_HOST), guard(TX_HOST)
-    if em_g.blocked() and tx_g.blocked():
-        return {}
+    线程安全，聚合速率仍受每 host 10 req/s 约束。
+
+    2026-09-15：腾讯域名可轮转（TX_HOSTS），本函数只需确认
+    **全部**候选域名都在熔断态才放弃该通道。
+
+    2026-09-15 二次修复（严重）：**删掉「em+tx 全熔断就直接 return {}」的守卫**。
+    该守卫把「主源双死」误判成「所有源都死」，可当日真实情况正是 em+tx 双死、
+    新浪独活 —— 结果是函数 0.01s 返回空字典，连新浪兜底都不跑，全市场 0/4937。
+    正确语义：**只有连兜底源（sina）都拿不到数据才叫失败**，绝不在入口提前放弃。
+    """
     from concurrent.futures import ThreadPoolExecutor
     out = {}
     out_lock = threading.Lock()
 
+    # 2026-09-15：**死源短路**。em / tx 的日K端点当日已实测全线失效
+    #   （em RemoteDisconnected、tx 两个域名均 HTTP 501），fail-fast 后
+    #   guard 会很快进入 blocked 态。但原实现里每只票仍会「先撞 em、再撞 tx」，
+    #   白白花掉 2~2.5s/票 —— 12 个并发槽全被死源吃掉，吞吐被拖到 1/50，
+    #   全市场抓取从 4 分钟劣化成 46 分钟（恰好卡死 CI 的 45 分钟超时）。
+    #   修法：在 pull 入口就检查熔断态，已 blocked 的源**不再发请求**，
+    #   直接落到下一个候选源。注意这里只是「少发请求」，**不提前退出函数**。
+    def _skip(host_or_hosts):
+        if isinstance(host_or_hosts, str):
+            return guard(host_or_hosts).blocked()
+        return all(guard(h).blocked() for h in host_or_hosts)
+
     def pull(kind, num, pfx):
-        primary = _kline_one_em if kind == "em" else _kline_one_tx
-        secondary = _kline_one_tx if kind == "em" else _kline_one_em
         rows = None
-        try:
-            rows = primary(num, pfx, days)
-        except BanBlocked:
-            rows = None
-        except Exception:  # noqa: BLE001 — 普通失败也切对侧
-            rows = None
+        if kind == "em":
+            if not _skip(EM_HOST):
+                try:
+                    rows = _kline_one_em(num, pfx, days)
+                except Exception:  # noqa: BLE001 — 含 BanBlocked，统一切对侧
+                    rows = None
+            if not rows and not _skip(TX_HOSTS):
+                try:
+                    rows = _kline_one_tx(num, pfx, days)
+                except Exception:  # noqa: BLE001
+                    rows = None
+        else:
+            if not _skip(TX_HOSTS):
+                try:
+                    rows = _kline_one_tx(num, pfx, days)
+                except Exception:  # noqa: BLE001
+                    rows = None
+            if not rows and not _skip(EM_HOST):
+                try:
+                    rows = _kline_one_em(num, pfx, days)
+                except Exception:  # noqa: BLE001
+                    rows = None
         if not rows:
             try:
-                rows = secondary(num, pfx, days)
-            except Exception:  # noqa: BLE001
-                rows = None
-        if not rows:
-            try:
-                rows = _kline_one_sina(num, pfx, days)   # 第三独立源兜底
+                rows = _kline_one_sina(num, pfx, days)   # 独立源兜底（当日唯一活源）
             except Exception:  # noqa: BLE001
                 rows = None
         if rows:
             with out_lock:
                 out[num] = rows
 
-    def run_channel(kind, items):
-        with ThreadPoolExecutor(max_workers=workers) as ex:
+    def run_channel(kind, items, w):
+        if not items:
+            return
+        with ThreadPoolExecutor(max_workers=w) as ex:
             list(ex.map(lambda it: pull(kind, it[0], it[1]), items))
 
     jobs = list(codes)          # 每项 = (num, pfx)
-    th1 = threading.Thread(target=run_channel, args=("em", jobs[0::2]))
-    th2 = threading.Thread(target=run_channel, args=("tx", jobs[1::2]))
-    th1.start()
-    th2.start()
-    th1.join()
-    th2.join()
+    # 2026-09-15：**通道数自适应**。原实现固定切两半、两通道各 workers 并发。
+    # 但当某侧全熔断（当日 em+tx 双死）时，那一半线程池只会空转/串行等待
+    # —— 票虽然最终会落到 sina，却仍占着该通道槽位，等于把有效并发砍半。
+    # 现在：主源双死时直接用**单通道跑满 workers**，把所有槽位给唯一活源。
+    em_dead = _skip(EM_HOST)
+    tx_dead = _skip(TX_HOSTS)
+
+    if em_dead and tx_dead:
+        run_channel("single", jobs, workers)     # 唯一活源 = sina（pull 内兜底）
+    elif tx_dead:
+        run_channel("em", jobs, workers)
+    elif em_dead:
+        run_channel("tx", jobs, workers)
+    else:
+        th1 = threading.Thread(target=run_channel,
+                               args=("em", jobs[0::2], workers))
+        th2 = threading.Thread(target=run_channel,
+                               args=("tx", jobs[1::2], workers))
+        th1.start()
+        th2.start()
+        th1.join()
+        th2.join()
     return out
 
 

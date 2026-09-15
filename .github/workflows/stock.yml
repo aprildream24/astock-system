@@ -27,8 +27,11 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "build 任务: pre | auction | close | review | site"
+        description: "build 任务: pre | auction | close | review | site | watch-sync"
         default: close
+      codes:
+        description: "watch-sync 专用：自选代码，逗号分隔（如 sh600519,sz000001）"
+        default: ""
 
 permissions:
   contents: read
@@ -61,15 +64,29 @@ jobs:
           restore-keys: |
             market-db-
       - name: 回归自检
+        if: github.event.inputs.task != 'watch-sync'
         run: python tests/run_regression.py
+      # ---- 网页自助加自选（2026-09-15）------------------------------------
+      # owner 在站点上点「加入/删除」→ 前端发 workflow_dispatch(task=watch-sync,
+      # codes="sh600519,...") → 本步用 Python PyNaCl 写 Secret WATCH_CODES。
+      # 浏览器端零加密依赖（v1 的 libsodium 客户端加密已废弃）。
+      - name: 同步自选到 Secret（watch-sync）
+        if: github.event.inputs.task == 'watch-sync'
+        env:
+          # 写 Secrets 必须 PAT（GITHUB_TOKEN 无 actions:secrets 写权限）
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          WATCH_CODES_IN: ${{ github.event.inputs.codes }}
+        run: python -m pipeline.sync_watch
       - name: 收盘数据抓取（全市场）
         if: >-
-          (github.event_name == 'schedule' &&
-           github.event.schedule == '22 7 * * 1-5') ||
-          (github.event_name == 'workflow_dispatch' &&
-           (github.event.inputs.task == 'close' ||
-            github.event.inputs.task == 'site' ||
-            github.event.inputs.task == ''))
+          github.event.inputs.task != 'watch-sync' &&
+          ((github.event_name == 'schedule' &&
+            github.event.schedule == '22 7 * * 1-5') ||
+           (github.event_name == 'workflow_dispatch' &&
+            (github.event.inputs.task == 'close' ||
+             github.event.inputs.task == 'site' ||
+             github.event.inputs.task == '')))
         # 2026-09-15 修复：抓取失败不得连坐推送。原 fail-fast 让第 8 步
         # 「构建+推送」整步 skipped ⇒ 用户全天零推送（8:50 failure / 9:25
         # cancel 实证）。改为 continue-on-error，抓取失败时 build 仍会用
@@ -78,17 +95,19 @@ jobs:
         run: python -m pipeline.fetch_daily
       - name: 盘前/竞价轻量增量抓取
         if: >-
-          (github.event_name == 'schedule' &&
-           (github.event.schedule == '50 0 * * 1-5' ||
-            github.event.schedule == '25 1 * * 1-5' ||
-            github.event.schedule == '5 0 * * 1')) ||
-          (github.event_name == 'workflow_dispatch' &&
-           (github.event.inputs.task == 'pre' ||
-            github.event.inputs.task == 'auction' ||
-            github.event.inputs.task == 'review'))
+          github.event.inputs.task != 'watch-sync' &&
+          ((github.event_name == 'schedule' &&
+            (github.event.schedule == '50 0 * * 1-5' ||
+             github.event.schedule == '25 1 * * 1-5' ||
+             github.event.schedule == '5 0 * * 1')) ||
+           (github.event_name == 'workflow_dispatch' &&
+            (github.event.inputs.task == 'pre' ||
+             github.event.inputs.task == 'auction' ||
+             github.event.inputs.task == 'review')))
         continue-on-error: true
         run: python -m pipeline.fetch_daily --days 20
       - name: 构建+推送（WxPusher/PushPlus 多渠道）
+        if: github.event.inputs.task != 'watch-sync'
         env:
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
@@ -133,10 +152,11 @@ jobs:
           python -m pipeline.build --task "$TASK"
       - name: 收盘复盘（自选股建议+AI叙事）
         if: >-
-          (github.event_name == 'schedule' &&
-           github.event.schedule == '2 12 * * 1-5') ||
-          (github.event_name == 'workflow_dispatch' &&
-           github.event.inputs.task == 'review')
+          github.event.inputs.task != 'watch-sync' &&
+          ((github.event_name == 'schedule' &&
+            github.event.schedule == '2 12 * * 1-5') ||
+           (github.event_name == 'workflow_dispatch' &&
+            github.event.inputs.task == 'review'))
         env:
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
@@ -147,13 +167,16 @@ jobs:
           GLM_MODEL: ${{ secrets.GLM_MODEL }}
         run: python -m pipeline.build --task review
       - name: 构建加密站点
+        if: github.event.inputs.task != 'watch-sync'
         env:
           SITE_USERS: ${{ secrets.SITE_USERS }}
+          SITE_EDIT_TOKEN: ${{ secrets.SITE_EDIT_TOKEN }}
         run: |
           mkdir -p config
           echo "$SITE_USERS" > config/users.json
           python -m pipeline.build --task site
       - name: 上传 Pages 构件
+        if: github.event.inputs.task != 'watch-sync'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
@@ -161,12 +184,13 @@ jobs:
   deploy-pages:
     needs: build
     if: >-
-      (github.event_name == 'schedule' &&
-       github.event.schedule == '22 7 * * 1-5') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.task == 'site' ||
-        github.event.inputs.task == 'close' ||
-        github.event.inputs.task == ''))
+      github.event.inputs.task != 'watch-sync' &&
+      ((github.event_name == 'schedule' &&
+        github.event.schedule == '22 7 * * 1-5') ||
+       (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.task == 'site' ||
+         github.event.inputs.task == 'close' ||
+         github.event.inputs.task == '')))
     runs-on: ubuntu-latest
     environment:
       name: github-pages

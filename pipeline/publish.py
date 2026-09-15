@@ -118,6 +118,26 @@ def apply_roles(data: dict, user):
                     "groups": (["watch", "observe", "buy"] if is_owner
                                else [g for g in ("watch", "observe", "buy")
                                      if g in roles])}
+    # 2026-09-15：**网页自助加自选**。用户诉求原话「我能够在网络上单独
+    # 添加自选的版本」——不依赖本机开机、不开命令行。
+    # 做法（v2，绕开前端加密）：浏览器只发一个 workflow_dispatch，把自选
+    # 清单当文本 input 交给 Actions，由 CI 侧 Python PyNaCl 写 Secret。
+    # 浏览器零加密依赖（v1 用 libsodium 在客户端做 sealed box，实测 npm 包
+    # 只有 CommonJS 形态、wasm 拼接版解码失败，已废弃）。
+    # 安全：令牌只存在于 owner 密文内；非 owner 角色此键为 None；
+    # 且令牌绝不出现在明文页面/日志里。
+    if is_owner:
+        tok = os.environ.get("SITE_EDIT_TOKEN", "").strip()
+        d["_admin"] = {
+            "repo": os.environ.get("SITE_REPO", "aprildream24/astock-system"),
+            "workflow": os.environ.get("SITE_WORKFLOW", "stock.yml"),
+            "ref": os.environ.get("SITE_REF", "main"),
+            "secret": os.environ.get("SITE_WATCH_SECRET", "WATCH_CODES"),
+            "token": tok,
+            "enabled": bool(tok),
+        }
+    else:
+        d["_admin"] = None
     return d
 
 

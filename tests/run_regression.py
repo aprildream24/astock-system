@@ -13,7 +13,9 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           "test_p8.py", "test_final.py", "test_audit.py", "test_absorb.py",
           "test_wx_deploy.py", "test_fix_20260913.py", "test_push2026b.py",
           "test_zero_push_20260915.py", "test_permissions.py",
-          "test_deploy.py", "test_ci_parity.py"]
+          "test_deploy.py", "test_ci_parity.py", "test_e2e_safety.py",
+          "test_source_failover.py", "test_gate_no_deadlock.py",
+          "test_daily_check.py", "test_cloud_watch.py", "test_sync_watch.py"]
 
 
 def main():
