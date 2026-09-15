@@ -21,6 +21,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -243,26 +244,85 @@ class TestSilentZeroPushOnGreenRun(unittest.TestCase):
                       "保险丝须同时查 state 表")
 
     def test_daily_gate_offline_behaviour(self):
-        """离线真验：伪造已 sent 记录 → 拦截；换日期 → 放行。"""
+        """离线真验：伪造已 sent 记录 → 拦截；换日期 → 放行。
+
+        ⚠️ 2026-09-16 踩坑（CI run 34996238029 FAIL=1 的真凶）：
+        `_daily_sent` 是**双查**——除传入的 state 连接外，还无条件读
+        `notifier.DIST_LEDGER` 这个**真实文件**。只 mock 内存库不够：
+        CI runner 会 checkout 仓库里的 `dist/push_ledger.json`，其中
+        恰有 `2026-09-15 ... build_close ... sent`（本地账本反而没有这条，
+        因为本地那格是 `data_blocked_close`）→ 文件分支返回 True →
+        第一个 assertFalse 挂成 `True is not false`。
+        这就是典型「本地绿、CI 红」：**测试依赖了工作区里的真实数据**。
+        修法：把 DIST_LEDGER 一并隔离到临时空文件，让断言只依赖 con。
+        """
         import importlib
-        import tempfile
-        notifier = importlib.import_module("pipeline.notifier")
         import sqlite3
+        notifier = importlib.import_module("pipeline.notifier")
+
+        # 隔离文件账本：指向一个不存在的临时路径，杜绝真实 data 污染
+        tmpdir = tempfile.mkdtemp(prefix="astock_ledger_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, True))
+        isolated = os.path.join(tmpdir, "push_ledger.json")
+        self.assertFalse(os.path.exists(isolated),
+                         "隔离账本必须不存在，否则测不到「无记录」分支")
+
+        with mock.patch.object(notifier, "DIST_LEDGER", isolated):
+            con = sqlite3.connect(":memory:")
+            self.addCleanup(con.close)
+            con.execute("CREATE TABLE push_ledger(biz_key TEXT, mode TEXT,"
+                        " ts TEXT, ok INT, status TEXT, src TEXT, note TEXT)")
+            # 无记录 → 不拦（此前被真实文件账本污染而误判为 True）
+            self.assertFalse(
+                notifier._daily_sent(con, "build_close", "2026-09-15"),
+                "内存库无记录且隔离账本为空时必须放行——"
+                "若失败说明 DIST_LEDGER 未被隔离，测试又读了工作区真实账本")
+            # 造一条 09-15 的 sent
+            con.execute("INSERT INTO push_ledger VALUES('k','build_close',"
+                        "'2026-09-15 10:58:23',1,'sent','x','y')")
+            con.commit()
+            self.assertTrue(
+                notifier._daily_sent(con, "build_close", "2026-09-15"),
+                "同 mode 同日期已 sent 必须拦截（防止重复推送）")
+            self.assertFalse(
+                notifier._daily_sent(con, "build_close", "2026-09-16"),
+                "换日期必须放行（次日可正常推送）")
+            self.assertFalse(
+                notifier._daily_sent(con, "narrative", "2026-09-15"),
+                "不同 mode 不得互相拦截")
+
+    def test_daily_gate_isolated_from_repo_ledger(self):
+        """防回归：本套件的断言不得被工作区真实 dist 账本影响。
+
+        实证：`dist/push_ledger.json` 在仓库里带着 `2026-09-15 build_close
+        sent` 被 checkout 到 CI runner，导致「离线」用例失败。此用例把
+        DIST_LEDGER 指向**伪造的已有记录**，验证语义方向正确：
+        传空 con + 文件有当日同 mode sent → 必须判 True（文件分支生效）。
+        这样既锁住双查设计，又提醒后续维护者：写用例时必须显式隔离。
+        """
+        import importlib
+        import sqlite3
+        notifier = importlib.import_module("pipeline.notifier")
+
+        tmpdir = tempfile.mkdtemp(prefix="astock_ledger2_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, True))
+        fake = os.path.join(tmpdir, "push_ledger.json")
+        with open(fake, "w", encoding="utf-8") as f:
+            json.dump({"deadbeef": {
+                "mode": "build_close", "ts": "2026-09-15 10:58:23",
+                "status": "sent", "channels": {"pushplus": "sent"}}}, f)
+
         con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
         con.execute("CREATE TABLE push_ledger(biz_key TEXT, mode TEXT,"
                     " ts TEXT, ok INT, status TEXT, src TEXT, note TEXT)")
-        # 无记录 → 不拦
-        self.assertFalse(notifier._daily_sent(con, "build_close", "2026-09-15"))
-        # 造一条 09-15 的 sent
-        con.execute("INSERT INTO push_ledger VALUES('k','build_close',"
-                    "'2026-09-15 10:58:23',1,'sent','x','y')")
-        con.commit()
-        self.assertTrue(notifier._daily_sent(con, "build_close", "2026-09-15"),
-                        "同 mode 同日期已 sent 必须拦截（防止重复推送）")
-        self.assertFalse(notifier._daily_sent(con, "build_close", "2026-09-16"),
-                         "换日期必须放行（次日可正常推送）")
-        self.assertFalse(notifier._daily_sent(con, "narrative", "2026-09-15"),
-                         "不同 mode 不得互相拦截")
+        with mock.patch.object(notifier, "DIST_LEDGER", fake):
+            self.assertTrue(
+                notifier._daily_sent(con, "build_close", "2026-09-15"),
+                "文件账本有当日同 mode sent 时必须拦截（双查设计不可退）")
+            self.assertFalse(
+                notifier._daily_sent(con, "narrative", "2026-09-15"),
+                "文件账本里没有的 mode 不得被误拦")
 
 
 class TestFetchDepthIsSufficient(unittest.TestCase):
