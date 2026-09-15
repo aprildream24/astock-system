@@ -426,6 +426,11 @@ class TestLedgerNeverLost(unittest.TestCase):
         self.assertIn("base64.b64encode(payload)", head,
                       "PUT 必须提交合并后的 payload")
 
+    def _read_workflow(self):
+        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
+                  encoding="utf-8") as f:
+            return f.read()
+
     def test_workflow_ledger_not_in_cache_path(self):
         """dist/push_ledger.json 不得作为**缓存路径**被缓存。
 
@@ -467,19 +472,71 @@ class TestLedgerNeverLost(unittest.TestCase):
             "与 checkout 双源冲突会让账本倒退，"
             "进而使 _daily_sent 保险丝失效、重复推送回归")
 
-    def test_workflow_cache_key_is_stable(self):
-        """cache key 不得含 run_id（否则每 run 新增一份，额度爆炸）。"""
-        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
-                  encoding="utf-8") as f:
-            y = f.read()
-        self.assertNotIn("key: market-db-${{ github.run_id }}", y,
-                         "key 含 run_id → 每 run 新缓存，实测累积 15 份 469 MB")
-        self.assertIn("key: market-db-v2", y,
-                      "应用固定 key，由 save 覆盖写同一条目")
+    def test_workflow_cache_key_rolls_and_gc_exists(self):
+        """缓存 key 必须「带 run_id 滚动」+ 有清理步骤 —— 二者缺一不可。
+
+        ⚠️ 2026-09-16 二次血案（run 35002284192 冷库全量重拉 17 分钟）：
+        `actions/cache/save@v4` **不允许覆盖已存在的 key**。所以
+          · 固定 key（曾用 `market-db-v2`）→ 第一次存进去的永久生效，
+            之后再也不会更新。实测首次存入的是 **0 字节空条目**
+            ⇒ 每个 run 都「库最新 空」⇒ 4937 只全量重拉。
+          · key 带 run_id → 每次存新的（能持续更新），但每次新增一份
+            ⇒ 实测累积 15 份 ≈ 469 MB，会撑爆 10 GB 仓库缓存上限。
+        ⇒ 正解是**两者并用**：滚动 key 保更新 + `cache_gc` 每轮删旧保不膨胀。
+        """
+        y = self._read_workflow()
+        self.assertIn("key: market-db-${{ github.run_id }}", y,
+                      "key 必须带 run_id，否则 save 无法更新缓存（固定 key "
+                      "第一次写入后永久冻结——实测冻结成了 0 字节空条目）")
+        self.assertIn("restore-keys", y,
+                      "必须配 restore-keys 前缀回退，才能捞到上一 run 那份")
+        self.assertIn("cache_gc", y,
+                      "滚动 key 必然新增条目，必须配套清理步骤（否则膨胀）")
         self.assertIn("actions/cache/restore@v4", y,
                       "用 restore 才能配 save 精确控制写入时机")
         self.assertIn("actions/cache/save@v4", y,
                       "restore 之后必须显式 save，否则缓存永不更新、库被冻结")
+
+    def test_cache_gc_deletes_only_stale_market_db(self):
+        """cache_gc 只能删 market-db- 前缀、且**不是本次 run** 的条目。
+
+        删错会把本轮刚存的库删掉（下轮又冷启动）；删非 market-db- 前缀的
+        会误伤其他缓存。必须精确。
+        """
+        p = os.path.join(ROOT, "pipeline", "cache_gc.py")
+        self.assertTrue(os.path.exists(p), "缺少 pipeline/cache_gc.py")
+        with open(p, encoding="utf-8") as f:
+            code = strip_comments(f.read())
+        self.assertIn('PREFIX = "market-db-"', code,
+                      "只允许清理 market-db- 前缀的缓存")
+        self.assertIn("c.get(\"key\") != keep_key", code,
+                      "必须排除本次 run 的缓存（否则删掉刚存的那份）")
+        self.assertIn("GITHUB_RUN_ID", code,
+                      "需读本次 run id 以排除自己那份")
+        self.assertIn("return 0", code,
+                      "清理失败必须恒返回 0 —— 运维优化不得连坐主链推送")
+        self.assertNotIn("sys.exit(1)", code,
+                         "cache_gc 不得以非 0 退出（会连坐主链）")
+
+    def test_cache_gc_semantics_offline(self):
+        """离线语义：验证筛选逻辑（保留本次 run、其余全删、无误伤）。"""
+        PREFIX = "market-db-"
+        keep_key = f"{PREFIX}35002284192"
+        caches = [
+            {"id": 1, "key": f"{PREFIX}35002284192", "size_in_bytes": 46 << 20},
+            {"id": 2, "key": f"{PREFIX}34999055123", "size_in_bytes": 44 << 20},
+            {"id": 3, "key": "pip-cache-xyz", "size_in_bytes": 9 << 20},
+            {"id": 4, "key": f"{PREFIX}34997340881", "size_in_bytes": 44 << 20},
+        ]
+        targets = [c for c in caches
+                   if c["key"].startswith(PREFIX) and c["key"] != keep_key]
+        keys = sorted(c["key"] for c in targets)
+        self.assertEqual(
+            keys, [f"{PREFIX}34997340881", f"{PREFIX}34999055123"],
+            "只应清理旧 market-db-*，且必须保留本次 run 那份")
+        self.assertNotIn("pip-cache-xyz", keys, "不得误伤非 market-db- 缓存")
+        freed_mb = sum(c["size_in_bytes"] for c in targets) / 1048576
+        self.assertAlmostEqual(freed_mb, 88.0, places=1)
 
 
     def test_gh_sync_does_not_touch_ledger(self):
@@ -607,6 +664,55 @@ class TestIndexCalendarIntegrity(unittest.TestCase):
         except ValueError:
             i2 = max((i for i, d in enumerate(empty) if d <= date), default=-1)
         self.assertEqual(i2, -1)
+
+    def test_index_empty_db_does_not_crash(self):
+        """冷启动（空库）时指数补拉判定不得抛 TypeError。
+
+        ⚠️ 2026-09-16 血案（CI run 35002284192，冷缓存实测）：
+        `SELECT MAX(date) ...` 在**空表**上返回一行 `(None,)` —— 该元组
+        **truthy**，所以 `if idx_last and idx_last[0] >= latest_td` 的
+        `idx_last` 检查形同虚设 ⇒ `None >= "2026-09-15"`
+        ⇒ `TypeError: '>=' not supported between instances of
+        'NoneType' and 'str'` ⇒ 抓取步骤崩（当时因 workflow 无 fail-fast
+        才没连坐后续步骤，但指数补拉未执行）。
+        修法：取到**值**（`idx_last[0]`）再判空，不得判元组本身。
+        """
+        src = self._fetch_src()
+        code = strip_comments(src)
+        self.assertNotIn(
+            "idx_last and idx_last[0] >=", code,
+            "禁止用元组真值判断 MAX(date) 是否为空 —— 空库返回 (None,) 是 "
+            "truthy，必须取 idx_last[0] 判值")
+        self.assertIn("idx_last_date", code,
+                      "必须先把 MAX(date) 取成标量（idx_last_date）再判空")
+
+    def test_index_empty_db_semantics_offline(self):
+        """离线语义：模拟空库返回 (None,) 的真实行为，验证修法不崩。"""
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE klines(code TEXT, date TEXT)")
+        latest_td = "2026-09-15"
+
+        # 旧写法 —— 必须崩
+        idx_last = con.execute(
+            "SELECT MAX(date) FROM klines WHERE code=?", ("sh000001",)).fetchone()
+        self.assertEqual(idx_last, (None,), "空表 MAX(date) 应返回 (None,)")
+        self.assertTrue(idx_last, "该元组是 truthy —— 这正是旧写法的陷阱")
+        with self.assertRaises(TypeError):
+            _ = not (idx_last and idx_last[0] >= latest_td)
+
+        # 新写法 —— 必须稳稳判定"需要补"
+        idx_last_date = idx_last[0] if idx_last else None
+        need_idx = not (idx_last_date and idx_last_date >= latest_td)
+        self.assertTrue(need_idx, "库中无指数 ⇒ 必须判定需要补拉")
+
+        # 已有指数但不落后 ⇒ 不需要补
+        con.execute("INSERT INTO klines VALUES('sh000001','2026-09-15')")
+        r = con.execute(
+            "SELECT MAX(date) FROM klines WHERE code=?", ("sh000001",)).fetchone()
+        d = r[0] if r else None
+        self.assertFalse(not (d and d >= latest_td), "已是最新则不应重复补拉")
 
 
 if __name__ == "__main__":
