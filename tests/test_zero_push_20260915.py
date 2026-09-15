@@ -471,8 +471,16 @@ class TestLedgerNeverLost(unittest.TestCase):
         实测：本地 gh_sync 全量推送把 CI 刚写的 3 条覆盖回开发机的 14 条，
         随后 CI 又在其上滚动 —— 账本形状取决于"谁最后跑"，不可预测。
         账本只能由 push_ledger_sync（GET→合并→PUT）独占写入。
+
+        ⚠️ `gh_sync.py` 自身在 `EXCLUDE_FILES` 里（工具脚本不入库）
+        ⇒ **CI 上没有这个文件**。曾因直接 `open()` 而 FileNotFoundError
+        → ERROR 一条 → 回归失败 → 全天零推送（run 35000190361 实证）。
+        规则与「测试禁依赖工作区数据」同源：文件不在就 skip，别假设它存在。
         """
-        with open(os.path.join(ROOT, "gh_sync.py"), encoding="utf-8") as f:
+        p = os.path.join(ROOT, "gh_sync.py")
+        if not os.path.exists(p):
+            self.skipTest("CI 不含 gh_sync.py（工具脚本不入库，属预期）")
+        with open(p, encoding="utf-8") as f:
             src = f.read()
         self.assertIn("ALLOW_DIST = set()", src,
                       "ALLOW_DIST 必须为空 —— 账本不得随 gh_sync 全量推送")
