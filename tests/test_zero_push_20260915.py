@@ -31,6 +31,23 @@ if ROOT not in sys.path:
 import datetime as _dt  # noqa: E402
 
 
+def strip_comments(src):
+    """剥掉 `#` 注释内容，只留可执行代码行。
+
+    ⚠️ 血案（2026-09-16，同一坑踩了两次）：`assertNotIn` / `assertNotRegex`
+    断言"旧写法已消失"时，若注释里为解释修复而**引用了旧写法**（例如
+    "# 原写法 `if \"000001\" not in all_ok:` 恒为假"），断言会命中注释本身
+    → 假 FAIL。**修复说明即注释，注释即证据——两者必须分离。**
+    凡是断言"代码里不得出现 X"的用例，都先用本函数剥注释。
+    """
+    out = []
+    for line in src.splitlines():
+        code = line.split("#", 1)[0]
+        if code.strip():
+            out.append(code)
+    return "\n".join(out)
+
+
 class TestFetchIncrementAnchor(unittest.TestCase):
     """A. 断档锚 + 轻量全量上限。"""
 
@@ -489,6 +506,107 @@ class TestLedgerNeverLost(unittest.TestCase):
         self.assertNotIn("dist/push_ledger.json", code.split("ALLOW_DIST")[1][:80]
                          if "ALLOW_DIST" in code else "",
                          "ALLOW_DIST 不得再放行账本（会造成三写冲突）")
+
+
+class TestIndexCalendarIntegrity(unittest.TestCase):
+    """G. 指数日历完整性（2026-09-16 CI run 35000871359 实证的三个真实 bug）。
+
+    事故链（**全是生产缺陷，不是测试问题**）：
+      ① `fetch_daily.py` 的指数补拉条件 `if "000001" not in all_ok:` ——
+         `all_ok` 的 key 是**裸码**，而裸码 `000001` 恰是**平安银行
+         （sz000001）**，作为个股每轮都进 `all_ok` ⇒ 条件**恒为 False**
+         ⇒ **上证指数 sh000001 的补拉被永久跳过**。
+      ② 于是 `sh000001` 停在旧日期（实测 260 行、末位 2026-09-14），
+         而 `trade_calendar()` 以 `sh000001` 为**权威日历** ⇒ 日历不含当日。
+      ③ `build.py` 用 `idx = cal.index(date)` **直接索引**（无守卫）⇒
+         抛 `ValueError: '2026-09-15' is not in list` ⇒ 构建崩溃、推送失败。
+    注意：个股数据完全正常（同次日志 扫描覆盖=100.0%、宇宙 4588 只），
+    所以这是「**只看推送有没有发**」才能发现的问题。
+    """
+
+    def _fetch_src(self):
+        with open(os.path.join(ROOT, "pipeline", "fetch_daily.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_index_topup_uses_prefixed_code(self):
+        """指数补拉必须用带前缀的 sh000001 判断，不得用裸码 000001。
+
+        裸码 000001 = 平安银行，与上证指数撞车 ⇒ 条件恒假 ⇒ 指数永不更新。
+        """
+        src = self._fetch_src()
+        # 只扫可执行代码：注释里为解释修复而引用了旧写法，属正常
+        code = strip_comments(src)
+        self.assertNotIn(
+            'if "000001" not in all_ok:', code,
+            '禁止用裸码 000001 作指数判断——它与平安银行(sz000001)撞车，'
+            '会导致指数补拉被永久跳过')
+        self.assertIn('idx_code = "sh000001"', src,
+                      "指数必须用带前缀标识 sh000001 判断")
+
+    def test_index_comparison_is_against_anchor(self):
+        """指数是否需补，必须以「是否落后于断档锚」判定，不能靠 all_ok 有无。"""
+        src = self._fetch_src()
+        i = src.index("idx_code")
+        body = src[i:i + 700]
+        self.assertIn("idx_last", body, "必须查库中指数最新日期")
+        self.assertIn("latest_td", body,
+                      "必须以断档锚 latest_td 为比较基准")
+        self.assertIn("need_idx", body, "必须给出显式的 need_idx 判定")
+
+    def test_index_write_is_committed(self):
+        """指数写库后必须显式 commit —— 它是日历唯一来源，丢了就崩 build。"""
+        src = self._fetch_src()
+        i = src.index('upsert_klines(con, idx_code,')
+        tail = src[i:i + 260]
+        self.assertIn("con.commit()", tail,
+                      "指数写库后必须 commit（原代码漏了）")
+
+    def test_index_never_pollutes_all_ok(self):
+        """指数不得写进 all_ok（裸码空间）—— 会污染量纲修复与 self_heal。"""
+        src = self._fetch_src()
+        code = strip_comments(src)   # 同上：注释里引用了旧写法
+        self.assertNotIn(
+            'all_ok["000001"] =', code,
+            '指数结果不得塞进 all_ok：其 key 是裸码，会与平安银行撞车，'
+            '污染第 251 行 all_ok[c][5]（流通股）与 self_heal 的补数范围')
+
+    def test_build_calendar_lookup_is_guarded(self):
+        """build 的 cal.index(date) 必须有 ValueError 守卫。
+
+        日历由指数K线推导，指数滞后时必然不含当日 ⇒ 无守卫则整个 build 崩。
+        """
+        with open(os.path.join(ROOT, "pipeline", "build.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("except ValueError", src,
+                      "cal.index(date) 必须容错，否则日历缺当日时 build 崩溃")
+        # 禁止裸 cal.index(date)（无 except 包着）
+        i = src.index("cal = trade_calendar(con)")
+        body = src[i:i + 900]
+        self.assertIn("except ValueError", body,
+                      "trade_calendar 之后的 index 调用必须带容错分支")
+        self.assertIn("default=-1", body,
+                      "容错分支需有 default 兜底（日历为空也不崩）")
+
+    def test_calendar_guard_semantics_offline(self):
+        """离线语义验证：日历不含 date 时，容错逻辑仍能算出 valid_until。"""
+        cal = ["2026-09-10", "2026-09-11", "2026-09-14"]
+        date = "2026-09-15"
+        try:
+            idx = cal.index(date)
+        except ValueError:
+            idx = max((i for i, d in enumerate(cal) if d <= date), default=-1)
+        self.assertEqual(idx, 2, "应退化到最后一个 ≤ date 的交易日")
+        valid_until = cal[min(idx + 5, len(cal) - 1)]
+        self.assertEqual(valid_until, "2026-09-14")
+        # 日历为空也不得抛异常
+        empty = []
+        try:
+            i2 = empty.index(date)
+        except ValueError:
+            i2 = max((i for i, d in enumerate(empty) if d <= date), default=-1)
+        self.assertEqual(i2, -1)
 
 
 if __name__ == "__main__":
