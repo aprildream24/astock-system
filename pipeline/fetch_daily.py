@@ -223,8 +223,13 @@ def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False):
     idx_code = "sh000001"
     idx_last = con.execute(
         "SELECT MAX(date) FROM klines WHERE code=?", (idx_code,)).fetchone()
-    need_idx = not (idx_last and idx_last[0] >= latest_td)
-    if need_idx:                    # 指数落后于断档锚 → 单独补（同样受封顶）
+    # ⚠️ `MAX(date)` 在**空库**上返回一行 `(None,)` —— 该元组**truthy**，
+    # 直接 `idx_last[0] >= latest_td` 会抛
+    # `TypeError: '>=' not supported between instances of 'NoneType' and 'str'`
+    # （CI run 35002284192 冷缓存实测踩中）。必须取到**值**再判空。
+    idx_last_date = idx_last[0] if idx_last else None
+    need_idx = not (idx_last_date and idx_last_date >= latest_td)
+    if need_idx:                    # 指数落后于断档锚（或库中不存在）→ 单独补
         idx_batch = kline_batch([("000001", "sh")], days=full_days, con=con)
         if "000001" in idx_batch:
             upsert_klines(con, idx_code, idx_batch["000001"])
@@ -232,7 +237,7 @@ def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False):
             #                          不 commit 会让日历继续缺当日（原代码漏了）
             print(f"[fetch] 指数 {idx_code} 已补至 "
                   f"{idx_batch['000001'][-1][0]}"
-                  f"（此前 {idx_last[0] if idx_last else '无'}）")
+                  f"（此前 {idx_last_date or '无'}）")
             # ⚠️ **不写入 all_ok**：它的 key 是裸码，落进去会与
             # 平安银行（sz000001）撞车 → 污染量纲修复（第 251 行取
             # `all_ok[c][5]` 当流通股）与 self_heal 的补数范围。
