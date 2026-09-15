@@ -35,8 +35,12 @@ EXCLUDE_FILES = {"notify.json", "users.json", "holdings.json", "watch.json",
                  "models.json", "gh_sync.py"}
 EXCLUDE_EXT = {".db", ".bin", ".pyc", ".log", ".zip", ".bak"}
 
-# 调试/回归产物：可能临时出现在根目录（_reg.txt 等），一律不上线。
-JUNK_PREFIXES = ("_reg", "_e2e", "_probe", "_dbg", "_tmp")
+# 根目录只允许这些「已知属于仓库」的文件上线。
+# ⚠️ 为什么用白名单而不是「排除 _xxx 前缀」：黑名单永远列不全——曾因
+# `_deploy_out.txt` 不在前缀表里而被推上 CI，导致 test_deploy 在 runner 上
+# 挂掉、进而全天零推送。根目录的临时产物名字是不可预测的，白名单才可靠。
+ROOT_ALLOW = {".gitignore", "README.md", "clear_dedup.py"}
+ROOT_ALLOW_EXT = {".py", ".md", ".txt", ".yml", ".yaml", ".json"}
 
 
 def _req(method, url, token, body=None, raw=False):
@@ -68,9 +72,15 @@ def collect_files():
         for f in sorted(filenames):
             if f in EXCLUDE_FILES or os.path.splitext(f)[1] in EXCLUDE_EXT:
                 continue
-            if rel_dir == "." and (f.startswith(JUNK_PREFIXES)
-                                   or f.endswith((".bak", ".ciparity_bak"))):
-                continue          # 根目录调试/回归产物、备份不上线
+            if rel_dir == ".":
+                # 根目录用白名单：只放行明确属于仓库的文件。
+                # 名字以 _ 开头的（_reg.txt/_deploy_out.txt/…）一律视为本地产物。
+                if f.startswith("_") or f.startswith("."):
+                    if f not in ROOT_ALLOW:
+                        continue
+                elif f not in ROOT_ALLOW and \
+                        os.path.splitext(f)[1] not in ROOT_ALLOW_EXT:
+                    continue
             rel = f if rel_dir == "." else os.path.join(rel_dir, f)
             rel = rel.replace("\\", "/")
             if rel.startswith(("cache/", "dist/", "site/", ".workbuddy/")):

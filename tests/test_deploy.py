@@ -63,14 +63,21 @@ class TestDeployCollection(unittest.TestCase):
             self.assertIn(need, self.files, f"{need} 未纳入部署")
 
     def test_no_stray_temp_files(self):
-        """根目录不得残留 _reg_*.txt / *.log 这类临时产物。
+        """根目录不得残留调试/回归产物。
 
-        注意：只扫**仓库根目录**。config/ 下的 *.bak 是用户手动备份，
-        不属于部署产物，不应误报。"""
-        stray = [f for f in self.files
-                 if os.sep not in f and "/" not in f
-                 and (f.startswith("_") or f.endswith(".log"))]
-        self.assertEqual(stray, [], f"临时文件混入部署：{stray}")
+        用**白名单**而非"排除 _ 前缀"：黑名单列不全。曾因 `_deploy_out.txt`
+        不在前缀表里而被推上 CI → runner 上本套件挂 → 全天零推送。
+        """
+        stray = [f for f in self.files if os.sep not in f and "/" not in f
+                 and f not in self.dep.ROOT_ALLOW
+                 and os.path.splitext(f)[1] not in self.dep.ROOT_ALLOW_EXT]
+        self.assertEqual(stray, [], f"根目录文件不在白名单：{stray}")
+
+    def test_underscore_root_files_never_deployed(self):
+        """任何根目录下划线开头文件都不得上线（无论叫什么名字）。"""
+        bad = [f for f in self.files if os.sep not in f and "/" not in f
+               and f.startswith("_")]
+        self.assertEqual(bad, [], f"下划线临时文件混入部署：{bad}")
 
     def test_backups_not_deployed(self):
         """*.bak / *.ciparity_bak 之类的备份不得上线。"""
