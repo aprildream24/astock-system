@@ -118,9 +118,12 @@ class TestPreAuctionGate(unittest.TestCase):
             src = f.read()
         self.assertIn("def _preauction_ready(", src,
                       "缺少盘前/竞价专用就绪判定")
-        self.assertRegex(
-            src, r'if task in \("pre",\s*"auction"\):\s*\n\s*ready,\s*ready_why\s*=\s*_preauction_ready',
-            "build 必须对 pre/auction 走专用闸门")
+        # 只断言「pre/auction 分支内调用了 _preauction_ready」，
+        # 不钉死跨行字面排版（实参换行即失配，属脆弱断言）
+        i = src.index('if task in ("pre", "auction"):')
+        tail = src[i:i + 900]
+        self.assertIn("_preauction_ready(", tail,
+                      "build 必须对 pre/auction 走专用闸门")
 
     def test_gate_fails_closed_without_snapshot(self):
         """无当日快照必须判失败（不得放行无数据构建）。"""
@@ -713,6 +716,287 @@ class TestIndexCalendarIntegrity(unittest.TestCase):
             "SELECT MAX(date) FROM klines WHERE code=?", ("sh000001",)).fetchone()
         d = r[0] if r else None
         self.assertFalse(not (d and d >= latest_td), "已是最新则不应重复补拉")
+
+
+class TestPremarketAllZeroNotHoliday(unittest.TestCase):
+    """H. 「快照 pct 全零 ⇒ 疑似休市」的两个副本（2026-09-16 第三/四号血案）。
+
+    ★ 这是同一个错误判定的**三处副本**——修一处不够：
+      ① `fetch_daily.guard_snapshot`（抛 ValueError，盘前任务 failure）
+      ② `build._preauction_ready`（返回 False，盘前只发「数据未就绪」）
+      ③ `core.is_trading_day_cross`（close 路径，**故意保留**——
+         15:22 收盘后 pct 全零确实是休市/数据异常信号，见
+         test_gate_no_deadlock.test_all_zero_pct_still_rejects）
+    ①② 在**盘前时段**是**必然误判**：08:50 集合竞价未开始、09:25 竞价刚
+    结束接口未刷新，快照涨跌幅天然全 0。实测 09-15 08:50 定时任务因此
+    ValueError → 抓取步骤 failure → 后接「构建+推送」整步 skipped
+    → **用户全天收不到盘前推送**（这就是"什么都收不到"的根因）。
+    """
+
+    def test_guard_snapshot_signature_has_premarket(self):
+        import importlib
+        fd = importlib.import_module("pipeline.fetch_daily")
+        import inspect
+        sig = inspect.signature(fd.guard_snapshot)
+        self.assertIn("premarket", sig.parameters,
+                      "guard_snapshot 必须有 premarket 开关")
+        self.assertIs(sig.parameters["premarket"].default, False,
+                      "premarket 默认必须为 False —— 收盘路径的全零保护"
+                      "（test_all_zero_pct_still_rejects）不可放松")
+
+    def test_guard_snapshot_premarket_allows_all_zero(self):
+        """★ 核心：盘前快照全零必须放行，且跳过成交额分级。"""
+        import importlib
+        fd = importlib.import_module("pipeline.fetch_daily")
+        universe = {f"60000{i}": {"pct": 0.0, "amt": 0.0} for i in range(50)}
+        lvl, reason = fd.guard_snapshot(universe, "2026-09-16",
+                                        premarket=True)
+        self.assertEqual(lvl, "ok", "盘前全零必须放行")
+        self.assertIn("premarket", reason,
+                      "理由须说明是盘前时段（便于日志排查）")
+
+    def test_guard_snapshot_non_premarket_still_raises(self):
+        """★ 反向锁：非盘前全零仍须抛（别把休市保护改没了）。"""
+        import importlib
+        fd = importlib.import_module("pipeline.fetch_daily")
+        universe = {f"60000{i}": {"pct": 0.0, "amt": 0.0} for i in range(50)}
+        with self.assertRaises(ValueError) as cm:
+            fd.guard_snapshot(universe, "2026-09-16", premarket=False)
+        self.assertIn("全 0", str(cm.exception),
+                      "非盘前全零必须仍判疑似休市（收盘保护不可放松）")
+
+    def test_fetch_daily_accepts_premarket(self):
+        import importlib
+        import inspect
+        fd = importlib.import_module("pipeline.fetch_daily")
+        sig = inspect.signature(fd.fetch_daily)
+        self.assertIn("premarket", sig.parameters,
+                      "fetch_daily 必须把 premarket 透传给 guard_snapshot")
+        self.assertIn("premarket=premarket", self._fetch_src(),
+                      "fetch_daily 内部必须真的把 premarket 传下去"
+                      "（只加形参不传参 = 白改）")
+
+    def _fetch_src(self):
+        with open(os.path.join(ROOT, "pipeline", "fetch_daily.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_cli_has_premarket_flag(self):
+        """CI 靠 CLI 传参 —— 入口必须有 --premarket。"""
+        src = self._fetch_src()
+        self.assertIn('"--premarket"', src,
+                      "CLI 必须暴露 --premarket（workflow 靠它传参）")
+        self.assertIn("premarket=a.premarket", src,
+                      "CLI 解析后必须透传给 fetch_daily")
+
+    def test_workflow_passes_premarket_for_pre_auction(self):
+        """workflow 第 7 步必须对 pre/auction 传 --premarket。"""
+        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
+                  encoding="utf-8") as f:
+            y = f.read()
+        self.assertIn("--premarket", y,
+                      "workflow 必须对盘前/竞价任务传 --premarket，"
+                      "否则 08:50 快照全零照样抛 ValueError")
+        # 必须是「pre 或 auction 才加」的条件式，不能无条件加
+        self.assertRegex(
+            y, r"task\s*==\s*'pre'|task\s*==\s*.pre.",
+            "必须按 task 条件判断（review 是盘后，不该带该标志）")
+
+    def test_preauction_gate_has_no_allzero_rejection(self):
+        """★ 核心：_preauction_ready 不得再有全零拒绝分支。"""
+        with open(os.path.join(ROOT, "pipeline", "build.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        i = src.index("def _preauction_ready(")
+        j = src.index("def _notify_data_blocked(")
+        body = strip_comments(src[i:j])
+        self.assertNotIn(
+            "快照 pct 全零", body,
+            "_preauction_ready 不得再因全零拒绝 —— 盘前全零是时点属性，"
+            "不是休市证据（实测因此只发得出一条「数据未就绪」）")
+
+    def test_preauction_gate_still_requires_snapshot(self):
+        """反向锁：去掉全零判定后，仍必须要求当日快照存在。"""
+        with open(os.path.join(ROOT, "pipeline", "build.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        i = src.index("def _preauction_ready(")
+        j = src.index("def _notify_data_blocked(")
+        body = strip_comments(src[i:j])
+        self.assertIn("无快照（竞价数据未入库）", body,
+                      "无当日快照必须仍然拒绝（不得为了放行而放行）")
+
+    def test_preauction_gate_semantics_offline(self):
+        """★ 离线真验：注入全零快照 → 修复后必须放行。
+
+        修复前该场景返回 `False, "快照 pct 全零：疑似休市日"`。
+        """
+        import importlib
+        import sqlite3
+        build = importlib.import_module("pipeline.build")
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE klines(code TEXT, date TEXT,"
+                    " o REAL, h REAL, l REAL, c REAL, v REAL)")
+        con.execute("CREATE TABLE snapshot(date TEXT, code TEXT, name TEXT,"
+                    " price REAL, pct REAL, amt REAL, turn REAL, fmv REAL)")
+        # 上一交易日有 K线
+        con.execute("INSERT INTO klines VALUES('sh000001','2026-09-15',"
+                    "1,1,1,1,1)")
+        # 当日 800 只快照，pct 全 0（复现「盘前快照全 0」）
+        con.executemany("INSERT INTO snapshot VALUES('2026-09-16',?,?,0,0,0,"
+                        "0,0)", [(f"sh6000{i:02d}", "x") for i in range(800)])
+        con.commit()
+        ok, why = build._preauction_ready(con, "2026-09-16")
+        self.assertTrue(ok, f"盘前全零快照必须放行，实际：{why}")
+        self.assertIn("就绪", why)
+
+    def test_preauction_signature_has_no_bypass_switch(self):
+        """★ 不得留 `task_has_intraday_pct` 这类开关。
+
+        已知教训：修复时若把旧分支包成「开关 + 死代码」，后人翻开开关就
+        重新踩坑。**删干净比留开关安全**——故断言该形参不复存在。
+        """
+        import importlib
+        import inspect
+        build = importlib.import_module("pipeline.build")
+        sig = inspect.signature(build._preauction_ready)
+        self.assertEqual(
+            list(sig.parameters), ["con", "date"],
+            f"_preauction_ready 只应接受 (con, date)，实际 {list(sig.parameters)}"
+            "—— 多出的开关意味着旧的全零拒绝分支还活着")
+
+    def test_close_path_allzero_still_guarded(self):
+        """反向锁：close 路径的全零判定**故意保留**（15:22 全零=真异常）。"""
+        with open(os.path.join(ROOT, "pipeline", "core.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("快照 pct 全零", src,
+                      "core.is_trading_day_cross 的全零判定是 close 路径的"
+                      "真保护（15:22 全零意味着休市或数据异常），不得误删")
+
+
+class TestPushFallbackChain(unittest.TestCase):
+    """I. 备用通道兜底（2026-09-16 补，消除单通道风险）。
+
+    本仓库当前形态：`primary_channel=pushplus`、`wxpusher_accounts=[]`、
+    本地 `serverchan_key=''`。即 **PushPlus 是唯一通道** —— 它一挂就零送达。
+    而 CI 侧 `SERVERCHAN_KEY` Secret **已注入 stock.yml**（build 与 review
+    两步都有），代码却从不拿它作 PushPlus 的兜底（原实现只在 wxpusher
+    全失败时兜底）⇒ 一条现成的备用通道被白白浪费。
+
+    这是"什么都收不到"的**最后一道未知风险**：前面所有闸门都修好了，
+    但若 PushPlus 当天额度耗尽/接口异常，用户依然收不到，且无通道补位。
+    """
+
+    def _cfg(self, **over):
+        cfg = {"push_dry_run": False, "primary_channel": "pushplus",
+               "pushplus_token": "t" * 32, "serverchan_key": "s" * 32,
+               "wxpusher_accounts": [], "push_tag": "Astra"}
+        cfg.update(over)
+        return cfg
+
+    def _con(self):
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE push_ledger(biz_key TEXT, mode TEXT,"
+                    " ts TEXT, ok INT, status TEXT, src TEXT, note TEXT)")
+        return con
+
+    def _isolate(self, notifier):
+        tmpdir = tempfile.mkdtemp(prefix="astock_fb_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, True))
+        p = os.path.join(tmpdir, "led.json")
+        patcher = mock.patch.object(notifier, "DIST_LEDGER", p)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_pushplus_failure_falls_back_to_serverchan(self):
+        """★ 核心：PushPlus failed → 必须补发 ServerChan。"""
+        import importlib
+        notifier = importlib.import_module("pipeline.notifier")
+        self._isolate(notifier)
+        calls = []
+
+        def fake_pp(*a):
+            calls.append("pushplus")
+            return "failed", "HTTP 500"
+
+        def fake_sc(*a):
+            calls.append("serverchan")
+            return "sent", "ok"
+
+        with mock.patch.object(notifier, "_send_pushplus", fake_pp), \
+                mock.patch.object(notifier, "_send_serverchan", fake_sc), \
+                mock.patch.object(notifier, "load_config",
+                                  lambda *a, **k: self._cfg()):
+            r = notifier.push("build_close", "T", "B",
+                              date="2026-09-16", con=self._con())
+        self.assertEqual(calls, ["pushplus", "serverchan"],
+                         "PushPlus 失败后必须走 ServerChan 兜底")
+        self.assertTrue(r["sent"], "兜底成功后整体必须报 sent（用户确实收到了）")
+        self.assertEqual(r["results"]["serverchan"]["status"], "sent")
+        self.assertEqual(r["results"].get("serverchan", {}).get("role"),
+                         "fallback", "兜底通道须带 role 标记便于排查")
+
+    def test_uncertain_does_not_trigger_duplicate_fallback(self):
+        """★ 反向锁：`uncertain`（超时/受理未知）**不得**触发兜底补发。
+
+        受理状态未知时补发会造成**同一消息重复送达**——这是 M37 三态账本
+        刻意设计的语义（不确定优先于 failed，不盲目双发）。
+        """
+        import importlib
+        notifier = importlib.import_module("pipeline.notifier")
+        self._isolate(notifier)
+        calls = []
+
+        def fake_pp(*a):
+            calls.append("pushplus")
+            return "uncertain", "timeout"
+
+        def fake_sc(*a):
+            calls.append("serverchan")
+            return "sent", "ok"
+
+        with mock.patch.object(notifier, "_send_pushplus", fake_pp), \
+                mock.patch.object(notifier, "_send_serverchan", fake_sc), \
+                mock.patch.object(notifier, "load_config",
+                                  lambda *a, **k: self._cfg()):
+            r = notifier.push("build_close", "T", "B",
+                              date="2026-09-16", con=self._con())
+        self.assertEqual(calls, ["pushplus"],
+                         "uncertain 不得补发（会造成重复送达）")
+        self.assertEqual(r["status"], "uncertain",
+                         "总体状态应保持 uncertain，不得美化成 sent")
+
+    def test_no_fallback_without_key(self):
+        """没配 serverchan_key 时不得报错（须优雅降级）。"""
+        import importlib
+        notifier = importlib.import_module("pipeline.notifier")
+        self._isolate(notifier)
+
+        def fake_pp(*a):
+            return "failed", "HTTP 500"
+
+        with mock.patch.object(notifier, "_send_pushplus", fake_pp), \
+                mock.patch.object(notifier, "load_config",
+                                  lambda *a, **k: self._cfg(
+                                      serverchan_key="")):
+            r = notifier.push("build_close", "T", "B",
+                              date="2026-09-16", con=self._con())
+        self.assertFalse(r["sent"], "无兜底且主通道失败 ⇒ 必须报 sent=False"
+                                    "（不得静默伪装成功）")
+        self.assertEqual(r["status"], "failed")
+
+    def test_fallback_capability_declared_in_workflow(self):
+        """CI 必须把 SERVERCHAN_KEY 注入构建+推送步骤（兜底的前提）。"""
+        with open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
+                  encoding="utf-8") as f:
+            y = f.read()
+        self.assertIn("SERVERCHAN_KEY", y,
+                      "workflow 必须注入 SERVERCHAN_KEY —— 否则兜底代码在 CI 上"
+                      "永远因无 key 而跳过，单通道风险依旧")
 
 
 if __name__ == "__main__":
