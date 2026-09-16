@@ -62,6 +62,29 @@ class TestAuditJobs(unittest.TestCase):
         self.assertEqual(r["other"], 1)
         self.assertEqual(r["missing"], [])
 
+    def test_counts_distinguish_mine_known_other_and_unknown(self):
+        """血案（09-16 15:45 实测日志）：只回一个 `other` ⇒ 打印成
+        "共 33 个任务（其中 0 个非本项目）"，而实际有 24 个属另一套。
+        日志自相矛盾 ⇒ 排障时被误导（本项目 9 + 另一套 24 = 33）。
+        三类计数必须分开且恒等自洽。"""
+        jobs = (_all_jobs()
+                + [_job("stock-anomaly-am"), _job("exec-scan-1000")]
+                + [_job("someone-else")])
+        r = tg.audit_jobs(jobs)
+        self.assertEqual(r["mine"], len(tg.REQUIRED))
+        self.assertEqual(r["known_other"], 2)
+        self.assertEqual(r["other"], 1)
+        self.assertEqual(len(r["titles"]),
+                         r["mine"] + r["known_other"] + r["other"])
+
+    def test_other_system_counted_as_known_other_not_unknown(self):
+        """另一套项目的 24 个任务必须落在 `known_other`，绝不能算 `other`。"""
+        jobs = _all_jobs() + [_job("stock-build"), _job("exec-review"),
+                              _job("exec-scan-0935")]
+        r = tg.audit_jobs(jobs)
+        self.assertEqual(r["known_other"], 3)
+        self.assertEqual(r["other"], 0)
+
     def test_empty_and_dirty_input_safe(self):
         self.assertEqual(len(tg.audit_jobs([])["missing"]), len(tg.REQUIRED))
         self.assertEqual(len(tg.audit_jobs(None)["missing"]), len(tg.REQUIRED))
@@ -254,6 +277,21 @@ class TestWiring(unittest.TestCase):
                   encoding="utf-8") as f:
             w = f.read()
         self.assertIsNone(re.search(r"\$\{\{[^{}]*\?[^{}]*\}\}", w))
+
+    def test_log_counts_are_self_consistent(self):
+        """日志里的计数不得自相矛盾（09-16 血案：33 个任务却说"0 个非本项目"）。
+
+        - 不得再出现"非本项目"这种与 `other` 语义不符的措辞；
+        - "全部 enabled" 的数量必须由 `len(REQUIRED)` 推出，不能硬编码 9
+          （否则 REQUIRED 增删后日志会撒谎）。"""
+        with open(os.path.join(ROOT, "pipeline", "timer_guard.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn("个非本项目", src)
+        self.assertIn("r['mine']", src)
+        self.assertIn("r['known_other']", src)
+        self.assertIn("len(REQUIRED)} 个 astock-*", src)
+        self.assertIsNone(re.search(r"\b9 个 astock-\*", src))
 
 
 if __name__ == "__main__":

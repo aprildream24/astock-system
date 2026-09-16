@@ -93,6 +93,7 @@ def main():
     for rel, must in (
             (".github/workflows/watchdog.yml", "push_audit"),
             ("pipeline/push_audit.py", "SLOT_TASKS"),
+            ("pipeline/timer_guard.py", "known_other"),
     ):
         st, r = dep._req("GET", dep.API + f"/contents/{rel}?ref=main", tok)
         if st != 200:

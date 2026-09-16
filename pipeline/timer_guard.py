@@ -87,9 +87,13 @@ def fetch_jobs(key, timeout=25):
 
 
 def audit_jobs(jobs):
-    """→ {"missing": [...], "disabled": [...], "titles": [...], "other": n}
+    """→ {"missing": [...], "disabled": [...], "titles": [...],
+         "other": n, "mine": n, "known_other": n}
 
-    `other` = 不属于本项目、也不属于已知另一套前缀的任务数（仅作提示）。
+    - `mine`         = 本项目 `astock-*` 定时器数量（含被停用的）
+    - `known_other`  = 已知另一套项目前缀的任务数（正常共存，不算异常）
+    - `other`        = 既不属于本项目、也不匹配任何已知前缀 ⇒ **无法归类**，
+                       仅作提示（可能是我方新加/改名，也可能是别人的新任务）
     """
     by_title = {}
     for j in jobs or []:
@@ -100,11 +104,16 @@ def audit_jobs(jobs):
     disabled = [t for t in REQUIRED
                 if t in by_title and by_title[t].get("enabled") is not True]
     titles = sorted(by_title)
+    mine = sum(1 for t in titles if t.startswith("astock-"))
+    known_other = sum(1 for t in titles
+                      if not t.startswith("astock-")
+                      and t.startswith(OTHER_PREFIX))
     other = sum(1 for t in titles
                 if not t.startswith("astock-")
                 and not t.startswith(OTHER_PREFIX))
     return {"missing": missing, "disabled": disabled,
-            "titles": titles, "other": other}
+            "titles": titles, "other": other,
+            "mine": mine, "known_other": known_other}
 
 
 def _get_json(url, token=None, timeout=25):
@@ -203,13 +212,14 @@ def _check_timers(problems):
         return
     r = audit_jobs(jobs)
     print(f"[guard] cron-job.org 共 {len(r['titles'])} 个任务"
-          f"（其中 {r['other']} 个非本项目）")
+          f"（本项目 {r['mine']} · 已知另一套 {r['known_other']}"
+          f" · 未归类 {r['other']}）")
     if r["missing"]:
         problems.append(f"缺失定时器：{', '.join(r['missing'])}")
     if r["disabled"]:
         problems.append(f"被停用的定时器：{', '.join(r['disabled'])}")
     if not r["missing"] and not r["disabled"]:
-        print(f"[guard] 9 个 astock-* 定时器全部 enabled ✓")
+        print(f"[guard] {len(REQUIRED)} 个 astock-* 定时器全部 enabled ✓")
 
 
 def _check_chain(problems):
