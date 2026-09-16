@@ -53,7 +53,11 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           "test_premarket_snapshot_scope.py",
           # 2026-09-16 新增：M41 盘中计划校验（只读实时快照/零污染主表 +
           # 没有机会就不凑数的打扰纪律）
-          "test_intraday_scope.py"]
+          "test_intraday_scope.py",
+          # 2026-09-16 新增：推送验收/自动补发（云端 watchdog）。
+          # 血案：CI 步骤全绿但 build_pre 状态 uncertain、用户端零消息
+          # —— 「步骤绿 ≠ 送达」，验收必须落到远端账本的 mode+status。
+          "test_push_audit.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

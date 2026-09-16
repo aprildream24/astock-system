@@ -272,10 +272,16 @@ class TestBackfillPath(unittest.TestCase):
         with open(os.path.join(ROOT, "pipeline", "notifier.py"),
                   encoding="utf-8") as f:
             src = _strip_comments(f.read())
-        self.assertIn('ts = f"{date} {datetime.now().strftime', src,
+        self.assertIn('ts = f"{date} ', src,
                       "ts 日期部分必须锚定交易日 date")
         self.assertNotIn('ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")',
                          src, "不得回退成「当前日期」写法（会占掉当日保险丝）")
+        # 时间部分必须是北京时间：CI runner 是 UTC，直接用 now() 会让账本
+        # 出现「05:41」这种读起来像凌晨、实为 13:41 的记录（排障误判源）。
+        self.assertIn("_CST", src,
+                      "ts 时间部分必须用北京时间（_CST），不能拿 runner 的 UTC")
+        self.assertNotIn("ts = f\"{date} {datetime.now().strftime", src,
+                         "ts 时间部分不得用 runner 本地时区（UTC）")
 
     def test_backfill_does_not_consume_today_slot(self):
         """离线真验：以「昨天」为交易日推送 → 今天的保险丝不得被占用。"""

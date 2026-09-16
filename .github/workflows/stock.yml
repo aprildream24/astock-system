@@ -124,13 +124,18 @@ jobs:
           python -m pip install --quiet pynacl
           python -m pipeline.sync_watch
       - name: 收盘数据抓取（全市场）
+        # ⚠️ 2026-09-16：`site` **移出**本条件（原含 task == 'site'）。
+        # 站点是纯展示层，数据新鲜度由 15:22 的 close 负责（close 之后
+        # 必然重建站点），site 自己再拉一次全市场纯属白烧 ~6 分钟——
+        # 而 site 正是「验证 CI 新代码」最常用的入口（task=site 跑回归
+        # 自检但不发推送、不占额度），每次多等 6 分钟代价太大。
+        # 冷库时 site 会读到 restore-keys 恢复的行情库，不会二次冷启。
         if: >-
           github.event.inputs.task != 'watch-sync' &&
           ((github.event_name == 'schedule' &&
             github.event.schedule == '22 7 * * 1-5') ||
            (github.event_name == 'workflow_dispatch' &&
             (github.event.inputs.task == 'close' ||
-             github.event.inputs.task == 'site' ||
              github.event.inputs.task == '')))
         # 2026-09-15 修复：抓取失败不得连坐推送。原 fail-fast 让第 8 步
         # 「构建+推送」整步 skipped ⇒ 用户全天零推送（8:50 failure / 9:25
@@ -275,6 +280,28 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPO: ${{ github.repository }}
         run: python -m pipeline.push_ledger_sync
+      # 2026-09-16 新增：跑完即自检 —— 读**远端**账本确认本次任务的推送
+      # **真的送达了**（不是"步骤没报错"）。
+      # 血案：09-16 08:50 那轮每一步 conclusion 都是 success，但 build_pre
+      # 账本状态是 uncertain、用户端零消息 —— 「步骤绿 ≠ 送达」。
+      # 判据：本任务期望 mode 今天有 status=sent 的记录；缺失但已发
+      # data_blocked_* / data_holiday 显式告警 → WARN（已主动告知，非静默失败）。
+      # 只报告、不回补（同一 run 里再触发自己只会白烧额度）；补发交 watchdog。
+      # ⚠️ continue-on-error：本步骤是"体检"，任何自身异常都不允许影响主链
+      #（新增步骤连坐推送是这个项目最贵的一类事故）。
+      - name: 推送验收（自检）
+        if: >-
+          github.event.inputs.task != 'watch-sync' &&
+          (success() || failure())
+        continue-on-error: true
+
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TASK="${{ github.event.inputs.task }}"
+          if [ -z "$TASK" ]; then TASK=close; fi
+          python -m pipeline.push_audit --task "$TASK"
       - name: 上传 Pages 构件
         if: >-
           github.event.inputs.task != 'watch-sync' &&

@@ -1,0 +1,66 @@
+# 云端推送验收 + 自动补发（2026-09-16 新增，唯一验收通道）
+#
+# 为什么要有这个 workflow：
+#   用户电脑**常年不开机**，原先跑在本机的两条 Automation 验收等于不存在；
+#   且 09-16 上午暴露了一类**静默失败**——CI 每一步都 success，推送实际没送达
+#   （build_pre 状态 uncertain，用户端零消息）。只看步骤结论必然漏，必须
+#   「读远端账本 + 按 mode 判 status」。
+#
+# 权威触发 = cron-job.org（与 stock.yml 同一套口径）：
+#   astock-audit-am      周一~五 10:00 → slot=am     验收 盘前08:50 + 竞价09:25
+#   astock-audit-close   周一~五 15:45 → slot=close  验收 收盘15:22
+#   astock-audit-review  周一~五 20:20 → slot=review 验收 复盘20:02
+# 本 workflow 不接收 GitHub schedule（自带 cron 已全删，延迟不可控）。
+#
+# 行为：账本里"该发却没发"的 mode → dispatch stock.yml 补上（不传 force，
+# 本来就缺，日级去重不会拦）；全部到位则静默退出，**不产生任何推送**。
+# 保守边界：非交易日跳过、未到点不补、有 run 在跑不补、读不到账本不补
+# （无法证明"没发"时绝不动作，否则自己就成了新的重复推送源）。
+name: watchdog
+
+on:
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "验收时点: am=10:00(盘前+竞价) | close=15:45(收盘) | review=20:20(复盘)"
+        default: close
+      dry:
+        description: "填 1 = 只报告不补发（排障用）"
+        default: ""
+
+permissions:
+  contents: read
+
+# 与 stock 的 Pages 并发组无关；验收本身很快，串行即可。
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    # 只读账本 + 最多若干次 dispatch，正常 30 秒内结束。给足余量。
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 纯标准库（urllib/json/base64），无需 pip 安装——验收链路要尽量少依赖，
+      # 少一个依赖就少一种"验收自己挂掉"的可能。
+      - name: 云端验收 + 自动补发
+        env:
+          # dispatch 需要 actions:write 的令牌（GITHUB_TOKEN 触发的 dispatch
+          # 不保证能起新 run，统一用 PAT）
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          SLOT="${{ github.event.inputs.slot }}"
+          if [ -z "$SLOT" ]; then SLOT=close; fi
+          if [ "${{ github.event.inputs.dry }}" = "1" ]; then
+            ARGS="--dry"
+          else
+            ARGS=""
+          fi
+          echo "[watchdog] slot=$SLOT args='$ARGS'"
+          python -m pipeline.push_audit --slot "$SLOT" $ARGS

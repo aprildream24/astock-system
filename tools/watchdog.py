@@ -1,5 +1,16 @@
 # -*- coding: utf-8 -*-
-"""调度守护（2026-09-14 重构：主链已上 CI，改为查 GitHub Actions 公开 API）。
+"""调度守护（**本机版，已被云端版取代** —— 见下方 ⚠️）。
+
+⚠️ 2026-09-16 起，权威验收通道已迁到云端：
+    `pipeline/push_audit.py` + `.github/workflows/watchdog.yml`
+    （由 cron-job.org 在 10:00 / 15:45 / 20:20 触发，读**远端**账本按 mode
+     判 status，缺了就 dispatch 补发）。
+理由：**用户电脑常年不开机**，本脚本要求"16:00 与 21:00 各跑一次"，
+    等于没有验收；且它只按"今日有无 success run"判，看不出
+    「步骤绿但推送没送达」那类静默失败（09-16 08:50 实证）。
+本文件保留作为**离线/断网时的替代体检**，不再是主通道。
+
+原说明：调度守护（2026-09-14 重构：主链已上 CI，改为查 GitHub Actions 公开 API）。
 
 架构变更背景：fetch/build/推送的主战场在 GitHub Actions（stock workflow），
 本地文件（cache/fetch_stats.json、push_ledger）不再反映主链状态——

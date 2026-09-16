@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from . import core
 from .core import load_config, get_conn, fetch_open_snapshot, BASE_DIR
@@ -20,6 +20,14 @@ from .core import load_config, get_conn, fetch_open_snapshot, BASE_DIR
 PP_HTML_CAP = 19000          # PushPlus content 上限 20000，安全线 19000
 CAND_LINE_CAP = 96           # 候选行硬红线（字符数）
 DIST_LEDGER = os.path.join(BASE_DIR, "dist", "push_ledger.json")
+
+# 北京时间：CI runner 的本地时区是 **UTC**，而账本的 ts 是人工排障时
+# 第一眼要读的东西。若直接用 now()，账本上会出现 `2026-09-16 05:41:06`
+# ——实际是北京时间 13:41，极容易被误读成"凌晨推的/今天没推"。
+# ⚠️ 只改**时间部分**：日期部分必须继续用交易日 `date`（见 push() 内注释，
+# 那是「补发历史不得占当日额度」的命门）。_daily_sent 只比对日期前缀，
+# 故本改动对去重/保险丝零影响。
+_CST = timezone(timedelta(hours=8))
 
 ACTION_BADGE = {"现在买": "✅买入", "等回踩": "⏳等回踩", "小仓试": "🔸小仓试",
                 "次日竞价达标买": "🎯竞价达标买", "观望": "👀观望", "禁买": "⛔禁买"}
@@ -643,7 +651,7 @@ def push(mode, title, content, date=None, con=None,
     # （恰好与「补发历史不占当日额度」的承诺相反——承诺写在文档里，
     #  而实现才是准的，这次以实现为准修数据模型）。
     # 当日正常推送时 date == today ⇒ ts 与旧行为逐字节一致，零影响。
-    ts = f"{date} {datetime.now().strftime('%H:%M:%S')}"
+    ts = f"{date} {datetime.now(_CST).strftime('%H:%M:%S')}"
     if not force and _reconcile(con, key, mode, ts, True):
         return {"sent": False, "dedup": True, "key": key}
     # 网页端入口：按钮式（旧版把 50+ 字符裸 URL 直接铺在正文末尾，

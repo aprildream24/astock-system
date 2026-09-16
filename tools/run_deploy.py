@@ -23,6 +23,11 @@ TOKEN_FILE = r"C:\Users\Basshunter-j\AppData\Local\Temp\astock_gh_token.txt"
 LOG = os.path.join(ROOT, "_deploy_out.txt")
 
 
+def _b64(content):
+    import base64
+    return base64.b64decode(content).decode("utf-8", "replace")
+
+
 def main():
     buf = io.StringIO()
 
@@ -83,6 +88,18 @@ def main():
         p("远端 continue-on-error 次数:", remote.count("continue-on-error"))
     else:
         p("读远端 stock.yml 失败:", st, r)
+
+    # 3b) 云端验收 workflow / 验收模块必须真的上线（漏了这次修复就白做）
+    for rel, must in (
+            (".github/workflows/watchdog.yml", "push_audit"),
+            ("pipeline/push_audit.py", "SLOT_TASKS"),
+    ):
+        st, r = dep._req("GET", dep.API + f"/contents/{rel}?ref=main", tok)
+        if st != 200:
+            p(f"❌ 远端缺 {rel}：HTTP {st}", str(r)[:200])
+            continue
+        body = _b64(r["content"])
+        p(f"远端 {rel}: {len(body)}B 关键标记{'✓' if must in body else '✗'}")
 
     with open(LOG, "w", encoding="utf-8") as f:
         f.write(buf.getvalue())
