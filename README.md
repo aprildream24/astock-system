@@ -260,6 +260,15 @@ tests/           回归测试（`run_regression.py` 硬编码白名单，PASS=47
 8. ⚠️ **推送后必须验证**：改了影响主链的代码，立刻 dispatch `task=site`
    跑一次 CI 回归自检（不发推送、不占额度）；**不要在临近定时时点推送**——
    坏 HEAD 会让当天那一轮直接失败（09-16 收盘 15:22 run 就因此丢了推送）。
+9. 🔴 **仓库是公开的，入库即公开**。`tools/deploy.py` 的三条硬规则：
+   - `config/` 走**白名单**（只放 `*.example.json`）——**黑名单列不全**，
+     `EXCLUDE_FILES` 按精确名排 `users.json`，`users.json.bak` 就漏了网，
+     把明文站点口令推上了公开仓库（09-16 血案）；
+   - 任何目录下 `_` 前缀 = 本机调试产物，一律不入库（原先只防根目录）；
+   - `sync()` **只增/改、从不删除** ⇒ 已被误推的文件会**永久留痕**，
+     补规则救不了历史 —— 必须靠 `purge()` 清（**`dist/` 例外，账本由 CI 维护**）。
+   ⇒ **改动排除规则时，同步更新 `should_purge()`**，两者必须是同一套策略，
+   回归锁见 `tests/test_deploy.py::TestDeploySecretLeakGuards`。
 
 ## 历史统计披露格式（附录B）
 
