@@ -50,7 +50,10 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           "test_preauction.py",
           # 2026-09-16 新增：盘前/竞价「筛选快照口径」+ 推送传输层重试
           # （血案：用户全天空推送 + 唯一一条是候选 0 只的空计划）
-          "test_premarket_snapshot_scope.py"]
+          "test_premarket_snapshot_scope.py",
+          # 2026-09-16 新增：M41 盘中计划校验（只读实时快照/零污染主表 +
+          # 没有机会就不凑数的打扰纪律）
+          "test_intraday_scope.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

@@ -1150,11 +1150,20 @@ def build_site(date=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="close",
-                    choices=["pre", "auction", "close", "review", "site"])
+                    choices=["pre", "auction", "close", "review", "site",
+                             "intraday"])
     ap.add_argument("--date", default=None)
+    # M41 盘中任务：--slot am|pm 决定早盘校验/尾盘机会；--dry 只算不推（本地验收）
+    ap.add_argument("--slot", default="pm", choices=["am", "pm"])
+    ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()   # argv 隔离：内嵌任务用 parse_known_args 的精神
     if a.task == "site":
         build_site(a.date)
+    elif a.task == "intraday":
+        # 盘中走**独立模块**，不进 build() —— 盘中用的是实时快照，
+        # 与收盘主链（日K口径）必须物理隔离，避免互相污染。
+        from . import intraday
+        intraday.run(slot=a.slot, date=a.date, dry=a.dry)
     else:
         build(a.task, a.date)
 

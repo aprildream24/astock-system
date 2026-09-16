@@ -158,6 +158,14 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_date ON snapshot(date);
 CREATE TABLE IF NOT EXISTS holdings(
     code TEXT PRIMARY KEY, name TEXT, buy_date TEXT, buy_price REAL,
     shares REAL, stop REAL);
+-- 2026-09-16 新增：盘中实时快照（M41）。**与 snapshot 主表物理隔离**——
+-- 盘中价不是收盘价，混进主表会让次日全部引擎基于假收盘价出信号
+-- （09-16「候选 0」血案同源风险）。本表只服务「盘中计划校验」，
+-- 需人工显式查询，不进任何引擎计算链路。
+CREATE TABLE IF NOT EXISTS snapshot_live(
+    date TEXT, slot TEXT, code TEXT, name TEXT,
+    price REAL, pct REAL, amt REAL,
+    PRIMARY KEY(date, slot, code));
 CREATE TABLE IF NOT EXISTS exec_log(
     ts TEXT, code TEXT, action TEXT, price REAL, reason TEXT);
 """

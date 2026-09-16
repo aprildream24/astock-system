@@ -27,8 +27,11 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "build 任务: pre | auction | close | review | site | watch-sync"
+        description: "build 任务: pre | auction | close | review | site | intraday | watch-sync"
         default: close
+      slot:
+        description: "intraday 专用: am=早盘校验(09:45) | pm=尾盘机会(14:40)"
+        default: ""
       codes:
         description: "watch-sync 专用：自选代码，逗号分隔（如 sh600519,sz000001）"
         default: ""
@@ -212,6 +215,18 @@ jobs:
             echo "[site] 站点任务不在本步骤推送"
             exit 0
           fi
+          if [ "$TASK" = "intraday" ]; then
+            # M41 盘中计划校验：**不抓日K**（下面两个抓取步骤的 if 都不含
+            # intraday，天然跳过），由模块内部只拉实时快照并写独立表
+            # snapshot_live —— 盘中价绝不能进 klines/snapshot 主表。
+            # ⚠️ 这里用 shell 分支而非 Actions 三元表达式（历史血案：
+            # `${{ cond ? a : b }}` 会让整个 workflow 解析失败 → dispatch 422）。
+            SLOT="${{ github.event.inputs.slot }}"
+            if [ -z "$SLOT" ]; then SLOT=pm; fi
+            echo "[intraday] slot=$SLOT"
+            python -m pipeline.build --task intraday --slot "$SLOT"
+            exit 0
+          fi
           python -m pipeline.build --task "$TASK"
       - name: 收盘复盘（自选股建议+AI叙事）
         if: >-
@@ -232,7 +247,10 @@ jobs:
           ASTOCK_BACKFILL: ${{ github.event.inputs.force }}
         run: python -m pipeline.build --task review
       - name: 构建加密站点
-        if: github.event.inputs.task != 'watch-sync'
+        # intraday（盘中校验）不改任何站点数据 → 跳过重建，省 1-2 分钟
+        if: >-
+          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'intraday'
         env:
           SITE_USERS: ${{ secrets.SITE_USERS }}
           SITE_EDIT_TOKEN: ${{ secrets.SITE_EDIT_TOKEN }}
@@ -253,7 +271,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: python -m pipeline.push_ledger_sync
       - name: 上传 Pages 构件
-        if: github.event.inputs.task != 'watch-sync'
+        if: >-
+          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'intraday'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
