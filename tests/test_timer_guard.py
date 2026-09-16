@@ -70,63 +70,133 @@ class TestAuditJobs(unittest.TestCase):
         self.assertIn("astock-pre", r["titles"])
 
 
+class TestChainStatus(unittest.TestCase):
+    """主链卡死判定：连续失败才告警，且要能区分「补发救不了」的情形。"""
+
+    def _runs(self, conclusions):
+        return [{"id": 1000 + i, "status": "completed",
+                 "conclusion": c, "created_at": "2026-09-16T07:00:00Z"}
+                for i, c in enumerate(conclusions)]
+
+    def _patch(self, conclusions, steps=(), err=None):
+        def fake(url, token=None, timeout=25):
+            if err:
+                raise OSError(err)
+            if "workflows" in url:
+                return {"workflow_runs": self._runs(conclusions)}
+            return {"jobs": []}
+        for m in (mock.patch.object(tg, "_get_json", side_effect=fake),
+                  mock.patch.object(tg, "failed_steps",
+                                    return_value=list(steps))):
+            m.start()
+            self.addCleanup(m.stop)
+
+    def test_api_unreachable_is_unknown_never_alerts(self):
+        self._patch([], err="boom")
+        self.assertEqual(tg.chain_status()[0], "unknown")
+
+    def test_too_few_completed_runs_is_unknown(self):
+        self._patch(["failure", "failure"])
+        self.assertEqual(tg.chain_status()[0], "unknown")
+
+    def test_any_success_means_ok(self):
+        self._patch(["failure", "success", "failure"])
+        self.assertEqual(tg.chain_status()[0], "ok")
+
+    def test_regression_failure_is_blocked_and_says_backfill_useless(self):
+        self._patch(["failure"] * 3, steps=["回归自检"])
+        state, detail = tg.chain_status()
+        self.assertEqual(state, "blocked")
+        self.assertIn("回归自检", detail)
+        self.assertIn("补发救不了", detail,
+                      "必须点明补发无用，否则会陷入无声的补发循环")
+
+    def test_other_step_failure_reports_step_names(self):
+        self._patch(["failure"] * 3, steps=["收盘数据抓取（全市场）"])
+        state, detail = tg.chain_status()
+        self.assertEqual(state, "blocked")
+        self.assertIn("收盘数据抓取", detail)
+        self.assertNotIn("补发救不了", detail)
+
+
 class TestCli(unittest.TestCase):
     def setUp(self):
+        # 两类网络调用一律不许真发：任何未 mock 的调用都显式失败。
         p = mock.patch("pipeline.notifier.push",
                        side_effect=AssertionError("不该推送"))
         self.push = p.start()
         self.addCleanup(p.stop)
+        for name in ("fetch_jobs", "chain_status"):
+            m = mock.patch.object(
+                tg, name, side_effect=AssertionError(f"不该调用 {name}"))
+            m.start()
+            self.addCleanup(m.stop)
+        self.env = mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"},
+                                   clear=False)
+        self.env.start()
+        self.addCleanup(self.env.stop)
 
-    def _run(self, argv, jobs, err=None):
+    def _run(self, argv, jobs, err=None, chain=("ok", "")):
         tg.fetch_jobs = mock.Mock(return_value=(list(jobs), err))
+        tg.chain_status = mock.Mock(return_value=chain)
         return tg.main(argv)
 
     def test_no_key_skips_without_network(self):
-        tg.fetch_jobs = mock.Mock(side_effect=AssertionError("不该出网"))
+        """没配 key 时定时器检查不得出网（否则等于把守门变成网络依赖）。"""
         with mock.patch.dict(os.environ, {"CRONJOB_API_KEY": ""}, clear=False):
-            self.assertEqual(tg.main(["--dry"]), 0)
+            rc = self._run(["--dry"], [])
+        self.assertEqual(rc, 0)
+        tg.fetch_jobs.assert_not_called()
+        self.push.assert_not_called()
 
     def test_network_error_does_not_alert(self):
         """网络抖动 ≠ 定时器故障：绝不能半夜误吵。"""
-        with mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"}):
-            rc = self._run([], [], err="URLError: timed out")
+        rc = self._run([], [], err="URLError: timed out")
         self.assertEqual(rc, 0)
         self.push.assert_not_called()
 
     def test_all_ok_is_silent(self):
-        with mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"}):
-            rc = self._run([], _all_jobs())
+        rc = self._run([], _all_jobs())
         self.assertEqual(rc, 0)
         self.push.assert_not_called()
 
     def test_missing_timer_alerts(self):
-        with mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"}):
-            rc = self._run([], [j for j in _all_jobs()
-                               if j["title"] != "astock-close"])
+        rc = self._run([], [j for j in _all_jobs()
+                           if j["title"] != "astock-close"])
         self.assertEqual(rc, 1)
         self.push.assert_called_once()
         args, kw = self.push.call_args
         self.assertEqual(args[0], "watchdog_alert")
-        self.assertTrue(kw.get("force"), "定时器故障属确定性事故，须绕过去重")
+        self.assertTrue(kw.get("force"), "基础设施故障属确定性事故，须绕过去重")
 
     def test_disabled_timer_alerts(self):
         jobs = [j for j in _all_jobs() if j["title"] != "astock-audit-review"]
         jobs.append(_job("astock-audit-review", enabled=False))
-        with mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"}):
-            rc = self._run([], jobs)
+        rc = self._run([], jobs)
         self.assertEqual(rc, 1)
         self.push.assert_called_once()
 
     def test_auth_failure_alerts(self):
         """key 失效 = 守门自己瞎了，必须让人知道。"""
-        with mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"}):
-            rc = self._run([], [], err="HTTP 403")
+        rc = self._run([], [], err="HTTP 403")
         self.assertEqual(rc, 1)
         self.push.assert_called_once()
 
+    def test_chain_blocked_alerts_even_when_timers_fine(self):
+        """定时器全好但代码坏了 ⇒ 依然告警（09-16 实测两例：全天零推送）。"""
+        rc = self._run([], _all_jobs(),
+                       chain=("blocked", "最近 3 个 run 全部失败：回归自检"))
+        self.assertEqual(rc, 1)
+        self.push.assert_called_once()
+        self.assertIn("回归自检", self.push.call_args[0][2])
+
+    def test_chain_unknown_does_not_alert(self):
+        rc = self._run([], _all_jobs(), chain=("unknown", "API 不可达"))
+        self.assertEqual(rc, 0)
+        self.push.assert_not_called()
+
     def test_dry_never_pushes(self):
-        with mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"}):
-            rc = self._run(["--dry"], [])
+        rc = self._run(["--dry"], [])
         self.assertEqual(rc, 0)
         self.push.assert_not_called()
 
@@ -164,6 +234,20 @@ class TestWiring(unittest.TestCase):
             w = f.read()
         self.assertIn("timer_guard", w)
         self.assertIn("CRONJOB_API_KEY", w)
+        # 链路检查要读 Actions API（有 GH_PAT 才不会撞匿名限额），
+        # 且告警必须能真实送达 ⇒ 推送凭据也必须在场。
+        self.assertIn("secrets.GH_PAT", w)
+        self.assertIn("secrets.PUSHPLUS_TOKEN", w)
+
+    def test_guard_covers_chain_not_only_timers(self):
+        """守门必须同时覆盖「主链卡死」——09-16 实测两例全天零推送都属这一类，
+        而补发救不了（同一份坏代码照样挂），只能靠告警让人来修。"""
+        self.assertTrue(callable(tg.chain_status))
+        with open(os.path.join(ROOT, "pipeline", "timer_guard.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("CHAIN_LOOK", src)
+        self.assertIn("补发救不了", src)
 
     def test_no_ternary_literal_in_watchdog_wf(self):
         with open(os.path.join(ROOT, ".github", "workflows", "watchdog.yml"),
