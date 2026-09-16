@@ -140,6 +140,17 @@ Secrets 配置：
 - 同一 task 一次运行只 dispatch 一次（`build_review` 与 `narrative` 共用 `review`）；
 - 补发**不传 `force`**：本来就缺，日级去重不会拦。
 
+### 基础设施守门（`timer_guard.py`，同 workflow 内跑）
+
+验收能救"某次没发出去"，但救不了下面两类**根因**故障，故单独守门：
+
+| 故障 | 后果 | 守门动作 |
+|---|---|---|
+| cron-job.org 上 `astock-*` 定时器缺失 / 停用 / key 失效 | 对应时点**零 run** ⇒ 零推送，且 watchdog 自己也不会跑（"守夜人睡着了"） | 告警（`force=True`） |
+| 最近 3 个 stock run **全部 failure** | 自动补发**救不了**（同一份坏代码照样挂在「回归自检」）；09-16 实测两例全天零推送均属此类 | 告警并点明"卡在回归自检 ⇒ 需修代码" |
+
+误报边界同样保守：网络抖动 / Actions API 不可达 / 已完成 run 不足 3 个 → **只打印不告警**。
+
 ---
 
 ## 可买性口径（用户拍板 2026-09-13）
@@ -215,6 +226,7 @@ pipeline/
   alerts.py       触发式盯盘（止损/止盈/买点/锁定）
   intraday.py     M41 盘中计划校验（只读实时快照/零污染主表/静默纪律）
   push_audit.py   推送验收/自动补发（读远端账本按 mode 判 status，云端 watchdog 用）
+  timer_guard.py  基础设施守门（cron-job.org 定时器存活 + 主链连续失败告警）
   recperf.py      推荐池胜率曲线（附录B披露口径）
   datacenter.py   两融/ETF资金流/龙虎榜/大宗/题材小引擎群
   executor.py     RiskGate / 批次T+1 / 订单成交分账 / 止损规则优先级
@@ -229,7 +241,7 @@ docs/STRATEGY_LOCK.md  策略锁清单（M20 可审计）
 .github/workflows/     stock.yml（6时点+Pages发布）/ watchdog.yml（3时点云端验收）
                        / executor.yml（无定时器，需手动 dispatch）
 site_template/   零依赖前端（WebCrypto 认证加密 + 仪表盘 4 视图）
-tests/           回归测试（`run_regression.py` 硬编码白名单，PASS=447 基线）
+tests/           回归测试（`run_regression.py` 硬编码白名单，PASS=476 基线）
 ```
 
 ## 关键纪律（改动必读）
@@ -239,7 +251,15 @@ tests/           回归测试（`run_regression.py` 硬编码白名单，PASS=44
 3. T+1 按批次管理；风险触发≠成交（跌停卖不出记录留痕）；
 4. 推送三态账本：受理不确定不盲目双发；重要风险 force 绕过去重；
 5. AI 只解释不决策；PBKDF2+HMAC 认证加密，口令泄露需轮换；
-6. 引擎阈值有实证出处，调参需等量级回测证据。
+6. 引擎阈值有实证出处，调参需等量级回测证据；
+7. ⚠️ **测试必须自洽于"仓库真实文件"**：`notifier._daily_sent()` 会读仓库
+   `dist/push_ledger.json`，CI 的 checkout 会把它拉进工作区 —— 断言必须打在
+   **隔离的临时路径**上，且 mock 作用域要**覆盖断言本身**（写在 `with` 块外
+   就失效）。09-16 血案：一条断言"当天真实推送一回写进仓库就变红"，
+   本地全绿、CI 必挂，`test_intraday_scope.py` 已用 `_LedgerIsolated` 基类锁死。
+8. ⚠️ **推送后必须验证**：改了影响主链的代码，立刻 dispatch `task=site`
+   跑一次 CI 回归自检（不发推送、不占额度）；**不要在临近定时时点推送**——
+   坏 HEAD 会让当天那一轮直接失败（09-16 收盘 15:22 run 就因此丢了推送）。
 
 ## 历史统计披露格式（附录B）
 
