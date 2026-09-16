@@ -156,9 +156,10 @@ jobs:
         # --premarket 明确告知这是盘前时段，全 0 属正常。
         # review 是盘后（20:02）跑，不属盘前，故不加该标志。
         #
-        # ⚠️ 2026-09-16 二次血案：**Actions 表达式不支持三元 `?:`**！
-        # 原写法 `${{ cond ? '--premarket' : '' }}`（JS 风格）导致
-        # workflow 整个**解析失败** → dispatch 返 422、run 零 job：
+        # ⚠️ 2026-09-16 二次血案：**Actions 表达式不支持三元**！
+        # 原写法用 JS 风格的三元表达式做条件展开，导致 workflow 整个
+        # **解析失败** → dispatch 返 422、run 零 job（零日志）。改用 bash
+        # 条件展开（`case` 判断 task，仅 pre/auction 追加标志）——纯 shell。
         #   "failed to parse workflow: Unexpected symbol: '?'"
         # 正是这个 YAML 让当晚所有定时触发都无法启动。改用 bash 条件展开
         #（`case` 判断 task，仅 pre/auction 追加标志）——纯 shell，表达式简单。
@@ -219,8 +220,12 @@ jobs:
             # M41 盘中计划校验：**不抓日K**（下面两个抓取步骤的 if 都不含
             # intraday，天然跳过），由模块内部只拉实时快照并写独立表
             # snapshot_live —— 盘中价绝不能进 klines/snapshot 主表。
-            # ⚠️ 这里用 shell 分支而非 Actions 三元表达式（历史血案：
-            # `${{ cond ? a : b }}` 会让整个 workflow 解析失败 → dispatch 422）。
+            # ⚠️ 用 shell 分支而非 Actions 三元表达式。历史血案：三元语法会让
+            # 整个 workflow 解析失败 → dispatch 422、run 零 job。
+            # ⚠️ 二次血案（2026-09-16）：**run 块标量里的 `#` 只是 shell 注释，
+            # 但 GitHub 的表达式扫描器照样解析其中的花括号表达式** —— 本注释
+            # 曾在块内写出三元的字面形式而让 workflow 直接解析失败。
+            # 纪律：任何位置（含 run 块内注释）都不得出现三元表达式字面量。
             SLOT="${{ github.event.inputs.slot }}"
             if [ -z "$SLOT" ]; then SLOT=pm; fi
             echo "[intraday] slot=$SLOT"

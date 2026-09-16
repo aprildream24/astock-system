@@ -310,15 +310,17 @@ class TestWiring(unittest.TestCase):
     def test_workflow_supports_intraday(self):
         src = open(os.path.join(ROOT, ".github", "workflows", "stock.yml"),
                    encoding="utf-8").read()
-        code = strip_comments(src)          # ⚠️ 必须剥注释：workflow 注释里
-        # 专门引用了历史错误写法作为警示，不剥注释会假 FAIL（同一坑第三次）
-        self.assertIn("slot:", code, "workflow_dispatch 需暴露 slot 参数")
-        self.assertIn("--task intraday", code)
-        # 历史血案：Actions 表达式不支持 JS 三元 `?:`（workflow 整体解析失败
-        # → dispatch 422 / run 零 job）。盘中分支必须用 shell 条件实现。
+        self.assertIn("slot:", src, "workflow_dispatch 需暴露 slot 参数")
+        self.assertIn("--task intraday", src)
+        # ⚠️ 必须查**原文**，不能剥注释——这里与 Python 源码的规则**方向相反**：
+        # `run: |` 块标量里的 `#` 只是 shell 注释，但 GitHub 的表达式扫描器
+        # **照样会解析其中的花括号表达式**。2026-09-16 就是因为把三元的字面
+        # 形式写进了 run 块内的注释，导致整个 workflow 解析失败
+        # （dispatch 422、"failed to parse workflow"、run 零 job 零日志）。
+        # 纪律：本文件任何位置（含注释）都不得出现三元表达式字面量。
         self.assertIsNone(
-            re.search(r"\$\{\{[^}]*\?[^}]*:", code),
-            "不得在 workflow 表达式里使用三元 `?:`")
+            re.search(r"\$\{\{[^}]*\?[^}]*:", src),
+            "workflow 任何位置（含 run 块内注释）都不得出现三元表达式")
 
     def test_intraday_not_in_close_path(self):
         """盘中模块不得被 build() 主链引用（否则会污染收盘口径）。"""
