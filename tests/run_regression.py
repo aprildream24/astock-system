@@ -57,7 +57,10 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           # 2026-09-16 新增：推送验收/自动补发（云端 watchdog）。
           # 血案：CI 步骤全绿但 build_pre 状态 uncertain、用户端零消息
           # —— 「步骤绿 ≠ 送达」，验收必须落到远端账本的 mode+status。
-          "test_push_audit.py"]
+          "test_push_audit.py",
+          # 2026-09-16 新增：cron-job.org 定时器守门（主链 100% 依赖它，
+          # 而云端 watchdog 自己也被同一个调度器触发 ⇒ 需独立守门覆盖）。
+          "test_timer_guard.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

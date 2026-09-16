@@ -64,3 +64,18 @@ jobs:
           fi
           echo "[watchdog] slot=$SLOT args='$ARGS'"
           python -m pipeline.push_audit --slot "$SLOT" $ARGS
+      # 守夜人自己的触发器也要被看守：主链 100% 依赖 cron-job.org 定时器，
+      # 定时器一旦消失/被停用 ⇒ 零 run ⇒ 零推送，而**云端 watchdog 自己也
+      # 是靠同一个 cron-job.org 触发的**（它不会跑，自然发现不了）。
+      # 这层原先落在用户本机的一条 21:30 Automation 上，而"电脑常年不开机"
+      # ⇒ 等于不存在 —— 故一并上云。
+      # 未配置 CRONJOB_API_KEY 时自动跳过（不改行为）；网络抖动不告警，
+      # 只有"缺定时器/被停用/key 失效"这类确定性故障才推送告警。
+      - name: 定时器守门（cron-job.org 健康）
+        env:
+          CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
+          # 告警要走真实通道 ⇒ 必须注入推送凭据（缺了只会静默 dry-run）
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+        run: python -m pipeline.timer_guard
