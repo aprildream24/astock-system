@@ -186,5 +186,25 @@ class TestNoEmptyPlanSentinel(unittest.TestCase):
         self.assertTrue(ok, f"锚定日有量 + 当日快照在 ⇒ 必须放行，实际 {why}")
 
 
+class TestFreshnessSemantics(unittest.TestCase):
+    """新鲜度语义：只有「比锚定日更旧」才算陈旧。
+
+    血案同日发现：原 `rows[-1][0] != expected_bar` 把「已拿到当日实时K线」
+    的票也判成陈旧（CI 日志「数据新鲜0 陈旧19」即此），误导定位方向。
+    """
+
+    def test_only_older_bar_is_stale(self):
+        with open(os.path.join(ROOT, "pipeline", "build.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("if rows[-1][0] < expected_bar:", src,
+                      "新鲜度必须用「更旧」判定，不能用「不等于」")
+
+    def test_date_string_order_is_chronological(self):
+        """锁住该比较的前提：ISO 日期字符串字典序 = 时间序。"""
+        self.assertTrue("2026-09-15" < "2026-09-16")
+        self.assertFalse("2026-09-16" < "2026-09-15")
+
+
 if __name__ == "__main__":
     unittest.main()

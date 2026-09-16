@@ -215,7 +215,12 @@ def scan_all(con, date, bar_anchor=None):
             stat["no_history"] += 1
             reject(code, pool, f"历史K线不足30根（{len(rows)}）")
             return None
-        if rows[-1][0] != expected_bar:
+        # ⚠️ 2026-09-16 修（血案：盘前日志「数据新鲜0 陈旧19」误导排查）：
+        # 原为 `!= expected_bar` —— 把「K线**比锚定日更新**」的票也判成陈旧。
+        # 判陈旧的语义是「数据**不够新**」，理应只对 `rows[-1][0] < expected_bar`
+        # 成立；实测 auction 那 19 只正是已拿到当日实时K线的票，本该算新鲜。
+        # 日期为 ISO 格式，字典序即时间序，字符串比较安全。
+        if rows[-1][0] < expected_bar:
             stat["stale"] += 1
             reject(code, pool,
                    f"K线未更新至{expected_bar}（最新 {rows[-1][0]}）")

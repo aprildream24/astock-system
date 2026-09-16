@@ -50,13 +50,20 @@ class TestAnchorSemantics(unittest.TestCase):
         self.assertIn("expected_bar = bar_anchor or date", code)
 
     def test_freshness_uses_expected_bar_not_date(self):
+        """新鲜度只对「比锚定日**更旧**」判陈旧。
+
+        ⚠️ 2026-09-16 同日二次修：原为 `!= expected_bar`，把「已拿到当日
+        实时K线」的票也判成陈旧（CI 日志「数据新鲜0 陈旧19」即此），
+        既误剔标的、又把排查带偏。判陈旧=数据不够新 ⇒ 只应比较「更旧」。
+        """
         code = strip_comments(SRC)
-        self.assertIn("if rows[-1][0] != expected_bar:", code)
+        self.assertIn("if rows[-1][0] < expected_bar:", code)
 
     def test_no_bare_date_freshness_check(self):
         """不得回退成锚定当日（那正是候选 0 的根因）。"""
         code = strip_comments(SRC)
         self.assertNotIn("if rows[-1][0] != date:", code)
+        self.assertNotIn("if rows[-1][0] < date:", code)
 
     def test_have_bar_uses_expected_bar(self):
         """覆盖率统计口径必须与判定一致，否则覆盖 100% 却候选 0。"""
