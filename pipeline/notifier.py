@@ -635,7 +635,15 @@ def push(mode, title, content, date=None, con=None,
     # biz_key 不同照样拦。失败/不确定的首次推送不拦，次日触发可补发。
     if not force and _daily_sent(con, mode, date):
         return {"sent": False, "dedup": True, "key": key, "daily_gate": True}
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ⚠️ 2026-09-16 修（血案：补发历史会**吃掉当日额度**）：
+    # `ts` 的**日期部分必须用交易日 `date`**，不能用「当前日期」。
+    # 反例：09-16 凌晨以 `--date 2026-09-15` 补发昨天的收盘报告时，ts 被写成
+    # `2026-09-16 …` ⇒ 之后 `_daily_sent(con,'build_close','2026-09-16')`
+    # 命中该条 ⇒ **当天 15:22 真正的收盘推送被自家保险丝拦掉**
+    # （恰好与「补发历史不占当日额度」的承诺相反——承诺写在文档里，
+    #  而实现才是准的，这次以实现为准修数据模型）。
+    # 当日正常推送时 date == today ⇒ ts 与旧行为逐字节一致，零影响。
+    ts = f"{date} {datetime.now().strftime('%H:%M:%S')}"
     if not force and _reconcile(con, key, mode, ts, True):
         return {"sent": False, "dedup": True, "key": key}
     # 网页端入口：按钮式（旧版把 50+ 字符裸 URL 直接铺在正文末尾，

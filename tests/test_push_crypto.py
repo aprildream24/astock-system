@@ -45,13 +45,29 @@ class TestPush(unittest.TestCase):
                                    date="2026-09-12", con=con)
                 self.assertTrue(r1["sent"])
                 self.assertTrue(r2.get("dedup"), "同 biz_key 二次推送必须拦截")
-                # 规则版本升级 → 新 key 放行
+                # 规则版本升级 → biz_key 变化
                 old = notifier.RULE_VERSION
                 notifier.RULE_VERSION = "v2-TEST-UP"
+                k_new = notifier.biz_key("m1", "2026-09-12",
+                                         ["600000", "000001"])
                 r3 = notifier.push("m1", "标题", "候选 600000 000001",
                                    date="2026-09-12", con=con)
                 notifier.RULE_VERSION = old
-                self.assertTrue(r3["sent"], "规则升级后自动新 key 放行")
+                self.assertNotEqual(k_new, r1["key"], "规则升级必须产生新 biz_key")
+                # ⚠️ 2026-09-16 语义归位（不是放宽，是更严）：
+                # 日级保险丝（同 mode + 同**交易日**已 sent → 拦）**优先于**
+                # biz_key 变化 —— 它的设计意图就是"一天一条"（防 cron 幽灵
+                # 延迟重复推送），规则升级不构成例外。
+                # 旧实现里账本 ts 记的是"写入时刻（当前日期）"，补发/跨日场景
+                # 恰好绕过这道闸，所以这里曾经断言 r3 放行；ts 锚定交易日后
+                # 语义归位（同时修掉"补发历史会吃掉当日额度"的血案），
+                # 断言同步更新为"必须被日级保险丝拦"。
+                self.assertTrue(r3.get("daily_gate"),
+                                "同交易日已有 sent 记录 → 日级保险丝必须拦截")
+                # 换一个交易日 → 放行（证明 biz_key 机制本身没被日闸锁死）
+                r4 = notifier.push("m1", "标题", "候选 600000 000001",
+                                   date="2026-09-14", con=con)
+                self.assertTrue(r4["sent"], "换交易日后必须放行")
             finally:
                 wx.load_accounts, wx.send = o_load, o_send
                 notifier.load_config = o_cfg

@@ -261,5 +261,60 @@ class TestBackfillPath(unittest.TestCase):
             "不得在 workflow 表达式里使用三元 `?:`（会让 workflow 整体解析失败）")
 
 
+    def test_ledger_ts_is_anchored_to_trade_date(self):
+        """账本 ts 的日期部分必须是**交易日**，不能是「当前日期」。
+
+        血案（2026-09-16 发现）：09-16 凌晨用 `--date 2026-09-15` 补发昨天
+        的收盘报告，ts 被写成 `2026-09-16 …` ⇒ 当天 15:22 的收盘推送被
+        `_daily_sent(...,'2026-09-16')` 命中而**静默拦掉** —— 用户又会
+        收不到推送，而所有步骤都是绿的。
+        """
+        with open(os.path.join(ROOT, "pipeline", "notifier.py"),
+                  encoding="utf-8") as f:
+            src = _strip_comments(f.read())
+        self.assertIn('ts = f"{date} {datetime.now().strftime', src,
+                      "ts 日期部分必须锚定交易日 date")
+        self.assertNotIn('ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")',
+                         src, "不得回退成「当前日期」写法（会占掉当日保险丝）")
+
+    def test_backfill_does_not_consume_today_slot(self):
+        """离线真验：以「昨天」为交易日推送 → 今天的保险丝不得被占用。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE push_ledger(biz_key TEXT PRIMARY KEY,"
+                    " mode TEXT, ts TEXT, ok INTEGER, status TEXT,"
+                    " channels TEXT, detail TEXT)")
+        con.commit()
+
+        def fake_send(token, title, content):
+            return "sent", "ok"
+
+        with mock.patch.object(notifier, "_send_pushplus", fake_send), \
+                mock.patch.object(notifier, "load_config",
+                                  lambda: {"primary_channel": "pushplus",
+                                           "pushplus_token": "tok"}), \
+                mock.patch.object(
+                    notifier, "DIST_LEDGER",
+                    os.path.join(ROOT, "Temp", "_nonexistent_ledger.json")):
+            res = notifier.push("build_close", "标题", "内容 600519",
+                                date=PREV, con=con, force=True)
+            self.assertTrue(res.get("sent"), f"推送应送达，实际 {res}")
+            row = con.execute(
+                "SELECT ts FROM push_ledger WHERE mode='build_close'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertTrue(row[0].startswith(PREV),
+                            f"ts 必须锚定交易日 {PREV}，实际 {row[0]}")
+            # ⚠️ 断言必须在 mock 块**内**：`_daily_sent` 会无条件读
+            # `DIST_LEDGER`（双查：state 表 + dist 镜像）。放在块外就会读到
+            # 工作区真实账本 → 假 FAIL（本项目已踩过同类坑：测试依赖工作区数据）。
+            self.assertFalse(
+                notifier._daily_sent(con, "build_close", DATE),
+                "补发历史后，交易日期当天的保险丝必须仍为空")
+            self.assertTrue(
+                notifier._daily_sent(con, "build_close", PREV),
+                "补发历史后，该历史交易日应被标记为已发（防重复补发）")
+
+
 if __name__ == "__main__":
     unittest.main()
