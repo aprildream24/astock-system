@@ -103,7 +103,41 @@ def _run(slot, snap, held=None, now=None, con=None, dry=False):
     return res, con, notifier
 
 
-class TestZeroPollution(unittest.TestCase):
+class _LedgerIsolated(unittest.TestCase):
+    """账本隔离基类：**mock 作用域必须覆盖断言本身**。
+
+    `notifier._daily_sent()` 的文件分支无条件读模块级 `DIST_LEDGER`
+    （仓库 `dist/push_ledger.json`）。CI 的 `actions/checkout` 会把**真实账本**
+    拉到工作区，所以任何"在 with 块之外"的 `_daily_sent` 断言都会命中真实数据。
+
+    血案（2026-09-16，CI run 35067193010）：`_run()` 只在 `with` 块内把
+    `DIST_LEDGER` 重定向到临时路径，断言写在块外 ⇒ 真实账本被读到。
+    当时之所以"本地全绿"，是因为**当天真实的 `intraday_pm` 记录还没回写进
+    仓库**；14:40 那次真实推送把该记录提交回来之后，CI 上的 checkout 里就
+    有了它 ⇒ `assertFalse` 立刻变红。**这是一个按"现实世界发生的事件"定时
+    引爆的测试**，比普通 flaky 更隐蔽（本文件 DATE 写死，触发后不会自愈）。
+
+    修法：类级 setUpClass 打一次 patch，生命周期覆盖整个测试类（含断言）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        notifier = importlib.import_module("pipeline.notifier")
+        cls._tmp_dist = os.path.join(
+            tempfile.gettempdir(), "_intraday_dist_%s.json" % id(cls))
+        if os.path.exists(cls._tmp_dist):
+            os.remove(cls._tmp_dist)
+        cls._patch = mock.patch.object(notifier, "DIST_LEDGER", cls._tmp_dist)
+        cls._patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._patch.stop()
+        if os.path.exists(getattr(cls, "_tmp_dist", "")):
+            os.remove(cls._tmp_dist)
+
+
+class TestZeroPollution(_LedgerIsolated):
     """A. 盘中绝不能污染收盘口径的数据。"""
 
     def setUp(self):
@@ -155,7 +189,7 @@ class TestZeroPollution(unittest.TestCase):
         self.assertIn("universe", res)
 
 
-class TestClassify(unittest.TestCase):
+class TestClassify(_LedgerIsolated):
     """状态判定只用「价 vs 区间」比较，不引用任何引擎阈值。"""
 
     def setUp(self):
@@ -177,7 +211,7 @@ class TestClassify(unittest.TestCase):
             self.intra.classify(20.5, -5.0, 20.0, 21.0, 20.6)[0], "broke_stop")
 
 
-class TestWindowGuard(unittest.TestCase):
+class TestWindowGuard(_LedgerIsolated):
     """防误触发：非盘中时段一律跳过，不抓不推。"""
 
     def test_pm_outside_window(self):
@@ -207,7 +241,7 @@ class TestWindowGuard(unittest.TestCase):
         self.assertIn("非交易日", res["reason"])
 
 
-class TestPushDiscipline(unittest.TestCase):
+class TestPushDiscipline(_LedgerIsolated):
     """B. 有实质内容才推；无内容静默；通道隔离。"""
 
     def test_pm_pushes_when_price_in_zone(self):
@@ -296,8 +330,29 @@ class TestPushDiscipline(unittest.TestCase):
         self.assertFalse(notifier._daily_sent(con, "intraday_pm", DATE))
 
 
-class TestWiring(unittest.TestCase):
+class TestWiring(_LedgerIsolated):
     """接线：入口、workflow、无三元表达式。"""
+
+    def test_every_case_class_isolates_ledger(self):
+        """★ 结构性护栏：本文件**所有** TestCase 子类都必须继承
+        `_LedgerIsolated`，否则将来新增的类又会在断言里读到仓库真实账本，
+        重现 09-16 那次"随真实推送引爆"的 CI 假 FAIL。"""
+        for name, obj in list(globals().items()):
+            if (isinstance(obj, type) and issubclass(obj, unittest.TestCase)
+                    and obj.__module__ == __name__
+                    and obj is not _LedgerIsolated):
+                self.assertTrue(
+                    issubclass(obj, _LedgerIsolated),
+                    f"{name} 必须继承 _LedgerIsolated（账本隔离要覆盖断言）")
+
+    def test_ledger_patch_is_active_during_assertions(self):
+        """隔离必须真的生效：模块常量此刻应指向临时路径，而非仓库 dist/。"""
+        notifier = importlib.import_module("pipeline.notifier")
+        self.assertNotEqual(
+            os.path.normcase(os.path.abspath(notifier.DIST_LEDGER)),
+            os.path.normcase(os.path.abspath(
+                os.path.join(ROOT, "dist", "push_ledger.json"))),
+            "DIST_LEDGER 未被隔离 —— 断言会读到真实账本")
 
     def test_build_accepts_intraday_task(self):
         src = open(os.path.join(ROOT, "pipeline", "build.py"),
