@@ -85,5 +85,85 @@ class TestDeployCollection(unittest.TestCase):
         self.assertEqual(bad, [], f"备份文件混入部署：{bad}")
 
 
+class TestDeploySecretLeakGuards(unittest.TestCase):
+    """2026-09-16 血案：**明文站点口令进了公开仓库**。
+
+    `config/users.json.bak`（内容 `astra-owner-2026`/`astra-guest-2026`）在
+    公开仓库里躺了数天。成因是**双层黑名单同时漏网**：
+      · `EXCLUDE_FILES` 按**精确文件名**排 `users.json` —— `.bak` 名字不同；
+      · `EXCLUDE_EXT` 的 `.bak` 是**事后**才补的，而 `sync()` **只增不删**
+        ⇒ 已经推上去的文件**永远不会被撤下**。
+    本类把「未来不再推」和「历史要清理」两件事一起钉死。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dep = _load_deploy()
+        cls.files = cls.dep.collect_files()
+
+    # ---- 未来：不该被收集 ----
+    def test_config_dir_is_whitelisted(self):
+        """`config/` 只允许 `*.example.json` 上线（白名单，不是黑名单）。"""
+        bad = [f for f in self.files
+               if f.startswith("config/")
+               and not os.path.basename(f).endswith(".example.json")]
+        self.assertEqual(bad, [], f"config/ 非样例文件混入部署：{bad}")
+        self.assertIn("config/users.example.json", self.files)
+
+    def test_no_backup_variants_of_secret_files(self):
+        """密钥文件的任何变体（.bak/.old/.tmp/带时间戳…）都不得上线。"""
+        for name in ("config/users.json.bak", "config/notify.json.bak",
+                     "config/users.json.old", "config/holdings.json.tmp"):
+            self.assertNotIn(name, self.files)
+
+    def test_underscore_files_in_subdirs_never_deployed(self):
+        """`_` 前缀 = 本机调试产物，**任何目录**都不得上线。
+
+        血案里 `tests/_reg.out.txt` 等 5 个回归输出被推上公开仓库 ——
+        根目录早已防住，子目录却漏着。
+        """
+        bad = [f for f in self.files
+               if os.path.basename(f).startswith("_")]
+        self.assertEqual(bad, [], f"下划线临时文件混入部署：{bad}")
+
+    def test_local_artifact_dirs_never_deployed(self):
+        """`Temp/`、`build_tmp/` 是本机产物目录，不得上线。"""
+        bad = [f for f in self.files
+               if f.startswith(("Temp/", "build_tmp/"))]
+        self.assertEqual(bad, [], f"本机产物目录混入部署：{bad}")
+
+    # ---- 历史：远端要清理 ----
+    def test_should_purge_catches_leaked_paths(self):
+        for p in ("config/users.json.bak", "Temp/gh2.txt",
+                  "Temp/remote_ledger.json", "tests/_reg.out.txt",
+                  "build_tmp/procs.txt", "_deploy_out.txt",
+                  ".workbuddy/memory/MEMORY.md", "notify.json"):
+            self.assertTrue(self.dep.should_purge(p), f"{p} 应被清理")
+
+    def test_should_purge_never_touches_repo_content(self):
+        """正常仓库文件绝不能被误删（误删=又一次全天零推送）。"""
+        for p in (".github/workflows/stock.yml", "README.md", ".gitignore",
+                  "pipeline/build.py", "tests/test_deploy.py",
+                  "config/users.example.json", "docs/STRATEGY_LOCK.md",
+                  "site_template/app.js", "tools/deploy.py"):
+            self.assertFalse(self.dep.should_purge(p), f"{p} 被误判为遗留物")
+
+    def test_should_purge_protects_dist_ledger(self):
+        """`dist/push_ledger.json` 是 CI 维护的账本权威 —— 本地不收集它，
+        若按"未被收集就删"的粗暴对齐逻辑会把账本删掉（保险丝随即失效）。"""
+        for p in ("dist/push_ledger.json", "dist/reports/2026-09-16.json",
+                  "dist/data/abc.bin"):
+            self.assertFalse(self.dep.should_purge(p), f"{p} 属 dist/ 受保护")
+
+    def test_purge_is_wired(self):
+        """部署流程必须真的调用 purge —— 只加规则不清理 = 口令继续挂着。"""
+        with open(os.path.join(ROOT, "tools", "run_deploy.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("purge", src)
+        import inspect
+        self.assertIn("def purge(", inspect.getsource(self.dep))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,11 @@ def main():
     if not ok:
         return 1
 
+    # 1b) 清理远端历史遗留（sync() 只增不删 ⇒ 曾被推上公开仓库的口令文件
+    #     会永久留痕：`config/users.json.bak` 就是实例）
+    okp = dep.purge(tok)
+    p("purge:", "OK" if okp else "PARTIAL")
+
     # 2) 配置 Secrets（站点口令 / 推送 / GLM）
     cfgdir = os.path.join(ROOT, "config")
     notify = os.path.join(cfgdir, "notify.json")

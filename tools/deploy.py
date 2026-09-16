@@ -30,10 +30,20 @@ API = f"https://api.github.com/repos/{OWNER}/{REPO}"
 # continue-on-error）。全量 tree commit 时未被列出的文件会被删除，
 # 因此绝不能把 workflows 排除在外。
 EXCLUDE_DIRS = {"__pycache__", ".git", "cache", "dist", "site", ".zcode",
-                ".workbuddy", ".pytest_cache", "node_modules"}
+                ".workbuddy", ".pytest_cache", "node_modules",
+                "Temp", "build_tmp"}
 EXCLUDE_FILES = {"notify.json", "users.json", "holdings.json", "watch.json",
                  "models.json", "gh_sync.py"}
 EXCLUDE_EXT = {".db", ".bin", ".pyc", ".log", ".zip", ".bak"}
+
+# ★★★ config/ 用**白名单**：只允许样例文件上线。
+# ⚠️ 血案（2026-09-16）：原先靠 `EXCLUDE_FILES` 精确文件名排除
+# `users.json` —— 但 `users.json.bak` 名字不同，只被 `EXCLUDE_EXT` 的
+# `.bak` 兜住（且是**事后**才加的）。那份备份里是明文站点口令
+# （`astra-owner-2026`），**已经在公开仓库里躺了数天**。
+# 教训与 ROOT_ALLOW 完全同源：**黑名单永远列不全，白名单才可靠**。
+CONFIG_DIR = "config"
+CONFIG_ALLOW_SUFFIX = ".example.json"
 
 # 根目录只允许这些「已知属于仓库」的文件上线。
 # ⚠️ 为什么用白名单而不是「排除 _xxx 前缀」：黑名单永远列不全——曾因
@@ -72,6 +82,13 @@ def collect_files():
         for f in sorted(filenames):
             if f in EXCLUDE_FILES or os.path.splitext(f)[1] in EXCLUDE_EXT:
                 continue
+            # 任何目录下 `_` 前缀 = 本机调试产物（`tests/_reg.out.txt`、
+            # `_deploy_out.txt`…）。与根目录规则保持一致，避免"只在根目录防住"。
+            if f.startswith("_"):
+                continue
+            rd = rel_dir.replace("\\", "/")
+            if rd == CONFIG_DIR and not f.endswith(CONFIG_ALLOW_SUFFIX):
+                continue
             if rel_dir == ".":
                 # 根目录用白名单：只放行明确属于仓库的文件。
                 # 名字以 _ 开头的（_reg.txt/_deploy_out.txt/…）一律视为本地产物。
@@ -83,10 +100,64 @@ def collect_files():
                     continue
             rel = f if rel_dir == "." else os.path.join(rel_dir, f)
             rel = rel.replace("\\", "/")
-            if rel.startswith(("cache/", "dist/", "site/", ".workbuddy/")):
+            if rel.startswith(("cache/", "dist/", "site/", ".workbuddy/",
+                               "Temp/", "build_tmp/")):
                 continue
             files.append(rel)
     return files
+
+
+def should_purge(path):
+    """远端路径是否属于「按现行排除策略本不该存在」的历史遗留物。
+
+    ★ 为什么必须有这个函数：`sync()` 只「增/改」**从不删除** ⇒ 一个文件一旦
+    被推上公开仓库，**即使后来补了排除规则，它也会永久留在远端**。
+    已实测两例：`config/users.json.bak`（明文站点口令）、`Temp/` 与
+    `tests/_*.txt`（本机调试产物）。⇒ 排除规则只防"未来"，purge 负责清"历史"。
+
+    ⚠️ `dist/` 永不清理：`dist/push_ledger.json` 由 CI 的 `push_ledger_sync`
+    维护，是账本权威（本地根本不收集它，盲目对齐会把账本删掉）。
+    """
+    if path.startswith("dist/"):
+        return False
+    base = os.path.basename(path)
+    if base.startswith("_"):
+        return True
+    if path.startswith(("Temp/", "build_tmp/", ".workbuddy/")):
+        return True
+    if path.startswith(CONFIG_DIR + "/") and not base.endswith(CONFIG_ALLOW_SUFFIX):
+        return True
+    if base in EXCLUDE_FILES or os.path.splitext(base)[1].lower() in EXCLUDE_EXT:
+        return True
+    return False
+
+
+def purge(token):
+    """从远端删除历史遗留物（`sync()` 只增不删的补丁）。"""
+    st, tr = _req("GET", f"{API}/git/trees/main?recursive=1", token)
+    if st != 200:
+        print("purge：读远端 tree 失败", st, tr)
+        return False
+    paths = [t["path"] for t in tr.get("tree", []) if t["type"] == "blob"]
+    victims = sorted(p for p in paths if should_purge(p))
+    if not victims:
+        print("purge：远端无遗留文件 ✓")
+        return True
+    print(f"purge：待删除 {len(victims)} 个遗留文件")
+    bad = 0
+    for p in victims:
+        st, cur = _req("GET", f"{API}/contents/{p}?ref=main", token)
+        if st != 200:
+            print("  skip", p, st)
+            bad += 1
+            continue
+        st2, r2 = _req("DELETE", f"{API}/contents/{p}", token,
+                       {"message": f"security: 清理不应公网的历史文件 {p}",
+                        "sha": cur["sha"], "branch": "main"})
+        print("  del", p, st2)
+        if st2 not in (200, 201):
+            bad += 1
+    return bad == 0
 
 
 def sync(token):
