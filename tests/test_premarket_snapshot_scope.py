@@ -35,6 +35,12 @@ PREV = "2026-09-15"
 DATE = "2026-09-16"
 
 
+def _strip_comments(src):
+    """剥掉行注释——断言「代码里不得出现 X」时必须先剥，
+    否则会命中修复说明里引用的旧写法（本项目已踩过三次）。"""
+    return "\n".join(l.split("#", 1)[0] for l in src.splitlines())
+
+
 def _mkdb(day_amt, prev_amt, n=200):
     """构造内存库：prev 日 K线+快照、当日快照。"""
     con = sqlite3.connect(":memory:")
@@ -204,6 +210,55 @@ class TestFreshnessSemantics(unittest.TestCase):
         """锁住该比较的前提：ISO 日期字符串字典序 = 时间序。"""
         self.assertTrue("2026-09-15" < "2026-09-16")
         self.assertFalse("2026-09-16" < "2026-09-15")
+
+
+class TestBackfillPath(unittest.TestCase):
+    """补发通道（2026-09-16 新增）：手工补发必须可绕过当日去重且可识别。
+
+    背景：血案当天 pre 彻底没发出（uncertain）、auction 发了空壳。事后补发
+    需要两个开关：① 绕过日级保险丝（否则当天已 sent 的 mode 会被拦住）；
+    ② 标题打【补发】标记（否则用户分不清补发消息与正常触发）。
+    两个开关都必须**默认关闭**——日常定时触发行为不得有任何改变。
+    """
+
+    def test_backfill_helpers_default_off(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ASTOCK_FORCE_PUSH", None)
+            os.environ.pop("ASTOCK_BACKFILL", None)
+            self.assertFalse(bld._force_push(), "force 必须默认关闭")
+            self.assertFalse(bld._backfill(), "backfill 必须默认关闭")
+
+    def test_backfill_flag_enables_prefix(self):
+        with mock.patch.dict(os.environ, {"ASTOCK_BACKFILL": "1"}):
+            self.assertTrue(bld._backfill())
+        with mock.patch.dict(os.environ, {"ASTOCK_FORCE_PUSH": "1"}):
+            self.assertTrue(bld._force_push())
+
+    def test_push_title_carries_backfill_mark(self):
+        with open(os.path.join(ROOT, "pipeline", "build.py"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('f"【补发】{date}" if _backfill() else date', src,
+                      "补发标题必须带【补发】标记且默认不加")
+
+    def test_workflow_exposes_force_input(self):
+        """CI 侧必须能传补发开关（否则只能在本地补发，路径不一致）。"""
+        wf = os.path.join(ROOT, ".github", "workflows", "stock.yml")
+        with open(wf, encoding="utf-8") as f:
+            src = _strip_comments(f.read())
+        self.assertIn("force:", src, "workflow_dispatch 必须有 force 参数")
+        self.assertIn("ASTOCK_FORCE_PUSH: ${{ github.event.inputs.force }}", src,
+                      "force 参数必须映射到 ASTOCK_FORCE_PUSH")
+        self.assertIn("ASTOCK_BACKFILL: ${{ github.event.inputs.force }}", src,
+                      "force 参数必须映射到 ASTOCK_BACKFILL")
+        # 历史血案：Actions 表达式不支持 JS 风格三元 `?:`（整个 workflow
+        # 解析失败 → dispatch 422 / run 零 job）。补发开关绝不能用它实现。
+        # ⚠️ 必须剥注释后断言：修复说明里**故意**引用了那个错误写法，
+        # 不剥注释就会命中自己的说明文字（同一坑已踩过三次）。
+        import re as _re
+        self.assertIsNone(
+            _re.search(r"\$\{\{[^}]*\?[^}]*:", src),
+            "不得在 workflow 表达式里使用三元 `?:`（会让 workflow 整体解析失败）")
 
 
 if __name__ == "__main__":

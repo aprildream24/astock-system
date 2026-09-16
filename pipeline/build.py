@@ -856,7 +856,9 @@ def build(task="close", date=None):
         except Exception:  # noqa: BLE001
             site_data["xcheck"] = {"skipped": True}
         notifier.save_detail_report(detail, date, site_data)
-        r = notifier.push(f"build_{task}", date, brief, date=date, con=con,
+        # 补发标记（见 _backfill 注释）：仅在手工补发时出现，正常触发零影响。
+        _title = f"【补发】{date}" if _backfill() else date
+        r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
                           force=_force_push())
         print(f"[build] push={r}")
     # 自选股建议独立推送（独立 biz_key，不与主报告互相吃去重）
@@ -885,6 +887,16 @@ def _force_push():
 
     平时恒为 False——去重是防打扰的核心，不能默认关闭。"""
     return os.environ.get("ASTOCK_FORCE_PUSH") == "1"
+
+
+def _backfill():
+    """ASTOCK_BACKFILL=1 时给标题打【补发】前缀（2026-09-16 新增）。
+
+    为什么需要：补发消息与当日正常触发的消息**内容不同源**（补发跑在
+    收盘后/次日，数据口径与时点都可能变化）。不标注的话，用户无法区分
+    「刚发的」和「补昨天的」，反而制造新的困惑——而本次整改的初衷正是
+    消除困惑。恒为 False 时零影响。"""
+    return os.environ.get("ASTOCK_BACKFILL") == "1"
 
 
 def prev_picks_of(con, date):
