@@ -102,9 +102,43 @@ Secrets 配置：
 | `SITE_USERS` | `{"owner":"你的口令","guest":"访客口令"}` | 站点必填 |
 | `SERVERCHAN_KEY` | 备用通道 | 可选 |
 
-推送后 `stock.yml`（主链 9 时点，收盘构建自动发布 GitHub Pages）与
-`executor.yml`（模拟盘 16 时点 + watchdog 缺跑守护）自动生效。
-站点地址：`https://<用户名>.github.io/<仓库名>/`。
+推送后 `stock.yml`（主链 **4 时点**：盘前 08:50 / 竞价 09:25 / 收盘 15:22 /
+复盘 20:02，**外加盘中 2 时点** 09:45 / 14:40，收盘构建自动发布 GitHub Pages）
+自动生效。站点地址：`https://<用户名>.github.io/<仓库名>/`。
+
+> ⚠️ **调度实况（2026-09-16 核实）**：触发**全部**来自 cron-job.org
+> （`astock-pre/auction/close/review` + `astock-intraday-am/pm`
+> + `astock-audit-am/close/review` 三个验收定时器）；
+> GitHub 自带 cron 已删除（延迟 1–2h 不可控）。
+> `executor.yml`（模拟盘）**当前没有任何定时器**，需手动 dispatch
+> （README 旧文所述「16 时点」与实际不符，以本节为准）。
+
+## 推送验收 + 自动补发（云端，2026-09-16 上线）
+
+**为什么要有**：CI 每一步 `conclusion` 都是 `success` ≠ 推送真的送达。
+09-16 08:50 那轮就是每一步全绿、账本里 `build_pre` 状态却是 `uncertain`、
+用户端零消息 —— 只盯步骤结论必然漏。而原先跑在**用户本机**的验收两条
+自动化，因"电脑常年不开机"等于不存在。
+
+**判据**：读**远端** `dist/push_ledger.json`（仓库 public ⇒ 匿名可读），
+按 `mode + 当天日期` 判 `status == sent`（`uncertain` / `failed` 一律不算）。
+
+| 时机 | 入口 | 期望已送达的 mode | 动作 |
+|---|---|---|---|
+| 每次构建后 | `stock.yml`「推送验收（自检）」 | 本任务对应 mode | 只报告（`continue-on-error`，绝不断主链） |
+| 10:00 | `watchdog.yml` `slot=am` | `build_pre` + `build_auction` | 缺失 → dispatch 补发 |
+| 15:45 | `watchdog.yml` `slot=close` | `build_close` | 同上 |
+| 20:20 | `watchdog.yml` `slot=review` | `build_close` + `build_review` + `narrative` | 同上（连带复核收盘） |
+
+保守边界（**防止验收器自己变成新的重复推送源**）：
+
+- 非交易日 / 节假日 → 跳过；
+- **未到点不补**（`TASK_DUE`：pre 08:55 / auction 09:30 / close 15:27 / review 20:07）；
+- **有 run 在跑/排队（70 分钟内）不补** —— 冷库收盘最多 ~50 分钟，硬补只会排队空转；
+- **读不到远端账本就不动作**（无法证明"没发"时绝不下手）；
+- 今天已发过 `data_blocked_*` / `data_holiday` → 判 WARN，**不算静默失败**（系统已主动告知）；
+- 同一 task 一次运行只 dispatch 一次（`build_review` 与 `narrative` 共用 `review`）；
+- 补发**不传 `force`**：本来就缺，日级去重不会拦。
 
 ---
 
@@ -179,6 +213,8 @@ pipeline/
   recveto.py      败因否决器 / 竞价低开闸
   risklevel.py    持仓红黄蓝三级灯
   alerts.py       触发式盯盘（止损/止盈/买点/锁定）
+  intraday.py     M41 盘中计划校验（只读实时快照/零污染主表/静默纪律）
+  push_audit.py   推送验收/自动补发（读远端账本按 mode 判 status，云端 watchdog 用）
   recperf.py      推荐池胜率曲线（附录B披露口径）
   datacenter.py   两融/ETF资金流/龙虎榜/大宗/题材小引擎群
   executor.py     RiskGate / 批次T+1 / 订单成交分账 / 止损规则优先级
@@ -188,10 +224,12 @@ pipeline/
   build.py        编排入口（四池扫描/可买分组/自选建议/结局回填/竞价裁决）
 tools/            check_strategy_lock / setup_check / verify_site / watchdog
                   fetch_all / coverage_audit / push_preview / install_schedule.bat
+                  （tools/watchdog.py 是本机版，已被云端 push_audit 取代）
 docs/STRATEGY_LOCK.md  策略锁清单（M20 可审计）
-.github/workflows/     stock.yml（9时点+Pages发布）/ executor.yml（16时点+守护）
+.github/workflows/     stock.yml（6时点+Pages发布）/ watchdog.yml（3时点云端验收）
+                       / executor.yml（无定时器，需手动 dispatch）
 site_template/   零依赖前端（WebCrypto 认证加密 + 仪表盘 4 视图）
-tests/           回归测试 10 套件（PASS=131 基线）
+tests/           回归测试（`run_regression.py` 硬编码白名单，PASS=447 基线）
 ```
 
 ## 关键纪律（改动必读）
