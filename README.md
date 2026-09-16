@@ -241,7 +241,7 @@ docs/STRATEGY_LOCK.md  策略锁清单（M20 可审计）
 .github/workflows/     stock.yml（6时点+Pages发布）/ watchdog.yml（3时点云端验收）
                        / executor.yml（无定时器，需手动 dispatch）
 site_template/   零依赖前端（WebCrypto 认证加密 + 仪表盘 4 视图）
-tests/           回归测试（`run_regression.py` 硬编码白名单，PASS=476 基线）
+tests/           回归测试（`run_regression.py` 硬编码白名单，PASS=479 基线）
 ```
 
 ## 关键纪律（改动必读）
