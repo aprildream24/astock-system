@@ -875,9 +875,12 @@ class TestPremarketAllZeroNotHoliday(unittest.TestCase):
                       "无当日快照必须仍然拒绝（不得为了放行而放行）")
 
     def test_preauction_gate_semantics_offline(self):
-        """★ 离线真验：注入全零快照 → 修复后必须放行。
+        """★ 离线真验：当日快照 pct/amt 全零 → 修复后必须放行。
 
         修复前该场景返回 `False, "快照 pct 全零：疑似休市日"`。
+        ⚠️ 2026-09-16 补强：闸门同时要求**锚定日（上一交易日）快照有真实
+        成交额**（盘前/竞价的筛选口径就是它，见 build.scan_all 注释）——
+        故本用例给 prev 日有效快照，验证「当日全零 + prev 有量 ⇒ 放行」。
         """
         import importlib
         import sqlite3
@@ -891,13 +894,45 @@ class TestPremarketAllZeroNotHoliday(unittest.TestCase):
         # 上一交易日有 K线
         con.execute("INSERT INTO klines VALUES('sh000001','2026-09-15',"
                     "1,1,1,1,1)")
-        # 当日 800 只快照，pct 全 0（复现「盘前快照全 0」）
+        # 上一交易日快照：成交额正常（盘前筛选口径的来源）
+        con.executemany("INSERT INTO snapshot VALUES('2026-09-15',?,?,0,0,"
+                        "2.0e8,0,0)",
+                        [(f"sh6000{i:02d}", "x") for i in range(800)])
+        # 当日 800 只快照，pct/amt 全 0（复现「盘前快照全 0」）
         con.executemany("INSERT INTO snapshot VALUES('2026-09-16',?,?,0,0,0,"
                         "0,0)", [(f"sh6000{i:02d}", "x") for i in range(800)])
         con.commit()
         ok, why = build._preauction_ready(con, "2026-09-16")
         self.assertTrue(ok, f"盘前全零快照必须放行，实际：{why}")
         self.assertIn("就绪", why)
+
+    def test_preauction_gate_rejects_when_prev_snapshot_empty(self):
+        """★ 2026-09-16 血案锁：锚定日快照成交额全空 ⇒ 必须拒绝构建。
+
+        事故现场（CI run 35041635767 / 35043999848）：当日快照行数正常
+        （5559 行）但成交额全 0 / 只有竞价撮合额，闸门只看「行数 > 0」就放行
+        ⇒ 下游 split_universe 判全市场停牌（宇宙 0）或「成交额<1.2亿」门槛
+        全灭（4403 只）⇒ 用户收到一份**候选 0 只的空计划**。
+        盘前/竞价的筛选口径是上一交易日收盘快照，故必须在闸门处校验它。
+        """
+        import importlib
+        import sqlite3
+        build = importlib.import_module("pipeline.build")
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.execute("CREATE TABLE klines(code TEXT, date TEXT,"
+                    " o REAL, h REAL, l REAL, c REAL, v REAL)")
+        con.execute("CREATE TABLE snapshot(date TEXT, code TEXT, name TEXT,"
+                    " price REAL, pct REAL, amt REAL, turn REAL, fmv REAL)")
+        con.execute("INSERT INTO klines VALUES('sh000001','2026-09-15',"
+                    "1,1,1,1,1)")
+        # 只有当日快照，且成交额全 0；**没有** prev 日快照
+        con.executemany("INSERT INTO snapshot VALUES('2026-09-16',?,?,0,0,0,"
+                        "0,0)", [(f"sh6000{i:02d}", "x") for i in range(800)])
+        con.commit()
+        ok, why = build._preauction_ready(con, "2026-09-16")
+        self.assertFalse(ok, "锚定日无有效快照时必须拒绝（否则必推空计划）")
+        self.assertIn("无有效快照", why)
 
     def test_preauction_signature_has_no_bypass_switch(self):
         """★ 不得留 `task_has_intraday_pct` 这类开关。

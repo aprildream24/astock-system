@@ -6,6 +6,9 @@ import html
 import json
 import os
 import re
+import socket
+import ssl
+import time
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -740,37 +743,90 @@ def push(mode, title, content, date=None, con=None,
             "results": results}
 
 
-def _send_serverchan(key, title, content):
+def _transport_failed(e):
+    """判断异常是否属于**连接尚未建立**层面的失败（可安全重试）。
+
+    区分意义（2026-09-16）：TLS 握手超时/连接被拒 ⇒ 请求根本没送达，
+    重试绝不会造成"重复送达"；而请求已发出后的读超时则**可能**已受理，
+    盲目重试会导致用户收到两条。本函数只对前者返回 True。"""
+    cur, hops = e, 0
+    while cur is not None and hops < 5:
+        if isinstance(cur, (ssl.SSLError, ConnectionError, socket.gaierror)):
+            return True
+        if "handshake" in str(cur).lower():
+            return True
+        cur = getattr(cur, "reason", None)
+        hops += 1
+    return False
+
+
+def _send_serverchan(key, title, content, _retries=3):
     """返回 (status, detail)。status ∈ sent/failed/uncertain（M37）。
+
     超时/连接错误 = 受理不确定，不盲目重试双发。
+    ⚠️ 2026-09-16 细化：**连接未建立**（TLS 握手失败/连接被拒）必然未送达
+    ⇒ 可安全重试（见 `_transport_failed`）；仅"已发出但读超时"保持不重试。
     ServerChan 不支持 HTML：走 html_to_text 结构化降级，保留分行与对齐，
     不再用 re.sub 粗暴剥标签（会把卡片黏成一坨）。"""
-    try:
-        data = urllib.parse.urlencode(
-            {"title": title, "desp": html_to_text(content)}
-        ).encode()
-        req = urllib.request.Request(
-            f"https://sctapi.ftqq.com/{key}.send", data=data)
-        urllib.request.urlopen(req, timeout=10)
-        return "sent", "ok"
-    except urllib.error.HTTPError as e:
-        return "failed", core.redact(str(e), key)
-    except Exception as e:  # noqa: BLE001 — 超时/网络错误：受理状态未知
-        return "uncertain", core.redact(str(e), key)
+    last = ""
+    for i in range(_retries):
+        try:
+            data = urllib.parse.urlencode(
+                {"title": title, "desp": html_to_text(content)}
+            ).encode()
+            req = urllib.request.Request(
+                f"https://sctapi.ftqq.com/{key}.send", data=data)
+            urllib.request.urlopen(req, timeout=10)
+            return "sent", "ok"
+        except urllib.error.HTTPError as e:
+            return "failed", core.redact(str(e), key)
+        except Exception as e:  # noqa: BLE001 — 超时/网络错误：受理状态未知
+            last = core.redact(str(e), key)
+            if not _transport_failed(e) or i >= _retries - 1:
+                return "uncertain", last
+            print(f"[notify] ServerChan 连接未建立，重试 {i + 1}/{_retries}")
+            time.sleep(1.5 * (i + 1))
+    return "uncertain", last
 
 
-def _send_pushplus(token, title, content):
-    """M36 主推通道。返回 (status, detail)。"""
-    try:
-        body = json.dumps({"token": token, "title": title,
-                           "content": content[:PP_HTML_CAP],
-                           "template": "html"}).encode()
-        req = urllib.request.Request(
-            "https://www.pushplus.plus/send", data=body,
-            headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
-        return "sent", "ok"
-    except urllib.error.HTTPError as e:
-        return "failed", core.redact(str(e), token)
-    except Exception as e:  # noqa: BLE001
-        return "uncertain", core.redact(str(e), token)
+def _send_pushplus(token, title, content, _retries=3):
+    """M36 主推通道。返回 (status, detail)。status ∈ sent/failed/uncertain。
+
+    ⚠️ 2026-09-16 修（血案：08:50 盘前推送**彻底丢失**，用户当天没收到任何
+    盘前计划）。CI run 35041635767 实证：
+        pushplus → '<urlopen error _ssl.c:993: The handshake operation timed out>'
+    旧实现单次 `urlopen(timeout=10)`、**无重试**，于是：
+      ① TLS 握手都没完成 ⇒ 请求必然没送达（可安全重试）；
+      ② 返回 uncertain ⇒ 不触发任何兜底分支 ⇒ 用户零送达且日志只有一行。
+    修法：传输层失败（连接建立失败/超时/5xx）**重试 3 次、退避 1.5s/3s**；
+    4xx 是确定性拒绝（token 失效/参数错），重试无意义，直接判 failed。
+    重试后仍不成功 → 保持 uncertain 语义（受理状态未知，不盲目双发）。
+
+    另注：`_ssl.c:993` 握手超时是 GitHub runner 到 pushplus.plus 的偶发网络
+    问题（同一 run 内其他 HTTPS 全部正常），不是 token/接口问题——
+    因此重试是最对症的修法。"""
+    last = ""
+    for i in range(_retries):
+        try:
+            body = json.dumps({"token": token, "title": title,
+                               "content": content[:PP_HTML_CAP],
+                               "template": "html"}).encode()
+            req = urllib.request.Request(
+                "https://www.pushplus.plus/send", data=body,
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+            if i:
+                print(f"[notify] PushPlus 第 {i + 1} 次尝试成功")
+            return "sent", "ok"
+        except urllib.error.HTTPError as e:
+            last = core.redact(str(e), token)
+            if 400 <= e.code < 500:      # 确定性拒绝，重试无意义
+                return "failed", last
+            print(f"[notify] PushPlus HTTP {e.code}，重试 {i + 1}/{_retries}")
+        except Exception as e:  # noqa: BLE001 — 握手/超时/连接失败：未送达
+            last = core.redact(str(e), token)
+            print(f"[notify] PushPlus 传输失败 {type(e).__name__}，"
+                  f"重试 {i + 1}/{_retries}")
+        if i < _retries - 1:
+            time.sleep(1.5 * (i + 1))
+    return "uncertain", f"{last}（已重试 {_retries} 次）"

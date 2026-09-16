@@ -47,7 +47,10 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           # 2026-09-16 新增：周末/法定节假日休市静默（一天只提示一条）
           "test_ci_robustness.py", "test_holiday.py",
           # 2026-09-16 新增：盘前K线新鲜度锚（防候选 0）
-          "test_preauction.py"]
+          "test_preauction.py",
+          # 2026-09-16 新增：盘前/竞价「筛选快照口径」+ 推送传输层重试
+          # （血案：用户全天空推送 + 唯一一条是候选 0 只的空计划）
+          "test_premarket_snapshot_scope.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

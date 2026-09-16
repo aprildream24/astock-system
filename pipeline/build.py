@@ -119,7 +119,7 @@ def scan_universe(con, date):
     return sorted(c for c in codes if mktfilter.tradable(c[2:]))
 
 
-def split_universe(con, date, snap):
+def split_universe(con, date, snap, asof=None):
     """把宇宙切成「有效标的」与「不可交易标的」两半（2026-09-13 口径修正）。
 
     名单源陈旧：全市场快照里混着两类**永远扫不到、也永远买不了**的代码——
@@ -128,7 +128,15 @@ def split_universe(con, date, snap):
     它们不是「数据没抓全」，而是「标的已不存在/尚未存在」。把它们算进覆盖率
     分母会让覆盖率永远卡在 93%，并持续误报「请跑 fetch_all 补齐」，掩盖真实
     缺口。此处按「当日无成交 + 当日无K线」判定为不可交易，单独留痕，不计缺口。
-    """
+
+    `asof`：**判「不可交易」的基准日**，默认 = date。
+    ⚠️ 2026-09-16 二次修（血案：盘前推送「宇宙 0 只 / 候选 0 只」）：
+    盘前(08:50) 当日快照成交额**天然全 0**（集合竞价未开始），用它做
+    「无成交 ⇒ 停牌/退市」判定会把**全市场**判死 —— CI 实测 alive=0 /
+    dead=4937 / 覆盖 0.0%，用户收到一份没有任何标的的盘前计划。
+    因此盘前/竞价任务必须传 `asof=上一交易日`，并用**该日快照**做判定
+    （由 scan_all 统一保证：snap 与 asof 同源）。"""
+    ref = asof or date
     last_bar = dict(con.execute(
         "SELECT code, MAX(date) FROM klines WHERE code!='sh000001' "
         "GROUP BY code").fetchall())
@@ -137,7 +145,7 @@ def split_universe(con, date, snap):
         s = snap.get(code)
         amt = s[2] if s else None
         last = last_bar.get(code)
-        if (not amt or amt <= 0) and (last is None or last < date):
+        if (not amt or amt <= 0) and (last is None or last < ref):
             dead.append(code)
         else:
             alive.append(code)
@@ -166,7 +174,20 @@ def scan_all(con, date, bar_anchor=None):
     watch = {c if c[:2] in ("sh", "sz") else
              ("sh" if c.startswith("6") else "sz") + c
              for c in _codes_conf("WATCH_CODES", "watch.json")}
-    snap = _snapshot(con, date)
+    # ⚠️ 2026-09-16 二次修（血案：盘前/竞价推送「候选 0 只」）：
+    # 上一次只修了「K线新鲜度锚定」（bar_anchor），**快照口径漏了**——而
+    # 停牌判定(split_universe)与流动性门槛(成交额<1.2亿) 全走当日快照：
+    #   · pre(08:50)：当日快照成交额全 0 ⇒ 全市场判「停牌/退市」⇒ 宇宙 0；
+    #   · auction(09:25)：当日只有竞价撮合额（全市场约 114 亿）⇒ 逐票
+    #     远低于 1.2 亿门槛 ⇒ 4403 只被剔除 ⇒ 候选 0。
+    # 本地受控复现（把当日快照 amt 置 0 / 压到 114 亿）逐条复刻了 CI 日志：
+    #   盘前 alive=0 dead=4937 universe=0 coverage=0.0% cands=0
+    #   竞价 4403 只死于「成交额<1.2亿」cands=0
+    # 修法：盘前/竞价的**筛选口径一律取锚定日（上一交易日）快照**——
+    # 选股本就应该看最近一个已收盘交易日的量能与市值，今天还没发生的
+    # 成交量不构成任何判定依据。收盘/复盘任务 bar_anchor=None ⇒ 仍用当日。
+    snap_date = bar_anchor or date
+    snap = _snapshot(con, snap_date)
     zt_today = {code: streak for code, streak in con.execute(
         "SELECT code, streak FROM zt_pool WHERE date=?", (date,)).fetchall()}
     cands, skipped = [], []
@@ -239,7 +260,7 @@ def scan_all(con, date, bar_anchor=None):
         commit(c)
 
     codes = scan_universe(con, date)
-    alive_codes, dead_codes = split_universe(con, date, snap)
+    alive_codes, dead_codes = split_universe(con, date, snap, asof=snap_date)
     dead_set = set(dead_codes)
     for code in codes:
         num = code[2:]
@@ -415,6 +436,18 @@ def _preauction_ready(con, date):
                          (date,)).fetchone()[0]
     if n_snap == 0:
         return False, f"{date} 无快照（竞价数据未入库）"
+    # ★ 2026-09-16 新增（血案：闸门放行了「用不了」的数据 ⇒ 推空计划）：
+    # 盘前/竞价的筛选口径是**上一交易日收盘快照**（见 scan_all 注释），所以
+    # 「就绪」必须同时确认 prev 日快照有真实成交额。旧实现只查当日快照**行数**
+    # 就放行，而 08:50 当日快照行数正常（5559 行）但成交额全 0 ⇒ 放行后
+    # split_universe 判全市场停牌 ⇒ 宇宙 0 / 候选 0 ⇒ 用户收到一份空计划。
+    # 校验锚定日快照有效性，才能在下游口径失效前就拦住。
+    n_psnap = con.execute(
+        "SELECT COUNT(*) FROM snapshot WHERE date=? AND amt>0",
+        (prev,)).fetchone()[0]
+    if n_psnap == 0:
+        return False, (f"{prev} 无有效快照（成交额全空）"
+                       "——盘前筛选口径不可用")
     # ⚠️ 2026-09-16 修（血案：盘前任务被自家闸门挡住）：
     # 本函数**曾经**有一处「快照 pct 全零 ⇒ 疑似休市日 ⇒ 拒绝构建」的分支。
     # 它对 pre/auction 是**必然误判**——08:50 集合竞价尚未开始，快照涨跌幅
@@ -601,6 +634,23 @@ def build(task="close", date=None):
         print(f"[build][WARN] 扫描覆盖 {cov.get('coverage')}% < 90%："
               f"{cov.get('stale')} 只K线陈旧 / {cov.get('no_history')} 只缺历史，"
               "请跑 tools/fetch_all.py 补齐后再推")
+    # ★ 2026-09-16 口径错配保险丝（血案：用户收到"没有标的的计划"）：
+    # 上游已修 K线新鲜度锚定 + 快照口径两层，这里留最后一道闸——
+    # 一旦再次出现「宇宙 0」或「候选 0 且覆盖不达标」，宁可发一条明确的
+    # 「数据口径异常」告警，也**绝不推空壳**：一份没有任何标的的"计划"
+    # 比收不到更让人困惑（用户原话）。
+    _u = cov.get("universe", 0)
+    _covp = cov.get("coverage", 0)
+    _ncand = len(cands)
+    if _u == 0 or (_ncand == 0 and _covp < 90):
+        print(f"[build] 口径异常（宇宙{_u} 覆盖{_covp}% 候选{_ncand}）"
+              "→ 拒绝推送空计划，改发告警")
+        _notify_data_blocked(
+            task, date,
+            f"扫描口径异常（宇宙 {_u} 只 / 覆盖 {_covp}%）",
+            f"候选 {_ncand} 新鲜 {cov.get('fresh')} 陈旧 {cov.get('stale')} "
+            f"缺历史 {cov.get('no_history')}")
+        return None
     # 胜率熔断闸（推送通道；网站买点报告同款闸在 build_data 内）
     winrates = scoring.tag_winrate(con, today=date)
     cands = scoring.observe_mute(cands, winrates)
@@ -847,21 +897,40 @@ def prev_picks_of(con, date):
     return out[:10]
 
 
+def _snapshot_date_for(con, date):
+    """筛选口径的快照基准日 = 最近一个**有真实成交额**的交易日（≤ date）。
+
+    ⚠️ 2026-09-16（血案：盘前/竞价的量能口径不成立）：当日快照在盘前
+    （08:50）成交额全 0、在竞价（09:25）只有撮合额，两者都不能作为
+    「停牌判定 / 1.2 亿流动性门槛」的依据。统一回退到最近一个已收盘、
+    有量的交易日，站点补算口径才能与推送口径一致（否则页面显示
+    覆盖率 0%，用户以为全市场没扫到）。"""
+    row = con.execute(
+        "SELECT MAX(date) FROM snapshot WHERE date<=? AND amt>0",
+        (date,)).fetchone()
+    return row[0] if row and row[0] else date
+
+
 def coverage_snapshot(con, date):
     """覆盖快照：主流程用 scan_all 写入的结果；站点单独构建时用聚合查询补算。
 
     历史坑：站点 *_task site* 与推送是两条独立入口，站点若不补算就会读到
     空的 LAST_SCAN_COVERAGE → 页面覆盖率显示「—」，与推送口径不一致。
+    ⚠️ 2026-09-16：补算也必须用**有效快照基准日**（见 _snapshot_date_for），
+    否则盘前构建站点会算出覆盖率 0%，与推送口径打架。
     """
     cov = dict(LAST_SCAN_COVERAGE)
     if cov.get("date") == date:
         return cov
-    snap = _snapshot(con, date)
-    alive, dead = split_universe(con, date, snap)
+    snap_date = _snapshot_date_for(con, date)
+    snap = _snapshot(con, snap_date)
+    alive, dead = split_universe(con, date, snap, asof=snap_date)
     have = {r[0] for r in con.execute(
-        "SELECT DISTINCT code FROM klines WHERE date=?", (date,)).fetchall()}
+        "SELECT DISTINCT code FROM klines WHERE date=?",
+        (snap_date,)).fetchall()}
     with_bar = sum(1 for c in alive if c in have)
-    return {"date": date, "universe": len(alive), "untradable": len(dead),
+    return {"date": date, "snap_date": snap_date,
+            "universe": len(alive), "untradable": len(dead),
             "with_bar": with_bar, "missing_bar": len(alive) - with_bar,
             "coverage": round(with_bar / max(1, len(alive)) * 100, 1)}
 
