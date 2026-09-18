@@ -238,6 +238,31 @@ jobs:
             exit 0
           fi
           python -m pipeline.build --task "$TASK"
+      # ★ 2026-09-18 新增：模拟盘自动运行（用户："是不是还有模拟盘没运行？
+      # 请全面修复，按照 100000 元起步开始自动运行"）。
+      # 诊断结论（两条根因，均已实锤）：
+      #   ① **功能缺失**：pipeline/executor.py 只有"退出裁决"、没有任何买入
+      #      路径 ⇒ 账户永远空仓 ⇒ 巡逻无对象 ⇒ 日志为空 ⇒ 一条推送都不发；
+      #   ② **通道缺失**：executor.yml 既没挂定时器、又**没有 cache 恢复**
+      #      ⇒ runner 上是全新空库 ⇒ 无 K 线无持仓，即便被触发也无事可做。
+      # 修法：把模拟盘挂在 **close 主链之后**（而不是另开一个 workflow）——
+      #   · 复用同一份行情库缓存（executor 单跑时必然拿到空库）；
+      #   · 模拟盘状态与行情库同处 cache/，随本 workflow 的 save 一起持久化，
+      #     不会出现"两个 workflow 各存一份、缓存 GC 删掉另一份"的状态回退；
+      #   · 不需要在 cron-job.org 增加定时器（少一个会失效的环节）。
+      # continue-on-error：模拟盘是旁路，任何异常都不允许影响主链推送。
+      - name: 模拟盘自动运行（建仓+巡逻）
+        if: >-
+          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'intraday' &&
+          (github.event.inputs.task == 'close' ||
+           github.event.inputs.task == '')
+        continue-on-error: true
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+        run: python -m tools.executor --task auto
       - name: 收盘复盘（自选股建议+AI叙事）
         if: >-
           github.event.inputs.task != 'watch-sync' &&

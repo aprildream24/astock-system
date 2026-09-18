@@ -656,8 +656,33 @@ def build(task="close", date=None):
             f"候选 {_ncand} 新鲜 {cov.get('fresh')} 陈旧 {cov.get('stale')} "
             f"缺历史 {cov.get('no_history')}")
         return None
+    # ★ 板块热度标注（2026-09-18 用户需求：推荐里要标注板块热度）。
+    # 同时修掉两处**静默失效**：scoring 的 `sector_temp` 冷热因子此前无数据源
+    # （恒 None，加成从未生效），`sector_of` 退化成"按池别去重"（不同行业的
+    # 波段票互斥，每次只活一只）。详见 pipeline/sector.py 的模块注释。
+    # 全链路 try/except：板块只是标注，拿不到就"不标注"，绝不影响推荐。
+    sector_board, hot_sectors = [], []
+    try:
+        from . import sector as sector_mod
+        _board = sector_mod.refresh(con, date)
+        sector_board, hot_sectors = sector_mod.annotate(con, date, cands,
+                                                        board=_board)
+        _n_marked = sum(1 for c in cands if c.get("sector"))
+        print(f"[build] 板块热度 {len(sector_board)} 个行业，候选标注 {_n_marked}"
+              f"/{len(cands)} 只；前三 {' '.join(s['sector'] for s in hot_sectors[:3])}")
+    except Exception as e:  # noqa: BLE001 — 板块标注失败不得阻断主链
+        print(f"[build] 板块标注失败（不影响主链）：{type(e).__name__} {e}")
+    # 行情档位 → 推荐配额（用户口径：行情好时不再限制 3 只，全部推荐）
+    heat_level, pick_limit, per_sector, ladder_cap = scoring.market_heat(emo)
+    if pick_limit is None:
+        print(f"[build] 行情{heat_level}（情绪{emo.get('score')}）→ 放开限量："
+              f"全部符合条件标的（同板块≤{per_sector}）")
+    else:
+        print(f"[build] 行情{heat_level}（情绪{(emo or {}).get('score')}）→ "
+              f"维持 TOP{pick_limit}")
     # 胜率熔断闸（推送通道；网站买点报告同款闸在 build_data 内）
     winrates = scoring.tag_winrate(con, today=date)
+
     cands = scoring.observe_mute(cands, winrates)
     # 评分 + 决策（先注入数据，再渲染——红线6）
     for c in cands:
@@ -691,11 +716,14 @@ def build(task="close", date=None):
         c["buyable_now"] = scoring.is_buyable_now(c)
     picks = scoring.compute_top_picks(
         [c for c in cands if c.get("action") in NOW_ACTIONS],
-        env_w, winrates, sector_of=lambda c: c.get("sector", c["pool"]))
+        env_w, winrates, sector_of=lambda c: c.get("sector") or c["pool"],
+        limit=pick_limit, per_sector=per_sector, ladder_cap=ladder_cap)
     ladder_next = scoring.compute_top_picks(
         [c for c in cands if c.get("action") == "次日竞价达标买"],
-        env_w, winrates, sector_of=lambda c: c.get("sector", c["pool"]),
-        limit=2)
+        env_w, winrates, sector_of=lambda c: c.get("sector") or c["pool"],
+        limit=pick_limit if pick_limit is None else 2,
+        per_sector=per_sector, ladder_cap=ladder_cap)
+
     # 展示口径（2026-09-14 用户困惑整改）：可下单的票永远排在「等回踩/小仓试」
     # 前面——此前详情报告把高分的等回踩票排在首位，用户第一眼看到"不能买"，
     # 再往下才看到可买票，产生"一下说观望一下说能买"的矛盾观感。
@@ -792,6 +820,7 @@ def build(task="close", date=None):
                       "pool": c.get("pool"),
                       "status": "条件满足" if c.get("buyable_now")
                       else "等待确认"})
+            d.update(_sector_fields(c))
             if c.get("buyable_now"):
                 if first is None:
                     first = d
@@ -815,7 +844,14 @@ def build(task="close", date=None):
                 "valid_until": valid_until,
                 "coverage": cov.get("coverage"),
                 "universe": cov.get("universe"),
+                "heat_level": heat_level,          # 行情档位（2026-09-18）
+                "hot_sectors": hot_sectors,        # 板块涨幅榜 TOP N
+                "pick_limit": pick_limit,          # None = 不限量
                 "note": f"情绪{emo['score']}({emo['label']}/{emo['phase']})；"
+                        f"行情{heat_level}"
+                        + ("（好，已放开至全部符合条件标的）"
+                           if pick_limit is None else "（按 TOP%d 纪律）" % pick_limit)
+                        + "；"
                         f"覆盖{'达标' if emo['qualified'] else '不足'}；"
                         f"扫描{cov.get('universe', 0)}只/"
                         f"数据新鲜{cov.get('coverage', 0)}%"
@@ -831,10 +867,11 @@ def build(task="close", date=None):
                       "sell_high": c.get("sell_high"),
                       "pool": c.get("pool"), "status": "等待确认",
                       "gate_evidence": c.get("gate_evidence", "")})
+            d.update(_sector_fields(c))
             ladder_cards.append(d)
         brief = notifier.render_brief(date, first, backups, changes, meta,
                                       ladder_next=ladder_cards,
-                                      pending=pending[:2],
+                                      pending=pending,
                                       prev_review=prev_review)
         detail = notifier.render_candidates(
             f"{'盘前计划' if task=='pre' else '竞价裁决' if task=='auction' else '收盘观察'} {date}",
@@ -880,6 +917,13 @@ def build(task="close", date=None):
         print(f"[build] narrative push={nr}")
     return {"date": date, "candidates": len(cands), "picks": picks,
             "ladder_next": ladder_next, "emotion": emo, "changes": changes}
+
+
+def _sector_fields(c):
+    """卡片渲染用的板块字段（2026-09-18）。渲染层只透传、不重判。"""
+    return {"sector": c.get("sector"), "sector_pct": c.get("sector_pct"),
+            "sector_temp": c.get("sector_temp"),
+            "sector_net_yi": c.get("sector_net_yi")}
 
 
 def _force_push():

@@ -168,6 +168,14 @@ CREATE TABLE IF NOT EXISTS snapshot_live(
     PRIMARY KEY(date, slot, code));
 CREATE TABLE IF NOT EXISTS exec_log(
     ts TEXT, code TEXT, action TEXT, price REAL, reason TEXT);
+-- 2026-09-18 新增：板块热度（M43）。行业板块当日涨幅/主力净额，供推荐标注
+-- 与 scoring 的板块冷热因子使用（该因子此前无数据源，恒为 None）。
+CREATE TABLE IF NOT EXISTS sector_heat(
+    date TEXT, sector TEXT, pct REAL, net_yi REAL,
+    up INTEGER, down INTEGER, PRIMARY KEY(date, sector));
+-- 个股 → 行业归属（f100）。行业分类极少变动 ⇒ 按 TTL 缓存，不必每天重拉。
+CREATE TABLE IF NOT EXISTS stock_industry(
+    code TEXT PRIMARY KEY, sector TEXT, updated_at TEXT);
 """
 
 

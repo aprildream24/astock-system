@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """模拟盘入口（薄壳）：核心实现位于 pipeline/executor.py（RiskGate/批次T+1/分账）。
 
-用法：python -m tools.executor --task now|scan|tail|review
+用法：python -m tools.executor --task auto|now|scan|tail|review
+
+task 语义（2026-09-18）：
+  · auto —— 自动建仓 + 巡逻（**默认**，模拟盘"自动运行"的形态）
+  · now/scan/tail —— 只巡逻，不买入（保持原语义）
 保留 sell_decision 兼容旧测试的 T+1 语义（buy_date == today → HOLD）。
 """
 import argparse
@@ -28,13 +32,13 @@ def sell_decision(h, price, today, env_score=0):
     return "HOLD", ""
 
 
-def run(task="now"):
+def run(task="auto"):
     return executor.run(task)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", default="now")
+    ap.add_argument("--task", default="auto")
     a = ap.parse_args()
     for row in run(a.task):
         print(row)

@@ -53,17 +53,39 @@ ROOT_ALLOW = {".gitignore", "README.md", "clear_dedup.py"}
 ROOT_ALLOW_EXT = {".py", ".md", ".txt", ".yml", ".yaml", ".json"}
 
 
-def _req(method, url, token, body=None, raw=False):
+def _req(method, url, token, body=None, raw=False, retries=3):
+    """带重试的 GitHub API 调用。
+
+    ⚠️ 2026-09-18 新增重试（实测两次部署都在 `POST /git/blobs` 中途抛
+    `ConnectionAbortedError [Errno 10053]`——沙箱出口代理在大批量 POST 时
+    会掐断已建立的连接）。原实现没有重试 ⇒ 前面已上传的几十个 blob 全白费、
+    部署整批失败。GitHub 的 `POST /git/blobs` / `POST /git/trees` /
+    `PATCH /git/refs` 都是**幂等**的（同内容重复创建只多一个未被引用的
+    对象，不留副作用），所以网络类异常可以安全重试。
+    `HTTPError` 不重试：那是语义错误（鉴权/参数），重试无意义。
+    """
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, method=method, data=data, headers={
-        "Authorization": f"token {token}", "User-Agent": "astra-deploy",
-        "Accept": "application/vnd.github+json"})
-    try:
-        with urllib.request.urlopen(req, timeout=90) as r:
-            payload = r.read()
-            return r.status, (payload if raw else json.loads(payload or b"{}"))
-    except urllib.error.HTTPError as e:
-        return e.code, {"msg": e.read().decode("utf-8", "replace")[:400]}
+    last_err = None
+    for i in range(retries + 1):
+        req = urllib.request.Request(url, method=method, data=data, headers={
+            "Authorization": f"token {token}", "User-Agent": "astra-deploy",
+            "Accept": "application/vnd.github+json"})
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                payload = r.read()
+                return r.status, (payload if raw
+                                  else json.loads(payload or b"{}"))
+        except urllib.error.HTTPError as e:
+            if e.code >= 500 and i < retries:
+                last_err = e
+                time.sleep(2.0 * (i + 1))
+                continue
+            return e.code, {"msg": e.read().decode("utf-8", "replace")[:400]}
+        except Exception as e:  # noqa: BLE001 —— 网络类（含 10053/超时）
+            last_err = e
+            if i < retries:
+                time.sleep(2.0 * (i + 1))
+    raise last_err
 
 
 def collect_files():

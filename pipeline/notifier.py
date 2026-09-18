@@ -229,11 +229,44 @@ def md2html(md):
     return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
 
 
+def _sector_label(c):
+    """板块短标签（`半导体+3.2%🔥`）。无数据 → 空串，绝不显示占位符。"""
+    try:
+        from . import sector
+        return sector.sector_tag(c)
+    except Exception:  # noqa: BLE001 — 板块只是标注，渲染不得因它崩
+        return ""
+
+
+def _sector_row_html(d):
+    """卡片里的板块热度行：`半导体 <红>+3.20%</红> 🔥强 主力+12.3亿`。
+
+    颜色遵循 A 股口径（涨红跌绿）——与买入红/卖出绿的既有三色纪律一致。
+    """
+    parts = [_esc(d.get("sector"))]
+    pct = d.get("sector_pct")
+    if pct is not None:
+        col = "#ff6b5e" if pct >= 0 else "#4ecf8e"
+        parts.append(f'<span style="color:{col};font-weight:700">{pct:+.2f}%</span>')
+    if d.get("sector_temp"):
+        parts.append(_esc(d["sector_temp"]))
+    net = d.get("sector_net_yi")
+    if net is not None:
+        ncol = "#ff6b5e" if net >= 0 else "#4ecf8e"
+        parts.append(f'<span style="color:{ncol}">主力{net:+.1f}亿</span>')
+    return " ".join(parts)
+
+
 def _cand_line(c):
     """候选行统一单一出口渲染。自适应卸载顺序：挂单价→距买区→仓位→分数；
     买/卖/停永不丢。"""
     badge = ACTION_BADGE.get(c.get("action"), "👀观望")
     extras = []
+    # 板块热度（2026-09-18）：放在 extras 首位——它是"这只票站在哪个风口上"，
+    # 比仓位/距买区更该被看到（裁剪顺序从后往前丢，故它最后被丢）。
+    _st = _sector_label(c)
+    if _st:
+        extras.append(_st)
     if c.get("pool") == "连板" and c.get("streak"):
         extras.append(f"{c['streak']}板")
     if c.get("hot_pick"):
@@ -253,16 +286,20 @@ def _cand_line(c):
         extras.append(f"仓{c['position']}")
     suffix = " ".join(extras)
     if len(core) + len(suffix) + 1 > CAND_LINE_CAP:
-        # 按卸载顺序丢弃
-        for drop in ("cycle", "entry", "dist", "pos"):
-            if drop == "cycle" and extras and extras[0].startswith("周期"):
-                extras.pop(0)
+        # 按卸载顺序丢弃。⚠️ 2026-09-18：原实现用 `extras[0].startswith("周期")`
+        # 判位置——板块标签插到 extras 首位后该判断必然失效（周期项不再被卸载）。
+        # 改为按内容匹配（与 entry/dist/pos 一致），顺带修掉这个位置耦合。
+        for drop in ("cycle", "entry", "dist", "pos", "sector"):
+            if drop == "cycle" and any(e.startswith("周期") for e in extras):
+                extras = [e for e in extras if not e.startswith("周期")]
             elif drop == "entry" and any("回落" in e or "挂单" in e for e in extras):
                 extras = [e for e in extras if "回落" not in e and "挂单" not in e]
             elif drop == "dist" and any("距买区" in e for e in extras):
                 extras = [e for e in extras if "距买区" not in e]
             elif drop == "pos" and any(e.startswith("仓") for e in extras):
                 extras = [e for e in extras if not e.startswith("仓")]
+            elif drop == "sector" and _st and _st in extras:
+                extras.remove(_st)      # 最后才丢板块标注
             suffix = " ".join(extras)
             if len(core) + len(suffix) + 1 <= CAND_LINE_CAP:
                 break
@@ -283,6 +320,57 @@ def _badge_color(text):
     if "回踩" in text or "试" in text or "竞价" in text:
         return "#f5b83d"
     return "#9aa0a6"
+
+
+def _pick_line(d):
+    """紧凑推荐行（decision 形态）。
+
+    用途（2026-09-18）：行情好放开限量后可能一次推 10+ 只，每只一张大卡
+    会让推送长到没法在手机上读。前几只出完整卡（有买区条形图），其余走
+    这一行的紧凑表格——"推全"与"能读"两个目标同时成立。
+    """
+    badge = ACTION_BADGE.get(d.get("action"), "👀观望")
+    zone = d.get("zone") or [None, None]
+    zs = f"{zone[0]:.2f}-{zone[1]:.2f}" if zone[0] and zone[1] else "—"
+    parts = [f"{badge} {d.get('name','')} {d.get('code','')}",
+             f"买{zs}",
+             f"停{d['stop']:.2f}" if d.get("stop") else "",
+             _sector_label(d),
+             f"分{d.get('score')}" if d.get("score") is not None else ""]
+    return " ".join(p for p in parts if p)[:CAND_LINE_CAP]
+
+
+def _compact_row(d):
+    return ('<tr><td style="padding:4px 2px;border-bottom:1px solid #2b313d">'
+            f'{_esc(_pick_line(d))}</td></tr>')
+
+
+MAX_COMPACT_ROWS = 14        # 紧凑行总预算：放开限量后的"推送长度保险丝"
+
+
+def _compact_block(items, budget=None):
+    """紧凑行分组 + 超限提示。
+
+    为什么必须有上限：PushPlus 的 content 上限 20000（安全线 19000），
+    超了会被 `content[:PP_HTML_CAP]` **硬截断**——切在半张卡中间，比少显示
+    几只更难读。行情好放开限量后可能一次几十只标的，所以这里自己设线，
+    并把"其余见详情"讲清楚（诚实 > 假装全都在）。
+
+    `budget`：可变单元素列表（如 `[20]`）用于**跨分组共享**总行数预算——
+    三个分组各自封顶仍可能叠加超长，只有共享总量才守得住上限。
+    """
+    items = list(items)
+    cap = MAX_COMPACT_ROWS if budget is None else min(MAX_COMPACT_ROWS, budget[0])
+    take = max(0, min(len(items), cap))
+    if budget is not None:
+        budget[0] = max(0, budget[0] - take)
+    omitted = len(items) - take
+    tail = (f'<div style="{_STY["meta"]}">另有 {omitted} 只见网页版完整详情'
+            f'（单条推送列数有上限，防超长被截断）。</div>' if omitted else "")
+    if take == 0:
+        return tail
+    return _card(_table("".join(_compact_row(d) for d in items[:take])),
+                 border="#2b313d") + tail
 
 
 def render_candidates(title, picks, extra_lines=()):
@@ -375,6 +463,7 @@ def render_card(d, first=False, head=None, accent=None):
         + _row("止损",
                f'<span style="color:#ff8a80;font-weight:700">'
                f'{d["stop"]:.2f}</span>' if d.get("stop") else "—")
+        + (_row("板块热度", _sector_row_html(d)) if d.get("sector") else "")
         + (_row("建议仓位", _esc(d.get("position") or "1成"))
            if d.get("position") or first else "")
         + _row("有效期至", _esc(d.get("valid_until")))
@@ -405,34 +494,70 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
     cov = meta.get("coverage")
     cov_s = (f' · 扫描 {_esc(meta.get("universe"))} 只（覆盖 {cov}%）'
              if cov is not None else "")
-    n_buy = (1 if first else 0) + len((backups or [])[:2])
-    n_pending = len((pending or [])[:2])
-    n_ladder = len((ladder_next or [])[:2])
+    backups = list(backups or [])
+    pending = list(pending or [])
+    ladder_next = list(ladder_next or [])
+    _cbulk = [MAX_COMPACT_ROWS]      # 紧凑行总预算（跨分组共享，见 _compact_block）
+    n_buy = (1 if first else 0) + len(backups)
+    n_pending = len(pending)
+    n_ladder = len(ladder_next)
+    heat_s = f' · 行情{_esc(meta.get("heat_level"))}' if meta.get("heat_level") else ""
     out = [f'<div style="{_STY["h1"]}">收盘观察 {_esc(today)}</div>',
            _summary_strip(meta, n_buy, n_pending, n_ladder),
            f'<div style="{_STY["meta"]}">'
            f'复核 {_esc(meta.get("reviewed", "—"))} 只 · '
            f'数据日期 {_esc(meta.get("data_date", today))} · '
-           f'有效期至 {_esc(meta.get("valid_until", "—"))}{cov_s}</div>']
+           f'有效期至 {_esc(meta.get("valid_until", "—"))}{cov_s}{heat_s}</div>']
+    # 今日板块热度（2026-09-18 用户需求：推荐要标注板块热度）。
+    # 放在最顶部而不是塞进每张卡：一张榜就能看出"钱在往哪个方向走"。
+    hot = meta.get("hot_sectors") or []
+
+    def _hot_row(s):
+        pct, net = s.get("pct"), s.get("net_yi")
+        col = "#ff6b5e" if (pct or 0) >= 0 else "#4ecf8e"
+        pct_s = f"{pct:+.2f}%" if pct is not None else "—"
+        net_s = f"主力{net:+.1f}亿" if net is not None else ""
+        return ('<tr><td style="padding:3px 10px 3px 0;font-size:13px;'
+                'color:#e8eaed;white-space:nowrap">'
+                f'{_esc(s.get("sector"))}</td>'
+                f'<td style="padding:3px 0;font-size:13px;font-weight:700;'
+                f'color:{col}">{pct_s}</td>'
+                f'<td style="padding:3px 0 3px 10px;font-size:12px;color:#9aa0a6">'
+                f'{net_s} {_esc(s.get("temp") or "")}</td></tr>')
+
+    if hot:
+        out.append(f'<div style="{_STY["h2"]}">今日板块热度 · 领涨行业</div>')
+        out.append(_card(_table("".join(_hot_row(s) for s in hot[:6])),
+                         border="#2b313d"))
+
     if first:
         out.append(render_card(first, first=True))
     else:
         out.append(_card('<span style="color:#9aa0a6">今日无当下可买入的机会'
                          '——没有机会就不凑数。</span>',
                          border="#2b313d", accent="#3a4150"))
-    for b in (backups or [])[:2]:
+    # 前 2 只出完整卡（含买区条形图），其余走紧凑行——行情好放开限量后
+    # 「全推」与「手机可读」必须同时成立。
+    FULL_CARDS = 2
+    for b in backups[:FULL_CARDS]:
         out.append(render_card(b))
+    if len(backups) > FULL_CARDS:
+        out.append(f'<div style="{_STY["h2"]}">其余可下单标的 · '
+                   f'行情{_esc(meta.get("heat_level") or "")}已放开限量</div>')
+        out.append(_compact_block(backups[FULL_CARDS:], budget=_cbulk))
     if pending:
         out.append(f'<div style="{_STY["h2"]}">等待更好买点 · 现价不在买区</div>')
         out.append('<div style="color:#9aa0a6;font-size:12px;margin:0 0 6px">'
                    '以下标的现价已跳出买入区间，需回踩到位再买，'
                    '<b>不要按现价追</b>。</div>')
-        for d in pending[:2]:
+        for d in pending[:FULL_CARDS]:
             out.append(render_card(d, head="【待回踩 · 勿按现价追】",
                                    accent="#f5b83d"))
+        if len(pending) > FULL_CARDS:
+            out.append(_compact_block(pending[FULL_CARDS:], budget=_cbulk))
     if ladder_next:
         out.append(f'<div style="{_STY["h2"]}">次日竞价确认 · 非即时可买</div>')
-        for d in ladder_next[:2]:
+        for d in ladder_next[:4]:
             zone = d.get("zone") or [None, None]
             zs = f"{zone[0]:.2f} ~ {zone[1]:.2f}" if zone[0] and zone[1] else "—"
             out.append(_card(_table(
@@ -448,6 +573,8 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
                    f'{_esc(d.get("gate_evidence") or "")}</div>'
                    if d.get("gate_evidence") else ""),
                 border="#2b313d", accent="#f5b83d"))
+        if len(ladder_next) > 4:
+            out.append(_compact_block(ladder_next[4:], budget=_cbulk))
     if prev_review:
         # #601-B 闭环：昨日推的票今天怎么样了——推荐不是一锤子买卖
         out.append(f'<div style="{_STY["h2"]}">昨日推荐 · 今日复核</div>')
@@ -473,7 +600,14 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
         out.append(_card(_table(rows), border="#2b313d"))
     if meta.get("note"):
         out.append(f'<div style="{_STY["meta"]}">{_esc(meta.get("note"))}</div>')
-    return f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
+    html = f'<section style="{_STY["doc"]}">' + "".join(out) + "</section>"
+    # ★ 长度保险丝（2026-09-18 放开限量后新增）：PushPlus 在 push() 里对
+    # content 做 `content[:PP_HTML_CAP]` **硬截断**——切在半张卡中间，比少
+    # 显示几只更难读。第一层是上面的紧凑行预算（会明确写"其余见详情"），
+    # 这里是第二层「整卡回退」兜底，保证任何情况下都不会被硬截。
+    if len(html) > PP_HTML_CAP:
+        html = _clip_html(html)
+    return html
 
 
 def save_detail_report(html, today, data_json=None):

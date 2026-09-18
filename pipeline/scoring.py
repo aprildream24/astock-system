@@ -112,8 +112,16 @@ WINRATE_ANCHOR = {"连板": 1.0, "趋势": 0.72, "波段": 0.72, "区间": 0.72}
 ACTION_RANK = {"现在买": 2, "次日竞价达标买": 2, "等回踩": 1, "小仓试": 1, "观望": 0}
 
 
-def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3):
-    """cands: 已过熔断闸的候选 list；返回 ≤3 只（允许 0 只）。"""
+def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
+                      per_sector=1, ladder_cap=2):
+    """cands: 已过熔断闸的候选 list；返回最终推荐（允许 0 只）。
+
+    参数化（2026-09-18 用户需求「行情好时不再限制 3 只」）：
+      · `limit=None` → **不限总量**，全部符合条件的高分标的都推；
+      · `per_sector` → 同板块最多保留几只（行情一般 =1，热点行情放宽）；
+      · `ladder_cap` → 连板池席位上限。
+    默认值（3 / 1 / 2）与原实现**逐字等价**，老调用方行为不变。
+    """
     scored = []
     for c in cands:
         if c.get("observe"):
@@ -121,6 +129,8 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3):
         pool = c["pool"]
         eff = score_candidate(c, env_w) * WINRATE_ANCHOR.get(pool, 0.72)
         # 优选因子：板块冷热 / 趋势双态
+        # ⚠️ 2026-09-18 前 `sector_temp` 无任何数据源（恒 None）⇒ 本因子静默
+        # 失效。数据源已由 pipeline/sector.py 补上，加成重新生效。
         if c.get("sector_temp") == "❄弱":
             eff *= 0.90
         elif c.get("sector_temp") == "🔥强":
@@ -131,27 +141,65 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3):
             eff *= 1.05
         c["eff_score"] = round(eff, 2)
         scored.append(c)
-    # 板块内去重：同板块只留最高分 1 只
-    if sector_of:
-        best = {}
-        for c in scored:
-            sec = sector_of(c)
-            if sec not in best or c["eff_score"] > best[sec]["eff_score"]:
-                best[sec] = c
-        scored = list(best.values())
     scored.sort(key=lambda c: (c["eff_score"], ACTION_RANK.get(c.get("action"), 0)),
                 reverse=True)
-    # 类型配额：连板 ≤2 席
+    # 板块内限额：同板块保留分数最高的前 per_sector 只。
+    # ⚠️ 旧实现的 `sector_of` 因候选无 `sector` 字段而退化成「按池别去重」——
+    # 不同行业的波段票被当成同一板块互斥，每次只活一只。现已改为真实行业。
+    if sector_of and per_sector:
+        seen, merged = {}, []
+        for c in scored:
+            sec = sector_of(c)
+            n = seen.get(sec, 0)
+            if n >= per_sector:
+                continue
+            seen[sec] = n + 1
+            merged.append(c)
+        scored = merged
+    # 类型配额：连板 ≤ ladder_cap 席
     picked, ladder = [], 0
     for c in scored:
         if c["pool"] == "连板":
-            if ladder >= 2:
+            if ladder >= ladder_cap:
                 continue
             ladder += 1
         picked.append(c)
-        if len(picked) >= limit:
+        if limit is not None and len(picked) >= limit:
             break
     return picked
+
+
+# ---------------------------------------------------------------------------
+# 3.12 行情档位 → 推荐配额（2026-09-18 用户需求）
+# ---------------------------------------------------------------------------
+
+NORMAL_PICKS = 3        # 行情一般：维持原有 TOP3 纪律
+HOT_PICKS = None        # 行情好：**不限量**（None = 全部符合条件标的）
+
+
+def market_heat(emo):
+    """行情档位 → (level, max_picks, per_sector, ladder_cap)。
+
+    用户口径：「行情好时针对评分高的个股**全部推荐**，标注板块热度，
+    不再限制 3 个」。口径落地要点：
+      · 「行情好」= 十维情绪分 ≥60（偏热）且**数据达标**（qualified）。
+        数据未达标时情绪分本身不可信 ⇒ 一律不放开（宁少不滥）。
+      · 行情好时 `max_picks=None`（不限量），同时放宽板块内限额与连板席位
+        ——否则热点板块刚启动时只能推 1 只，等于把最强的板块主动减配。
+      · 行情一般/偏冷：维持 3 只不变（不因本次改动收紧，避免用户感知突变）。
+    """
+    if not emo or emo.get("score") is None:
+        return "未知", NORMAL_PICKS, 1, 2
+    score = float(emo.get("score"))
+    level = emo.get("label") or "未知"
+    if not emo.get("qualified"):
+        return level, NORMAL_PICKS, 1, 2      # 覆盖不足 ⇒ 情绪分不用于加权
+    if score >= 76:                            # 亢奋
+        return level, HOT_PICKS, 3, 4
+    if score >= 60:                            # 偏热
+        return level, HOT_PICKS, 2, 3
+    return level, NORMAL_PICKS, 1, 2
+
 
 
 def observe_mute(cands, winrates):

@@ -248,8 +248,102 @@ def evaluate_exit(con, code, today, protect_prev=None):
     return "SELL", [n for _, n in triggered], f"持仓收益 {pnl:+.1f}%"
 
 
+def _last_price(con, code, date):
+    """当日可用价格：优先当日快照（盘前/盘中也能拿到），回退最近一根K线。"""
+    row = con.execute("SELECT price FROM snapshot WHERE date=? AND code=?",
+                      (date, code)).fetchone()
+    if row and row[0]:
+        return float(row[0])
+    row = con.execute(
+        "SELECT c FROM klines WHERE code=? AND date<=? ORDER BY date DESC LIMIT 1",
+        (code, date)).fetchone()
+    return float(row[0]) if row and row[0] else None
+
+
+def account_line(con, today):
+    """账户概览行（推送头部用）：净值 / 现金 / 持仓数 / 累计收益。"""
+    acct = ensure_account(con, today)
+    eq = equity(con)
+    ret = (eq / RISK["init_cash"] - 1) * 100
+    n = con.execute(
+        "SELECT COUNT(DISTINCT code) FROM position_batches").fetchone()[0]
+    return (f"账户 ¥{eq:,.0f}（现金 ¥{acct[0]:,.0f} · 持仓 {n} 只 · "
+            f"累计 {ret:+.2f}% ｜ 起步 ¥{RISK['init_cash']:,.0f}）")
+
+
+def auto_open(con, today, max_new=None):
+    """按当日推荐自动建仓——模拟盘「自动运行」的核心（2026-09-18 新增）。
+
+    ⚠️ 为什么需要：原实现**只有退出裁决、没有任何买入路径**。账户永远空仓
+    ⇒ 巡逻无对象 ⇒ log 为空 ⇒ 连一条推送都不会发。用户看到的"模拟盘没在
+    跑"根因就在这里（叠加 executor workflow 此前从未挂定时器）。
+
+    纪律：
+      · 只买与推送**同源口径**的票（当日 rec_picks 里 action ∈ 现在买/等回踩/
+        小仓试，且现价确实落在买区内）——推什么就模拟买什么，避免出现
+        "推的票没买、买的票没推"这种无法对账的状态；
+      · 单票目标资金 = 净值 × min(max_pos_pct/max_holdings, 0.25)，手数取整
+        到 100 股；不足 1 手直接跳过（不硬凑、不放松风控凑单）；
+      · 风控**只走 place_order 一处**（涨跌停/资金/T+1/累计敞口/持仓上限/
+        单日委托数全在那），本函数不重复实现判定，避免两套规则打架；
+      · 无推荐 / 已满仓 / 熔断锁定 → 返回空列表，不推空消息。
+    """
+    acct = ensure_account(con, today)
+    if acct[3]:
+        return [("-", "HOLD", "日内亏损熔断锁定，不开新仓（M22）")]
+    rows = con.execute(
+        "SELECT code, name, action, buy_low, buy_high, score FROM rec_picks "
+        "WHERE date=? AND action IN ('现在买','等回踩','小仓试') "
+        "ORDER BY score DESC", (today,)).fetchall()
+    if not rows:
+        return []
+    held = {r[0] for r in con.execute(
+        "SELECT DISTINCT code FROM position_batches")}
+    eq = equity(con)
+    per_amt = eq * min(RISK["max_pos_pct"] / RISK["max_holdings"], 0.25)
+    log = []
+    for code, name, action, lo, hi, score in rows:
+        if max_new and len(log) >= max_new:
+            break
+        if code in held:
+            continue
+        if len(held) >= RISK["max_holdings"]:
+            break
+        price = _last_price(con, code, today)
+        if not price or price <= 0:
+            log.append((code, "SKIP", "无当日价格，跳过"))
+            continue
+        # 现价必须落在买区内（与推送 buyable_now 同一把尺子）
+        if lo and hi and not (lo * 0.995 <= price <= hi * 1.005):
+            log.append((code, "SKIP",
+                        f"现价{price:.2f}不在买区{lo:.2f}-{hi:.2f}，不追"))
+            continue
+        qty = int(min(per_amt, RISK["max_order_amt"]) / price / 100) * 100
+        if qty < 100:
+            log.append((code, "SKIP", f"单票资金不足 1 手（价{price:.2f}）"))
+            continue
+        prev = con.execute(
+            "SELECT c FROM klines WHERE code=? AND date<? "
+            "ORDER BY date DESC LIMIT 1", (code, today)).fetchone()
+        oid, status, why = place_order(
+            con, code, "buy", qty, price, today,
+            prev_close=prev[0] if prev else None,
+            reason=f"自动建仓 {action}")
+        if status == "filled":
+            held.add(code)
+            log.append((code, "BUY", f"{qty}股@{price:.2f}（{action}）"))
+        else:
+            log.append((code, "REJECT", why))
+    return log
+
+
 def run(task="scan", price_of=None):
-    """巡逻：对全部持仓跑退出裁决；触发 → risk_sell 卖出（M23/M27）。"""
+    """模拟盘日常：自动建仓（task=auto）+ 全部持仓退出裁决。
+
+    task 语义（2026-09-18 明确化，原实现忽略 task 参数）：
+      · `auto` —— 自动建仓 + 巡逻（默认自动运行形态）
+      · `scan`/`tail`/`now` —— 只巡逻（保持原有语义，不做买入）
+    """
     con = get_conn()
     today = today_str()
     ensure_account(con, today)
@@ -257,9 +351,11 @@ def run(task="scan", price_of=None):
     if day_pnl_pct(con, today) <= RISK["daily_loss_halt"] * 100:
         con.execute("UPDATE account_state SET frozen=1 WHERE id=1")
         con.commit()
+    log = []
+    if task in ("auto", "open"):
+        log.extend(auto_open(con, today))
     codes = [r[0] for r in con.execute(
         "SELECT DISTINCT code FROM position_batches")]
-    log = []
     for code in codes:
         action, reasons, detail = evaluate_exit(con, code, today)
         if action == "SELL":
@@ -287,11 +383,13 @@ def run(task="scan", price_of=None):
     # 推送（模拟盘只走 PushPlus；重要退出风险不被普通去重拦截）
     if log:
         from . import notifier
-        lines = []
+        # 账户概览打头（用户要"按 100000 元起步自动运行"，那就得看得见净值）
+        lines = [account_line(con, today)]
         for c, a, r in log:
-            mark = "⛔" if a in ("SELL", "RISK_BLOCKED") else "·"
+            mark = {"SELL": "⛔", "RISK_BLOCKED": "⛔", "RISK_FLAGGED": "⚠️",
+                    "BUY": "🔴", "REJECT": "✋"}.get(a, "·")
             lines.append(f"{mark} {c} {a} {r}")
-        md = "# 模拟盘巡逻 " + today + "\n" + "\n".join(lines)
+        md = "# 模拟盘 " + today + "\n" + "\n".join(lines)
         force = any(a in ("SELL", "RISK_BLOCKED", "RISK_FLAGGED")
                     for _, a, _ in log)
         notifier.push(f"exec_{task}", today, notifier.md2html(md), date=today,

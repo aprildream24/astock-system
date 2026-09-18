@@ -1,45 +1,53 @@
-# 模拟盘执行器：仅手动/外部 dispatch 触发（now | scan×12 | tail | review）。
-# 2026-09-14 晚：GitHub 自带 schedule cron 全删——延迟 1-2h 不可控，晚间幽灵
-# 触发造成重复推送；模拟盘巡逻如需恢复，在 cron-job.org 补 dispatch 定时器。
+# 模拟盘执行器（手动/外部 dispatch 触发）。
+#
+# ⚠️ 2026-09-18 重要说明（重构后）：
+#   模拟盘的**主通道已移到 stock.yml**——收盘构建（close）之后直接跑
+#   `tools.executor --task auto`。原因（详见 stock.yml 该步骤注释）：
+#     ① executor 单独跑时 runner 是**空库**，无 K 线无持仓，什么都判不了；
+#     ② 模拟盘状态与行情库同在 cache/，挂主链才能随同一次 cache/save 持久化，
+#        否则两个 workflow 各存一份，缓存 GC 会把状态删回旧版本；
+#     ③ 不必在 cron-job.org 再注册一个定时器（少一个会静默失效的环节）。
+#   本 workflow 保留为**手动通道**（调试/补跑/只读巡检）：
+#   它只 restore 缓存、不 save——避免手动跑出来的状态覆盖线上模拟盘状态。
+#
+# 手动用法：Actions → executor → Run workflow → task=auto|scan|tail|review
 name: executor
 
 on:
   workflow_dispatch:
     inputs:
       task:
-        description: "executor 任务: now | scan | tail | review"
-        default: scan
+        description: "executor 任务: auto(建仓+巡逻) | scan | tail | review"
+        default: auto
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 模拟盘巡逻+推送
+      # ★ 2026-09-18 修（"模拟盘没运行"的第二个根因）：
+      # 本 workflow 原来**没有任何 cache 恢复** ⇒ runner 上的 cache/market.db
+      # 是全新空库 ⇒ 无 K 线、无持仓 ⇒ 巡逻 0 只 ⇒ 无日志 ⇒ 一条推送都不发。
+      # 与 stock.yml 共用同一前缀（market-db-）的缓存：stock 每轮抓完存一份，
+      # 本 workflow 直接复用，不必自己再拉一次全市场。
+      # restore-only：手动通道不 save，避免覆盖线上模拟盘账户状态。
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-exec-manual-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 模拟盘（建仓+巡逻）
         env:
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          # 修复：Actions 无 GITHUB_SCHEDULE 变量（同 stock.yml 的坑：恒空 → 全落 scan）
-          GH_SCHEDULE: ${{ github.event.schedule }}
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
         run: |
           TASK="${{ github.event.inputs.task }}"
-          if [ -z "$TASK" ]; then
-            case "$GH_SCHEDULE" in
-              "25 1 * * 1-5") TASK=now ;;
-              "43 6 * * 1-5") TASK=tail ;;
-              "32 7 * * 1-5") TASK=review ;;
-              *)              TASK=scan ;;
-            esac
-          fi
-          echo "[executor] GH_SCHEDULE='$GH_SCHEDULE' -> TASK=$TASK"
+          if [ -z "$TASK" ]; then TASK=auto; fi
+          echo "[executor] TASK=$TASK（手动通道：只读快照，不写回缓存）"
           python -m tools.executor --task "$TASK"
-
-  # watchdog job 已删（2026-09-14）：它检查的 fetch_stats.json / push_ledger
-  # 属于主链（stock workflow）的 cache 目录，两个 workflow 的 runner 不共享，
-  # 在 executor 上跑永远"fetch_daily 从未跑过 / build 未跑"→ 16 时点/天全是
-  # 误报告警（用户当日实际收到的骚扰消息即此），且把每次 run 拖成 failure。
-  # 本地调度守护保留在 tools/watchdog.py + install_schedule.bat 的 16:00/21:00。

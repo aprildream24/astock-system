@@ -60,7 +60,16 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           "test_push_audit.py",
           # 2026-09-16 新增：cron-job.org 定时器守门（主链 100% 依赖它，
           # 而云端 watchdog 自己也被同一个调度器触发 ⇒ 需独立守门覆盖）。
-          "test_timer_guard.py"]
+          "test_timer_guard.py",
+          # 2026-09-18 新增：板块热度标注 + 行情好放开限量（用户需求：
+          # "行情好时针对评分高的个股全部推荐、标注板块热度、不再限制 3 个"）。
+          # 同时锁住两处**静默失效**：sector_temp 冷热因子与同板块去重
+          # 此前都因缺数据源而从未生效。
+          "test_sector_heat.py",
+          # 2026-09-18 新增：模拟盘自动运行（用户："是不是还有模拟盘没运行？
+          # 按 100000 元起步开始自动运行"）。根因：executor 只有退出裁决、
+          # 没有任何买入路径 ⇒ 永远空仓 ⇒ 无日志 ⇒ 一条推送都不发。
+          "test_executor_auto.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")
