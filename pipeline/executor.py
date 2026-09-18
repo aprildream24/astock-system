@@ -402,6 +402,9 @@ def run(task="scan", price_of=None):
         md = "# 模拟盘 " + today + "\n" + "\n".join(lines)
         force = any(a in ("SELL", "RISK_BLOCKED", "RISK_FLAGGED")
                     for _, a, _ in log)
-        notifier.push(f"exec_{task}", today, notifier.md2html(md), date=today,
-                      con=con, force=force)
+        r = notifier.push(f"exec_{task}", today, notifier.md2html(md),
+                          date=today, con=con, force=force)
+        # 打印推送三态（记忆纪律：日志必须能回答"到底发出去了没"——
+        # 只看"步骤 success"会漏掉 uncertain 这类静默失败）。
+        print(f"[executor] push={r}")
     return log
