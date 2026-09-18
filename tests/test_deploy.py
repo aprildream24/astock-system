@@ -164,6 +164,45 @@ class TestDeploySecretLeakGuards(unittest.TestCase):
         import inspect
         self.assertIn("def purge(", inspect.getsource(self.dep))
 
+    # ---- 2026-09-18 新增：与本地清单对账（抓"曾经合法"的残留） ----
+    def test_purge_reconciles_remote_against_local_manifest(self):
+        """★ 血案：本机调试脚本 `gh_check.py` 早期被推上公开仓库，后来本地
+        删掉了 —— 远端却永久留痕（`sync()` 只增不删）。它名字正常、后缀正常、
+        也不在 `_`/`Temp/`/`build_tmp/` 里 ⇒ **任何黑名单都抓不住**，
+        只能反向对账："远端有、本地可部署清单里没有 ⇒ 残留"。
+        （用合成名断言语义，避免将来真有人在本机建同名文件时误报。）
+        """
+        local = set(self.dep.collect_files())
+        for leftover in ("gh_check.py", "legacy_debug_script.py",
+                         "tools/old_probe.py"):
+            self.assertNotIn(leftover, local)
+            self.assertTrue(
+                self.dep.should_purge(leftover, local),
+                f"{leftover} 是同步残留，必须被清理")
+        # 反向：本地清单里的文件一个都不许被对账误删（误删=又一次全天零推送）
+        for p in local:
+            self.assertFalse(
+                self.dep.should_purge(p, local),
+                f"{p} 在本地清单内，被对账误判为残留")
+
+    def test_purge_manifest_mode_still_protects_dist(self):
+        """对账模式下 `dist/` 仍受保护 —— 账本是 CI 权威，本地不收集它，
+        若被"未收集就删"的粗暴逻辑命中，保险丝会立即失效。"""
+        local = set(self.dep.collect_files())
+        for p in ("dist/push_ledger.json", "dist/data/abc.bin"):
+            self.assertFalse(
+                self.dep.should_purge(p, local), f"{p} 属 dist/ 受保护")
+
+    def test_purge_computes_manifest_from_collect_files(self):
+        """结构断言：`purge()` 必须真的用 `collect_files()` 做对账 ——
+        否则规则加了却不生效（"改了但没接线"是本仓库的高频缺陷）。"""
+        import inspect
+        src = inspect.getsource(self.dep.purge)
+        self.assertIn("collect_files()", src,
+                      "purge 未以本地清单对账，残留文件永远清不掉")
+        self.assertIn("should_purge(p, local)", src,
+                      "purge 未把清单传给 should_purge，对账形同虚设")
+
 
 if __name__ == "__main__":
     unittest.main()

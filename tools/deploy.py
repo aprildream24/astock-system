@@ -129,7 +129,7 @@ def collect_files():
     return files
 
 
-def should_purge(path):
+def should_purge(path, local_files=None):
     """远端路径是否属于「按现行排除策略本不该存在」的历史遗留物。
 
     ★ 为什么必须有这个函数：`sync()` 只「增/改」**从不删除** ⇒ 一个文件一旦
@@ -139,6 +139,13 @@ def should_purge(path):
 
     ⚠️ `dist/` 永不清理：`dist/push_ledger.json` 由 CI 的 `push_ledger_sync`
     维护，是账本权威（本地根本不收集它，盲目对齐会把账本删掉）。
+
+    ★ 2026-09-18 新增 `local_files`：以**本地可部署清单**为唯一真相做对账。
+    规则类黑名单有个追不上的盲区 —— **"曾经合法"** 的文件：本机调试脚本
+    `gh_check.py` 早期被推上去，后来本地删掉了，远端却永久留痕（实测发现）。
+    这类文件名字正常、后缀正常、也不在 `_`/`Temp/`/`build_tmp/` 里，任何
+    黑名单都抓不住 ⇒ 只能反向对账：**远端有、本地清单没有 ⇒ 就是残留**。
+    ⚠️ 该参数只在 `purge()` 里传入；不传时保持纯规则语义（便于单测）。
     """
     if path.startswith("dist/"):
         return False
@@ -151,6 +158,8 @@ def should_purge(path):
         return True
     if base in EXCLUDE_FILES or os.path.splitext(base)[1].lower() in EXCLUDE_EXT:
         return True
+    if local_files is not None and path not in local_files:
+        return True
     return False
 
 
@@ -161,7 +170,11 @@ def purge(token):
         print("purge：读远端 tree 失败", st, tr)
         return False
     paths = [t["path"] for t in tr.get("tree", []) if t["type"] == "blob"]
-    victims = sorted(p for p in paths if should_purge(p))
+    # ★ 以本地可部署清单做对账（见 should_purge 的 `local_files` 说明）。
+    #   注意必须在 `sync()` 之后调用：此时远端已含全部本地文件，
+    #   剩下的"远端有、本地无"就是纯粹的同步残留。
+    local = set(collect_files())
+    victims = sorted(p for p in paths if should_purge(p, local))
     if not victims:
         print("purge：远端无遗留文件 ✓")
         return True
