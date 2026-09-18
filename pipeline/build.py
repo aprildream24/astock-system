@@ -321,19 +321,34 @@ def scan_all(con, date, bar_anchor=None):
                       "sell_low": plan["target_zone"][0],
                       "sell_high": plan["target_zone"][1],
                       "stop": plan["stop"], "action_hint": plan["action"],
-                      "entry_hint": f"四态:{plan['state']}"})
+                      "entry_hint": f"四态:{plan['state']}",
+                      # 决断力证据（卡片展示：为什么它不磨叽）
+                      "decisive": engines.decisive_stats(rows)})
+        # ★ 决断门控（用户 2026-09-18：不要推荐磨磨唧唧的股票）。
+        # 趋势票也必须"走得出来"——缓坡震荡（net 为正但一路回撤、eff 低）
+        # 同样属于磨叽，剔除。标准慢牛（稳定爬升）eff 高 → 放行。
+        if c and c.get("pool") == "趋势" and not engines.screen_decisive(rows):
+            reject(code, "趋势", "趋势过缓/来回震荡（磨磨唧唧，不推荐）")
+            c = None
         if not c:
             r = engines.detect_stage_bottom(rows, turn20=turn20, fmv=fmv)
             if r:
-                c = mk_common(code, name, close)
-                c.update(r)
-                c["pool"], c["tag"] = "区间", "区间"
+                # ★ 箱体/区间池本质是横盘震荡 = 用户说的磨磨唧唧，直接剔除，
+                # 不进候选池（reject 留痕，不静默 continue）。
+                reject(code, "-", "横盘震荡（磨磨唧唧，不推荐）")
+                continue
         if not c:
             r = engines.screen_pullback_relay(rows)
             if r:
                 c = mk_common(code, name, close)
                 c.update(r)
                 c["pool"], c["tag"] = "波段", "波段"
+                # ★ 决断门控同样覆盖波段池（2026-09-19 用户重申「要么上要么下」）：
+                # 涨停回马枪若近 20 日整体走成横盘（净位移/效率不足），
+                # 说明 D0 之后动能已经散掉，同样不推。
+                if not engines.screen_decisive(rows):
+                    reject(code, "波段", "波段动能衰减/横盘（磨磨唧唧，不推荐）")
+                    c = None
         if not c:
             continue                     # 三池皆不中：合规未入选，无需留痕
         commit(c)
@@ -530,9 +545,14 @@ def _notify_holiday(date):
         print(f"[build] 休市提示发送失败（忽略）：{type(e).__name__} {e}")
 
 
-def build(task="close", date=None):
+def build(task="close", date=None, period_days=30):
     con = get_conn()
     date = date or today_str()
+    # ★ 用户需求①：半月/月度周期复盘（盈利最大化 + 系统改进建议）。
+    # 独立于选股主链：不依赖当日数据就绪/交易日判定，直接聚合历史账户与行情，
+    # 故在休市门与就绪门之前早退；可由 cron/自动化在每月 1 日、16 日触发。
+    if task == "period":
+        return _build_period(con, date, period_days)
     # ★ 2026-09-16 新增：休市日（周末 / 法定节假日）**第一道门**就早退。
     # 放在所有就绪判定之前，避免休市日还去做快照/K线检查、更避免
     # 四个任务各发一条告警（详见 _notify_holiday 注释）。
@@ -711,11 +731,20 @@ def build(task="close", date=None):
     # 历史 bug：只要 action 在 NOW_ACTIONS 就上台，把「等回踩」的票推成主推，
     # 用户点开一看现价早跳出买区——这就是「推的票不在购买区间」的直接来源。
     NOW_ACTIONS = ("现在买", "等回踩", "小仓试")
+    # 躺榜统计（用户 2026-09-19「不要几天横排在那里动都不动」）：
+    # 同一只票在最近 5 个交易日的推荐位上反复出现（动作未兑现、无结局回填）
+    # 的天数。>=5 日直接移出推荐；1~4 日由终审按 8%/日折价挤出。
+    _wdays = _wait_days_map(con, date)
     for c in cands:
         # 单一出口：能不能照价下单只由 is_buyable_now 说了算（渲染层禁止重判）
         c["buyable_now"] = scoring.is_buyable_now(c)
+        wd = _wdays.get(c["code"], 0)
+        if wd:
+            c["wait_days"] = wd
+    _stale = [c["code"] for c in cands if c.get("wait_days", 0) >= 5]
     picks = scoring.compute_top_picks(
-        [c for c in cands if c.get("action") in NOW_ACTIONS],
+        [c for c in cands if c.get("action") in NOW_ACTIONS
+         and c.get("wait_days", 0) < 5],
         env_w, winrates, sector_of=lambda c: c.get("sector") or c["pool"],
         limit=pick_limit, per_sector=per_sector, ladder_cap=ladder_cap)
     ladder_next = scoring.compute_top_picks(
@@ -723,6 +752,9 @@ def build(task="close", date=None):
         env_w, winrates, sector_of=lambda c: c.get("sector") or c["pool"],
         limit=pick_limit if pick_limit is None else 2,
         per_sector=per_sector, ladder_cap=ladder_cap)
+    for code in _stale:
+        skipped.append({"code": code, "pool": "-",
+                        "reason": "连续>=5日挂推荐位未兑现，自动移出（不让名单躺平）"})
 
     # 展示口径（2026-09-14 用户困惑整改）：可下单的票永远排在「等回踩/小仓试」
     # 前面——此前详情报告把高分的等回踩票排在首位，用户第一眼看到"不能买"，
@@ -744,7 +776,8 @@ def build(task="close", date=None):
                                   "consecutive_limit_ups", "is_st", "fmv",
                                   "buy_low", "buy_high", "stop",
                                   "entry_hint", "cycle_hint", "trend_state",
-                                  "gate_evidence", "hot_pick")},
+                                  "gate_evidence", "hot_pick",
+                                  "wait_days", "decisive")},
                                 ensure_ascii=False)))
     for s in skipped:                    # 333-五：未入选原因全量落库
         con.execute("INSERT OR REPLACE INTO candidate_snapshots VALUES(?,?,?,?,?,?,?,?)",
@@ -898,29 +931,24 @@ def build(task="close", date=None):
         r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
                           force=_force_push())
         print(f"[build] push={r}")
-    # 自选股建议独立推送（独立 biz_key，不与主报告互相吃去重）
-    if watch_advice and task in ("close", "review"):
-        wmd = notifier.md2html("# 自选股操作建议 " + date + "\n" + "\n".join(
-            f"- **{a.get('name','')} {a['code']}**（{a['action']}）：{a['advice']}"
-            + (f"｜距买区 {a['dist_pct']:+.1f}%" if a.get("dist_pct") is not None else "")
-            for a in watch_advice))
-        wr = notifier.push("watch_advice", date, wmd, date=date, con=con,
-                           force=_force_push())
-        print(f"[build] watch push={wr}")
+    # ★ 用户需求⑤：晚间原本分散的多条推送（AI叙事 / 模拟盘日结 / 真实持仓体检 /
+    # 自选建议）合并为**一条**「晚间综合」在 review 时点发出，显著降低消息数量。
+    # 仅在 review 时点汇总（close 时点只发主报告，避免重复）。
     if task == "review":
-        # AI 叙事降级链（未配置任何 key 时自动落到规则引擎，永不失败）
-        from . import narrative
+        from . import narrative, executor as _ex
         text = narrative.narrate({"date": date, "mood": mood or {},
                                   "emotion": emo, "picks": picks})
-        nr = notifier.push("narrative", date, notifier.md2html(text),
-                           date=date, con=con, force=_force_push())
-        print(f"[build] narrative push={nr}")
-        # 真实持仓体检 + 换股建议（用户实盘；config/holdings.json 本地不公开）。
-        # ★ 降噪纪律：只在「有持仓且需处理」或「有可下单候选」时推送，避免每天噪音。
+        narrative_html = notifier.md2html(text)
+        try:
+            rep = _ex.report_daily_pnl(con, date)
+            daily_html = notifier.render_daily_summary(rep, date)
+        except Exception as e:  # noqa: BLE001
+            print(f"[build] daily_summary failed: {e}")
+            daily_html = ""
+        holding_html = ""
         try:
             _hold = load_holdings()
             if _hold:
-                from . import executor as _ex
                 heval = _ex.evaluate_real_holdings(con, date, _hold)
                 cur = con.execute(
                     "SELECT code,name,action,buy_low,buy_high,stop,score "
@@ -934,19 +962,25 @@ def build(task="close", date=None):
                         (c["code"],)).fetchone()
                     if ind:
                         c["sector"] = ind[0]
-                hadvice = notifier.render_holding_advice(heval, cands, date)
-                actionable = (any(h["exit_action"] == "SELL" for h in heval)
-                              or any(c.get("action") in
-                                     ("现在买", "可买", "小仓试", "次日竞价达标买")
-                                     for c in cands))
-                if actionable:
-                    hr = notifier.push("holding_check", date, hadvice,
-                                       date=date, con=con, force=_force_push())
-                    print(f"[build] holding_check push={hr}")
-                else:
-                    print("[build] holding_check skipped（持仓健康且无可下单候选）")
+                holding_html = notifier.render_holding_advice(
+                    heval, cands, date)
         except Exception as e:  # noqa: BLE001
             print(f"[build] holding_check failed: {e}")
+        watch_html = ""
+        if watch_advice:
+            watch_html = notifier.md2html(
+                "# 自选股操作建议 " + date + "\n" + "\n".join(
+                    f"- **{a.get('name','')} {a['code']}**（{a['action']}）：{a['advice']}"
+                    + (f"｜距买区 {a['dist_pct']:+.1f}%" if a.get("dist_pct") is not None else "")
+                    for a in watch_advice))
+        digest = notifier.render_evening_digest(
+            date, narrative_html, daily_html, holding_html, watch_html)
+        if digest:
+            r = notifier.push("review", date, digest, date=date, con=con,
+                              force=_force_push())
+            print(f"[build] evening_digest push={r}")
+        else:
+            print("[build] evening_digest empty → 跳过")
     return {"date": date, "candidates": len(cands), "picks": picks,
             "ladder_next": ladder_next, "emotion": emo, "changes": changes}
 
@@ -956,6 +990,35 @@ def _sector_fields(c):
     return {"sector": c.get("sector"), "sector_pct": c.get("sector_pct"),
             "sector_temp": c.get("sector_temp"),
             "sector_net_yi": c.get("sector_net_yi")}
+
+
+def _wait_days_map(con, date, window=5):
+    """最近 window 个交易日里，各代码出现在推荐位（未兑现）的天数。
+
+    「兑现」口径：outcome 仍为 ''（T+2 结局未回填或未成交）且 action 属
+    于可执行动作——只统计**仍在榜**的票：最近一个交易日必须也出现，
+    否则是早已离场的历史推荐，不算躺榜。"""
+    days = trade_calendar(con)
+    if date not in days:
+        return {}
+    idx = days.index(date)
+    if idx == 0:
+        return {}
+    prev_days = days[max(0, idx - window):idx]
+    if not prev_days:
+        return {}
+    ph = ",".join("?" * len(prev_days))
+    rows = con.execute(
+        f"SELECT code, date, outcome FROM rec_picks "
+        f"WHERE date IN ({ph}) AND action IN ('现在买','等回踩','小仓试')",
+        prev_days).fetchall()
+    by_code = {}
+    for code, d, outcome in rows:
+        if outcome:
+            continue                    # 已兑现/已回填结局的不算躺榜
+        by_code.setdefault(code, set()).add(d)
+    latest = prev_days[-1]
+    return {code: len(ds) for code, ds in by_code.items() if latest in ds}
 
 
 def _force_push():
@@ -1223,6 +1286,23 @@ def build_site(date=None):
     print(f"[site] build & verify OK（N12 发布记录：{release}）")
 
 
+def _build_period(con, date, days=30):
+    """★ 用户需求①：半月/月度周期复盘（独立于选股主链）。
+
+    聚合 accounts/历史成交/当前持仓，产出「盈利最大化 + 系统改进建议」，
+    作为一条【周期】推送发出（默认每月 1 日、16 日触发，分别传 days=30/15）。"""
+    from . import executor as _ex
+    from . import notifier
+    rep = _ex.report_period(con, date, days)
+    html = notifier.render_period_report(rep, date, days)
+    title = f"{days}天周期复盘"
+    r = notifier.push("period", title, html, date=date, con=con,
+                      force=_force_push())
+    print(f"[build] period push={r}")
+    return {"period": True, "days": days, "net": rep.get("net"),
+            "win_rate": rep.get("win_rate")}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="close",
@@ -1231,6 +1311,8 @@ def main():
     ap.add_argument("--date", default=None)
     # M41 盘中任务：--slot am|pm 决定早盘校验/尾盘机会；--dry 只算不推（本地验收）
     ap.add_argument("--slot", default="pm", choices=["am", "pm"])
+    # 用户需求①：半月/月度周期复盘窗口（天）；调度器在 1 日传 30、16 日传 15
+    ap.add_argument("--period-days", type=int, default=30)
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()   # argv 隔离：内嵌任务用 parse_known_args 的精神
     if a.task == "site":
@@ -1240,6 +1322,8 @@ def main():
         # 与收盘主链（日K口径）必须物理隔离，避免互相污染。
         from . import intraday
         intraday.run(slot=a.slot, date=a.date, dry=a.dry)
+    elif a.task == "period":
+        build(a.task, a.date, period_days=a.period_days)
     else:
         build(a.task, a.date)
 

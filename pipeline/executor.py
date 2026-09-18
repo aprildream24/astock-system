@@ -409,6 +409,210 @@ def account_snapshot(con, today):
     }
 
 
+def report_daily_pnl(con, today, slot=None):
+    """★ 用户需求①：模拟盘每日盈亏总结 + 亏因归因。
+
+    返回 dict：净值/现金/累计、当日盈亏额与%、持仓逐只当日涨跌幅、
+    与所属板块/沪指对比、归因结论（选股弱 / 板块弱 / 系统性）。
+
+    亏因归因逻辑（用户原话「亏了要给我亏的理由，是板块没选对还是
+    个股没选对」）：逐只比 个股当日涨跌幅 vs 所属板块涨跌幅 vs 沪指；
+    个股弱于板块 → 选股层面问题；板块弱于大盘 → 板块选择偏弱；
+    整体随大盘走弱且无个股/板块明显失误 → 系统性波动。"""
+    from .engines import pct
+    a = ensure_account(con, today)
+    # account_snapshot 不返回 day_start，这里从 ensure_account 元组直接取
+    # day_start_equity（日初净值，日切时由上一日收盘净值写入）。
+    day_start_eq = a[1] if a[1] else RISK["init_cash"]
+    acct = account_snapshot(con, today)
+    day_pct = day_pnl_pct(con, today)
+    day_amt = acct["equity"] - day_start_eq
+
+    # 沪指当日涨跌幅
+    idx = con.execute(
+        "SELECT c FROM klines WHERE code='sh000001' AND date<=? "
+        "ORDER BY date DESC LIMIT 2", (today,)).fetchall()
+    idx_chg = (pct(idx[0][0] - idx[1][0], idx[1][0])
+               if len(idx) == 2 and idx[1][0] else None)
+
+    # 板块当日涨跌幅（sector_heat.pct）
+    sec_chg = {r[0]: r[1] for r in con.execute(
+        "SELECT sector, pct FROM sector_heat WHERE date=?", (today,)).fetchall()}
+
+    rows = holdings_rows(con, today, slot)
+    stock_weak = sector_weak = 0
+    for h in rows:
+        code = h["code"]
+        pr = con.execute(
+            "SELECT c FROM klines WHERE code=? AND date<=? "
+            "ORDER BY date DESC LIMIT 2", (code, today)).fetchall()
+        schg = (pct(pr[0][0] - pr[1][0], pr[1][0])
+                if len(pr) == 2 and pr[1][0] else None)
+        ind = con.execute(
+            "SELECT sector FROM stock_industry WHERE code=?", (code,)).fetchone()
+        sec = ind[0] if ind else None
+        sechg = sec_chg.get(sec) if sec else None
+        h["day_chg"] = round(schg, 2) if schg is not None else None
+        h["sector"] = sec
+        h["sector_chg"] = round(sechg, 2) if sechg is not None else None
+        if schg is not None and sechg is not None:
+            if schg < sechg - 0.5:
+                h["weak"] = "个股弱于板块"; stock_weak += 1
+            elif sechg < (idx_chg or 0) - 0.5:
+                h["weak"] = "板块弱于大盘"; sector_weak += 1
+            else:
+                h["weak"] = ""
+        else:
+            h["weak"] = ""
+    reasons = []
+    if day_amt < 0:
+        if idx_chg is not None and day_pct < idx_chg - 0.3:
+            reasons.append(f"跑输大盘（组合 {day_pct:+.2f}% vs 沪指 "
+                           f"{idx_chg:+.2f}%）")
+        if stock_weak:
+            reasons.append(f"{stock_weak} 只个股当日弱于所属板块 —— "
+                           f"选股层面需优化（挑了板块里偏弱的标的）")
+        if sector_weak:
+            reasons.append(f"{sector_weak} 只所属板块弱于大盘 —— "
+                           f"板块选择偏弱")
+        if not reasons:
+            reasons.append("持仓整体随大盘/板块走弱，属系统性波动，"
+                          f"非个股或板块明显失误（沪指 {idx_chg:+.2f}%）")
+    else:
+        reasons.append("当日盈利，保持节奏")
+    return {"equity": acct["equity"], "cash": acct["cash"], "init": acct["init"],
+            "day_pct": day_pct, "day_amt": day_amt, "ret_pct": acct["ret_pct"],
+            "n_hold": acct["n_hold"], "rows": rows, "idx_chg": idx_chg,
+            "stock_weak": stock_weak, "sector_weak": sector_weak,
+            "reasons": reasons}
+
+
+def report_period(con, today, days=30):
+    """★ 用户需求①：半月/月度复盘汇总（盈利最大化 + 系统改进建议）。
+
+    聚合 `days` 窗口内的：
+      · 已实现盈亏（FIFO 匹配买/卖 fill，仅窗口内的平仓计入本期）
+      · 未实现盈亏（当前持仓按市价 mark-to-market）
+      · 平仓胜率（窗口内卖出事件，盈利笔数/总平仓笔数）
+      · 最佳/最差板块（按净盈亏聚合到行业）
+    并据上述指标生成「盈利最大化」与「系统改进建议」文本。
+
+    设计取舍：历史买仓用**全部** fills 构建 FIFO 队列（保证窗口内卖出的成本
+    基准确），但只把窗口内发生的平仓计入本期已实现盈亏与胜率——避免把旧周期的
+    战果重复算进本期。"""
+    from .engines import pct
+    try:
+        from datetime import date as _d, timedelta as _td
+        end = _d.fromisoformat(today)
+        start = (end - _td(days=days)).isoformat()
+    except Exception:  # noqa: BLE001
+        start = None
+
+    snap = account_snapshot(con, today)
+    eq, init = snap["equity"], snap["init"]
+    ret_total = (eq / init - 1) * 100 if init else 0.0
+
+    # —— FIFO：历史买仓进队列，窗口内平仓计本期已实现 ——
+    buyq = {}
+    realized_by_code = {}
+    closed_trades = win_trades = 0
+    realized_total = 0.0
+    for ts, code, side, qty, price, fee in con.execute(
+            "SELECT ts, code, side, qty, price, fee FROM fills "
+            "ORDER BY ts").fetchall():
+        if side == "buy":
+            buyq.setdefault(code, []).append([qty, price])
+            continue
+        # sell：按 FIFO 取成本基
+        remaining = qty
+        cost_basis = 0.0
+        for lot in buyq.get(code, []):
+            if remaining <= 0:
+                break
+            take = min(remaining, lot[0])
+            cost_basis += take * lot[1]
+            lot[0] -= take
+            remaining -= take
+        proceeds = qty * price - (fee or 0)
+        realized = proceeds - cost_basis
+        if start and ts[:10] >= start:
+            closed_trades += 1
+            realized_total += realized
+            realized_by_code[code] = realized_by_code.get(code, 0.0) + realized
+            if realized > 0:
+                win_trades += 1
+
+    # —— 未实现盈亏（当前持仓按市价）——
+    unreal_by_code = {}
+    for code, qty, cost in con.execute(
+            "SELECT code, SUM(qty), CASE WHEN SUM(qty)>0 "
+            "THEN SUM(qty*cost)/SUM(qty) ELSE 0 END "
+            "FROM position_batches GROUP BY code").fetchall():
+        price = _last_price(con, code, today) or cost
+        unreal_by_code[code] = qty * (price - cost)
+    unreal_total = sum(unreal_by_code.values())
+
+    # —— 板块聚合（最佳/最差）——
+    def sector_of(code):
+        r = con.execute(
+            "SELECT sector FROM stock_industry WHERE code=?", (code,)).fetchone()
+        return r[0] if r and r[0] else "未分类"
+    sec_pnl = {}
+    all_codes = set(realized_by_code) | set(unreal_by_code)
+    for code in all_codes:
+        s = sector_of(code)
+        sec_pnl[s] = sec_pnl.get(s, 0.0) + realized_by_code.get(code, 0.0) \
+            + unreal_by_code.get(code, 0.0)
+    ranked = sorted(sec_pnl.items(), key=lambda kv: kv[1], reverse=True)
+    best_sec = ranked[0] if ranked else None
+    worst_sec = ranked[-1] if ranked and len(ranked) > 1 else None
+    win_rate = (win_trades / closed_trades * 100) if closed_trades else None
+
+    # —— 盈利最大化 + 系统改进建议 ——
+    net = realized_total + unreal_total
+    maxi = []
+    if best_sec and best_sec[1] > 0:
+        maxi.append(f"盈利高度集中在【{best_sec[0]}】板块（窗口净 "
+                     f"{best_sec[1]:+,.0f} 元）——下一周期在强势板块里优先加仓、"
+                     f"放宽到价条件，把盈利做厚。")
+    else:
+        maxi.append("窗口内无明显盈利板块，建议把仓位收敛到少数‘已确认买区’的票，"
+                    "不做广撒网。")
+    if unreal_total > 0:
+        maxi.append(f"当前浮盈 {unreal_total:+,.0f} 元未落袋：对已达 +15% 止盈线或"
+                    f"触发退出的持仓，果断了结，把纸上富贵变成现金。")
+    elif unreal_total < 0:
+        maxi.append(f"当前浮亏 {unreal_total:+,.0f} 元：按退出信号纪律减仓，"
+                    f"不摊平亏损票。")
+    improve = []
+    if closed_trades == 0:
+        improve.append("窗口内无平仓记录（尚处建仓/持有阶段），暂无胜率数据；"
+                       "保持‘只在条件满足且现价落买区下沿才下单’的纪律。")
+    elif win_rate is not None and win_rate < 50:
+        improve.append(f"平仓胜率 {win_rate:.0f}% 偏低（<50%）：买点选择或止损需收紧——"
+                       f"只在‘四态=条件满足’且现价贴近买区下沿时建仓，"
+                       f"减少‘追高买在半山腰’。")
+    if worst_sec and best_sec and worst_sec[0] != best_sec[0] and worst_sec[1] < 0:
+        improve.append(f"亏损集中在【{worst_sec[0]}】板块：弱势板块的票优先按退出信号"
+                       f"减仓，仓位向强势板块收敛。")
+    if snap["n_hold"] >= RISK["max_holdings"]:
+        improve.append(f"持仓已达上限 {snap['n_hold']} 只：严守单票"
+                       f"≤{RISK['max_pos_pct']:.0%} 敞口上限，避免赌单一票。")
+    improve.append("系统层面：若连续多周期跑输沪指，建议上调决断门控"
+                   f"（DECISIVE_NET_MIN={DECISIVE_NET_MIN}/DECISIVE_EFF_MIN="
+                   f"{DECISIVE_EFF_MIN}）进一步剔除磨叽票，并提升板块热度权重，"
+                   "只在领涨行业的票上出手。")
+    return {"today": today, "days": days, "equity": eq, "init": init,
+            "ret_total": ret_total, "realized": realized_total,
+            "unrealized": unreal_total, "net": net,
+            "closed_trades": closed_trades, "win_trades": win_trades,
+            "win_rate": win_rate, "best_sec": best_sec, "worst_sec": worst_sec,
+            "by_code": {c: realized_by_code.get(c, 0.0)
+                        + unreal_by_code.get(c, 0.0) for c in all_codes},
+            "sector_pnl": sec_pnl,
+            "maximize": maxi, "improve": improve}
+
+
 def session_gate(today, now=None):
     """★ 用户需求（2026-09-18）：「需要考虑周末和节假日，今天已经不在交易
     时间了又开始购买」。返回 (可下单?, 原因)。

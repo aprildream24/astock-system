@@ -170,12 +170,17 @@ class TestWiring(unittest.TestCase):
         self.assertEqual(N.MODE_LABEL.get("holding_check"), "持仓")
 
     def test_build_wires_holding_check(self):
+        """2026-09-19 更新：持仓体检已并入「晚间综合」一条推送（需求⑤降噪），
+        不再单独 push。接线契约改为：review 分支渲染 holding_html 并传入
+        render_evening_digest；digest 为空时跳过推送。"""
         with open(os.path.join(ROOT, "pipeline", "build.py"),
                   encoding="utf-8") as f:
             src = f.read()
-        self.assertIn('notifier.push("holding_check"', src)
-        # 降噪：只在 actionable 时推
-        self.assertIn("holding_check skipped", src)
+        self.assertIn("holding_html = notifier.render_holding_advice(", src)
+        self.assertIn("notifier.render_evening_digest(", src)
+        self.assertIn("holding_html", src.split("render_evening_digest")[1][:200])
+        # 降噪：digest 为空时跳过，不硬凑一条
+        self.assertIn("evening_digest empty", src)
 
 
 if __name__ == "__main__":

@@ -232,6 +232,31 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                               "price": price, "pct": v.get("pct"),
                               "stop": stop, "label": label})
 
+    # ★ 用户需求③：真实持仓盘中随时提示下一步，尤其「该卖出」的时候。
+    # 用 evaluate_real_holdings 跑完整退出裁决（ATR保护线/MA20破位/盈亏），
+    # 叠加盘中实时价判断是否已破止损 → 给出「建议卖出」紧急提示。
+    # 与上面的 manual-stop 不同：这里走系统规则，不依赖用户手填止损价。
+    sell_hits = []
+    try:
+        from . import executor as _ex
+        if held:
+            heval = _ex.evaluate_real_holdings(con, date, list(held.values()))
+            for h in heval:
+                code = h["code"]
+                v = q(code) or {}
+                live = v.get("price")
+                stop = h.get("stop")
+                if h.get("exit_action") == "SELL":
+                    sell_hits.append({
+                        "code": code, "name": h.get("name"),
+                        "price": live, "pct": v.get("pct"), "stop": stop,
+                        "verdict": h.get("verdict") or "建议减仓/离场",
+                        "live_broke": bool(live is not None and stop
+                                          and live <= stop)})
+    except Exception as e:                       # noqa: BLE001
+        print(f"[intraday] 真实持仓体检失败（不阻断）：{e}")
+    out["sell_hits"] = len(sell_hits)
+
     out.update({"plan_n": len(plans), "in_zone": len(in_zone),
                 "broken": len(below), "stops": len(hold_hits),
                 "above": len(above), "limit": len(limit)})
@@ -274,7 +299,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                       [_TXT, _TXT, _DN, _DN, _DN]) for p in below]})
 
     out["_groups"] = groups
-    if not groups:
+    if not groups and not sell_hits:
         out["reason"] = "无实质变化（静默）"
         print("[intraday] 无实质变化 → 静默不发（不占推送额度）")
         return out
@@ -283,6 +308,23 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         return out
 
     from . import notifier
+    # 真实持仓卖出信号：独立紧急推送（force + 单独日熔丝），确保一定送达，
+    # 不与计划组互相吃掉额度；用户需求③「尤其要卖出的时候」优先保障。
+    if sell_hits:
+        sgroup = [{
+            "title": "🚨 持仓建议卖出（盘中）",
+            "hint": "系统判定需减仓/离场，请尽快处理；已破止损者优先",
+            "rows": [((s["code"], s["name"],
+                       f'{s["price"]:.2f}' if s["price"] else "—",
+                       f'{s["pct"]:+.1f}%' if s["pct"] is not None else "—",
+                       (s["verdict"] + "·已破止损" if s["live_broke"]
+                        else s["verdict"])),
+                      [_TXT, _TXT, _UP, _UP, _UP]) for s in sell_hits]}]
+        shtml = render_html(date, slot, now, sgroup, len(plans))
+        sr = notifier.push("holding_intraday", f"持仓卖出信号 {date[5:]}",
+                           shtml, date=date, con=con, force=True)
+        out["sell_pushed"] = bool(sr.get("sent"))
+        print(f"[intraday] holding sell push={sr}")
     head = "早盘校验" if slot == "am" else "尾盘机会"
     title = f"盘中{head} {date[5:]}"
     html = render_html(date, slot, now, groups, len(plans))

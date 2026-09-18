@@ -35,6 +35,9 @@ on:
       codes:
         description: "watch-sync 专用：自选代码，逗号分隔（如 sh600519,sz000001）"
         default: ""
+      holdings:
+        description: "holdings-sync 专用：持仓 JSON（代码/买价/股数），手机端页面提交"
+        default: ""
       # 2026-09-16 新增：手工补发开关。填 1 时 build 会
       # ① 绕过当日去重保险丝（否则 auction/close 当天已 sent 会被拦住）
       # ② 给推送标题打【补发】前缀（用户能区分补发与正常触发）
@@ -42,6 +45,9 @@ on:
       force:
         description: "补发模式：填 1 = 绕过当日去重强制重发（仅手工补发用）"
         default: ""
+      period_days:
+        description: "周期复盘窗口（天）：用户需求①，半月=15 / 月度=30"
+        default: "30"
 
 permissions:
   contents: read
@@ -93,14 +99,14 @@ jobs:
           restore-keys: |
             market-db-
       - name: 安装测试/运行时依赖
-        if: github.event.inputs.task != 'watch-sync'
+        if: github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync'
         # 2026-09-15 修（血案根因）：runner 预装列表里没有 PyNaCl / PyYAML。
         # 缺它们会让回归自检 ERROR/低 PASS → 触发「回归倒退」exit 2 →
         # 后面 7 个步骤全 skipped → 全天零推送（实测 run 34985391295）。
         # 一次装齐，让 CI 与本地跑同一套断言。
         run: python -m pip install --quiet pynacl pyyaml
       - name: 回归自检
-        if: github.event.inputs.task != 'watch-sync'
+        if: github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync'
         env:
           # 2026-09-15：回归用例会断言「CI 上至少有一种推送凭据」——
           # 不注入这些 Secret，该断言在 CI 上必然 FAIL（实测 run 34987206020）。
@@ -123,6 +129,20 @@ jobs:
         run: |
           python -m pip install --quiet pynacl
           python -m pipeline.sync_watch
+      # ---- 手机端持仓管理（用户需求④：不在对话框里加减，网页表单提交）----
+      # owner 在手机网页填好持仓（代码/买价/股数）→ 页面发
+      # workflow_dispatch(task=holdings-sync, holdings="<JSON>") → 本步用
+      # PyNaCl 写 Secret HOLDINGS_CONF；load_holdings 已支持从 Secret 读取，
+      # 云端自动生效。浏览器只发一个带文本的 HTTPS 请求，无需任何加密库/后端。
+      - name: 同步持仓到 Secret（holdings-sync）
+        if: github.event.inputs.task == 'holdings-sync'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          HOLDINGS_IN: ${{ github.event.inputs.holdings }}
+        run: |
+          python -m pip install --quiet pynacl
+          python -m pipeline.sync_holdings
       - name: 收盘数据抓取（全市场）
         # ⚠️ 2026-09-16：`site` **移出**本条件（原含 task == 'site'）。
         # 站点是纯展示层，数据新鲜度由 15:22 的 close 负责（close 之后
@@ -131,7 +151,7 @@ jobs:
         # 自检但不发推送、不占额度），每次多等 6 分钟代价太大。
         # 冷库时 site 会读到 restore-keys 恢复的行情库，不会二次冷启。
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           ((github.event_name == 'schedule' &&
             github.event.schedule == '22 7 * * 1-5') ||
            (github.event_name == 'workflow_dispatch' &&
@@ -145,7 +165,7 @@ jobs:
         run: python -m pipeline.fetch_daily
       - name: 盘前/竞价轻量增量抓取
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           ((github.event_name == 'schedule' &&
             (github.event.schedule == '50 0 * * 1-5' ||
              github.event.schedule == '25 1 * * 1-5' ||
@@ -176,7 +196,7 @@ jobs:
           echo "task=${{ github.event.inputs.task }} extra=$EXTRA"
           python -m pipeline.fetch_daily --days 20 $EXTRA
       - name: 构建+推送（WxPusher/PushPlus 多渠道）
-        if: github.event.inputs.task != 'watch-sync'
+        if: github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync'
         env:
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
@@ -190,6 +210,7 @@ jobs:
           # 补发开关（workflow_dispatch 的 force 参数，默认空 ⇒ 行为不变）
           ASTOCK_FORCE_PUSH: ${{ github.event.inputs.force }}
           ASTOCK_BACKFILL: ${{ github.event.inputs.force }}
+          ASTOCK_PERIOD_DAYS: ${{ github.event.inputs.period_days }}
         run: |
           TASK="${{ github.event.inputs.task }}"
           if [ -z "$TASK" ]; then
@@ -237,6 +258,17 @@ jobs:
             python -m pipeline.build --task intraday --slot "$SLOT"
             exit 0
           fi
+          if [ "$TASK" = "period" ]; then
+            # 用户需求①：半月/月度周期复盘（盈利最大化 + 系统改进建议）。
+            # 独立于选股主链，不依赖当日数据就绪；窗口由 period_days 决定
+            # （调度器在每月 1 日传 30、16 日传 15）。只发一条【周期】推送，
+            # 随后跳过站点重建（周期报告不改站点数据）。
+            PDAYS="${{ github.event.inputs.period_days }}"
+            if [ -z "$PDAYS" ]; then PDAYS=30; fi
+            echo "[period] days=$PDAYS"
+            python -m pipeline.build --task period --period-days "$PDAYS"
+            exit 0
+          fi
           python -m pipeline.build --task "$TASK"
       # ★ 2026-09-18 新增：模拟盘自动运行（用户："是不是还有模拟盘没运行？
       # 请全面修复，按照 100000 元起步开始自动运行"）。
@@ -277,7 +309,7 @@ jobs:
           python -m tools.executor --task auto --slot "$SLOT"
       - name: 收盘复盘（自选股建议+AI叙事）
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           ((github.event_name == 'schedule' &&
             github.event.schedule == '2 12 * * 1-5') ||
            (github.event_name == 'workflow_dispatch' &&
@@ -294,10 +326,11 @@ jobs:
           ASTOCK_BACKFILL: ${{ github.event.inputs.force }}
         run: python -m pipeline.build --task review
       - name: 构建加密站点
-        # intraday（盘中校验）不改任何站点数据 → 跳过重建，省 1-2 分钟
+        # intraday（盘中校验）/ period（周期复盘）不改任何站点数据 → 跳过重建
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
-          github.event.inputs.task != 'intraday'
+          github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
+          github.event.inputs.task != 'intraday' &&
+          github.event.inputs.task != 'period'
         env:
           SITE_USERS: ${{ secrets.SITE_USERS }}
           SITE_EDIT_TOKEN: ${{ secrets.SITE_EDIT_TOKEN }}
@@ -311,7 +344,7 @@ jobs:
       # 只提交这一个文件，自选/持仓等隐私文件都在 .gitignore 里。
       - name: 回写推送账本（供体检读取）
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           (success() || failure())
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
@@ -328,7 +361,7 @@ jobs:
       #（新增步骤连坐推送是这个项目最贵的一类事故）。
       - name: 推送验收（自检）
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
+          github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           (success() || failure())
         continue-on-error: true
 
@@ -341,8 +374,9 @@ jobs:
           python -m pipeline.push_audit --task "$TASK"
       - name: 上传 Pages 构件
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
-          github.event.inputs.task != 'intraday'
+          github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
+          github.event.inputs.task != 'intraday' &&
+          github.event.inputs.task != 'period'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
@@ -350,7 +384,7 @@ jobs:
       # 「清理旧行情库缓存」步骤兜住——只保留最新 1 份。
       # always() 保证抓取失败时也存库，避免整轮白拉。
       - name: 保存行情库缓存
-        if: always() && github.event.inputs.task != 'watch-sync'
+        if: always() && github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync'
         uses: actions/cache/save@v4
         with:
           path: cache
@@ -359,7 +393,7 @@ jobs:
       # （实测旧策略累积 15 份 ≈ 469 MB，且每份都是整个 market.db）。
       # 只删 market-db- 前缀且**不是本次 run** 的条目 → 长期稳定在 1 份。
       - name: 清理旧行情库缓存
-        if: always() && github.event.inputs.task != 'watch-sync'
+        if: always() && github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync'
         continue-on-error: true      # 清理失败不得影响主链
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
@@ -369,7 +403,7 @@ jobs:
   deploy-pages:
     needs: build
     if: >-
-      github.event.inputs.task != 'watch-sync' &&
+      github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
       ((github.event_name == 'schedule' &&
         github.event.schedule == '22 7 * * 1-5') ||
        (github.event_name == 'workflow_dispatch' &&

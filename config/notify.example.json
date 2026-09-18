@@ -2,19 +2,32 @@
   "_说明": "复制为 config/notify.json（已 gitignore）。主通道由 primary_channel 决定；你已有 PushPlus → 默认示例就是 PushPlus 主通道",
   "primary_channel": "pushplus",
   "push_tag": "Astra",
+  "push_modes": {
+    "pre": true,
+    "auction": true,
+    "intraday": true,
+    "close": true,
+    "review": true,
+    "exec": true,
+    "watch": true
+  },
+  "_push_modes说明": "嫌消息多就关：键匹配 精确mode→前缀(exec_auto匹配exec)→默认开。false 的消息不发送不占额度不写账本。建议先关 intraday 试一周",
   "_标识说明": "每条推送标题自动加【{push_tag}·来源】前缀（如【Astra·PushPlus】/【Astra·主号】），正文顶部有同源角标——多渠道/多账户混收不会混淆",
   "pushplus_token": "<在此填入你的 PushPlus token>",
   "serverchan_key": "",
-
   "_wxpusher说明": "想用/加用 WxPusher 时填这里（多账户各一个对象）；uids 在 wxpusher.zjiecode.com 后台『订阅者』页查，需先关注其公众号",
   "wxpusher_accounts": [
     {
       "name": "主号",
       "app_token": "<WxPusher APP_TOKEN，形如 AT_xxx>",
-      "uids": ["<UID，形如 UID_xxx>"]
+      "uids": [
+        "<UID，形如 UID_xxx>"
+      ]
     }
   ],
   "wxpusher_routes": {
-    "*": ["主号"]
+    "*": [
+      "主号"
+    ]
   }
 }

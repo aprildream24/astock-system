@@ -154,6 +154,14 @@ class TestCli(unittest.TestCase):
                 tg, name, side_effect=AssertionError(f"不该调用 {name}"))
             m.start()
             self.addCleanup(m.stop)
+        # 交易日历必须 mock：守门告警测试不能依赖「今天是不是交易日」
+        # （2026-09-19 血案：周六跑全量回归，4 条 CLI 用例全炸）。
+        m = mock.patch("pipeline.trade_calendar.is_trade_day", return_value=True)
+        m.start()
+        self.addCleanup(m.stop)
+        m = mock.patch("pipeline.trade_calendar.why_closed", return_value="")
+        m.start()
+        self.addCleanup(m.stop)
         self.env = mock.patch.dict(os.environ, {"CRONJOB_API_KEY": "k"},
                                    clear=False)
         self.env.start()

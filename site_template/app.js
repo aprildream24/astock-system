@@ -152,6 +152,132 @@ function watchAdminPaint() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 持仓管理（用户 2026-09-19「网上添加和修改购买股」）：镜像自选管理范式。
+// 浏览器只发一个 workflow_dispatch(task=holdings-sync, holdings=JSON)，
+// CI 侧 pipeline.sync_holdings 用 PyNaCl 写 Secret HOLDINGS_CONF，
+// 下一个交易时点 build/intraday 自动读到新持仓。零前端加密、零后端。
+// ---------------------------------------------------------------------------
+const HOLD_ADMIN = { rows: [], busy: false, msg: "", ok: true };
+
+function _pushHoldingsToCloud(rows) {
+  const adm = DATA._admin || {};
+  const wf = adm.workflow || "stock.yml";
+  const repo = adm.repo || "aprildream24/astock-system";
+  return _ghApi(`/repos/${repo}/actions/workflows/${wf}/dispatches`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      ref: adm.ref || "main",
+      inputs: {task: "holdings-sync", holdings: JSON.stringify(rows)},
+    }),
+  });
+}
+
+async function holdingAdminAct(fn) {
+  if (HOLD_ADMIN.busy) return;
+  HOLD_ADMIN.busy = true;
+  HOLD_ADMIN.msg = "同步中…";
+  holdingAdminPaint();
+  try {
+    await fn();
+    HOLD_ADMIN.ok = true;
+    HOLD_ADMIN.msg = "已提交云端，1-2 分钟内写入，下个交易时点生效";
+  } catch (e) {
+    HOLD_ADMIN.ok = false;
+    HOLD_ADMIN.msg = "失败：" + (e.message || e);
+  }
+  HOLD_ADMIN.busy = false;
+  holdingAdminPaint();
+}
+
+function holdingAdminPaint() {
+  const box = document.getElementById("hadm");
+  if (!box) return;
+  const rows = HOLD_ADMIN.rows;
+  box.innerHTML = `
+    <div class="small muted" style="margin-bottom:6px">
+      每行一只：代码 / 买入价 / 股数（可留空）。保存后整表覆盖云端持仓。</div>
+    ${rows.length ? `<table>${rows.map((r, i) => `<tr>
+        <td><span class="tag">${esc(r.code)}</span></td>
+        <td><input class="h-buy" data-i="${i}" value="${esc(r.buy_price ?? "")}"
+            placeholder="买入价" style="width:82px"></td>
+        <td><input class="h-sh" data-i="${i}" value="${esc(r.shares ?? "")}"
+            placeholder="股数" style="width:72px"></td>
+        <td style="text-align:right"><button class="h-del" data-i="${i}"
+            style="background:#2c3440;padding:4px 12px;font-size:13px">删除</button></td>
+      </tr>`).join("")}</table>`
+      : `<div class="empty">暂无持仓登记</div>`}
+    <div class="row" style="display:flex;gap:8px;margin-top:8px">
+      <input id="hadm-in" placeholder="股票代码，如 002493" style="flex:1">
+      <button id="hadm-add">买入登记</button>
+    </div>
+    <div class="small ${HOLD_ADMIN.ok ? "muted" : "up"}"
+         style="margin-top:8px;min-height:18px">${esc(HOLD_ADMIN.msg)}</div>`;
+  const inp = document.getElementById("hadm-in");
+  const add = () => {
+    const c = _normCode(inp.value);
+    if (!c) { HOLD_ADMIN.ok = false; HOLD_ADMIN.msg = "代码格式不对（6位数字）";
+              holdingAdminPaint(); return; }
+    if (rows.some(r => r.code === c)) {
+      HOLD_ADMIN.ok = false; HOLD_ADMIN.msg = c + " 已在持仓中";
+      holdingAdminPaint(); return;
+    }
+    rows.push({code: c, name: "", buy_price: null, shares: null,
+               buy_date: new Date().toISOString().slice(0, 10)});
+    inp.value = "";
+    HOLD_ADMIN.msg = "填好买入价后点保存";
+    holdingAdminPaint();
+  };
+  document.getElementById("hadm-add").onclick = add;
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+  box.querySelectorAll(".h-del").forEach(b => {
+    b.onclick = () => {
+      rows.splice(Number(b.dataset.i), 1);
+      holdingAdminAct(() => _pushHoldingsToCloud(rows));
+    };
+  });
+  box.querySelectorAll(".h-buy,.h-sh").forEach(el => {
+    el.onchange = () => {
+      const i = Number(el.dataset.i);
+      rows[i].buy_price = parseFloat(el.classList.contains("h-buy")
+        ? el.value : rows[i].buy_price) || null;
+      rows[i].shares = parseFloat(el.classList.contains("h-sh")
+        ? el.value : rows[i].shares) || null;
+    };
+  });
+  const save = document.getElementById("hadm-save");
+  if (save) save.onclick = () => {
+    HOLD_ADMIN.rows = rows.filter(r => r.buy_price);   // 没填价的行不保存
+    holdingAdminAct(() => _pushHoldingsToCloud(HOLD_ADMIN.rows));
+  };
+}
+
+function holdingManageCard() {
+  const adm = DATA._admin;
+  if (!adm) return "";                        // 非 owner：整块不渲染
+  HOLD_ADMIN.rows = (DATA.holdings_detail || []).map(h => ({
+    code: h.code, name: h.name || "", buy_price: h.buy_price,
+    shares: h.shares, buy_date: h.buy_date || h.buy_date === null ? h.buy_date
+      : new Date().toISOString().slice(0, 10)}));
+  if (!adm.enabled) {
+    return `<div class="card"><h3>持仓管理</h3>
+      <div class="small muted">未配置写入令牌（SITE_EDIT_TOKEN），
+      当前仅可查看。在仓库 Secrets 加上该令牌后即可在此直接登记/修改持仓。</div>
+    </div>`;
+  }
+  setTimeout(holdingAdminPaint, 0);
+  return `<div class="card">
+    <h3>持仓管理 · 网页直接登记/修改</h3>
+    <div class="small muted" style="margin-bottom:10px">
+      改动直接写入云端（${esc(adm.repo)}），下个交易时点起
+      持仓体检/卖出信号按新持仓计算。</div>
+    <div id="hadm"></div>
+    <div style="margin-top:10px"><button id="hadm-save"
+        style="background:#1d7a4c">保存持仓到云端</button></div>
+  </div>`;
+}
+
 function watchManageCard() {
   const adm = DATA._admin;
   if (!adm) return "";                        // 非 owner：整块不渲染
@@ -202,7 +328,7 @@ function render() {
 
 const VIEWS = {
   overview() {
-    return emoCard() + watchManageCard() + planCards() + watchCard()
+    return emoCard() + watchManageCard() + holdingManageCard() + planCards() + watchCard()
       + changeCard() + triggerCard() + banner();
   },
   signals() {

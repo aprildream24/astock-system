@@ -128,6 +128,14 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
             continue                      # 双保险：observe 票不进终审
         pool = c["pool"]
         eff = score_candidate(c, env_w) * WINRATE_ANCHOR.get(pool, 0.72)
+        # 躺榜衰减（用户 2026-09-19：「不要几天横排在那里动都不动」）：
+        # 同一只票连续多日挂在推荐位却始终未兑现 → 每天 8% 折价，
+        # 连续 ≥5 日直接移出（build 侧也会拦，这里是双保险）。
+        wd = c.get("wait_days") or 0
+        if wd >= 5:
+            continue
+        if wd > 1:
+            eff *= 0.92 ** (wd - 1)
         # 优选因子：板块冷热 / 趋势双态
         # ⚠️ 2026-09-18 前 `sector_temp` 无任何数据源（恒 None）⇒ 本因子静默
         # 失效。数据源已由 pipeline/sector.py 补上，加成重新生效。

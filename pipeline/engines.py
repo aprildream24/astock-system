@@ -150,6 +150,40 @@ def screen_uptrend(rows, streak=0):
             "worth_score": max(0.0, min(100.0, score))}
 
 
+# ── 决断门控（用户 2026-09-18：「后续所有磨磨唧唧的股票都不要推荐了」）────
+# 横盘/震荡 = 没方向也没位移：20 日净位移很小，或净位移占全程路程比很低
+# （来回折腾、进二退一）。两者任一成立即判「磨叽」，不推荐。
+DECISIVE_NET_MIN = 6.0        # 20 日净位移下限（%）：没走出 6% = 横盘
+DECISIVE_EFF_MIN = 0.40       # 方向效率下限：净位移/总路程，越低越磨叽
+
+
+def decisive_stats(rows, n=20):
+    """决断力指标（2026-09-19 补充）：net=20日净位移%、eff=方向效率。
+
+    供卡片展示「为什么它不磨叽」的证据；screen_decisive 复用本函数，
+    行为与原实现逐字等价。数据不足返回 None。"""
+    if len(rows) < n + 1:
+        return None
+    closes = [r[2] for r in rows[-(n + 1):]]
+    net = pct(closes[-1] - closes[0], closes[0])
+    daily = [abs(pct(closes[i] - closes[i - 1], closes[i - 1]))
+             for i in range(1, len(closes))]
+    total = sum(daily) or 1e-9
+    eff = abs(net) / total
+    ok = abs(net) >= DECISIVE_NET_MIN and eff >= DECISIVE_EFF_MIN
+    return {"net": round(net, 2), "eff": round(eff, 2), "ok": bool(ok)}
+
+
+def screen_decisive(rows, n=20):
+    """返回 True = 有明确方向（可推）；False = 磨磨唧唧（不推荐）。
+
+    用最近 n+1 根收盘：净位移 net%、方向效率 eff = |net| / Σ|日涨跌幅|。
+    缓坡震荡（net 为正但一路回撤）eff 低 → 判磨叽；标准慢牛（稳定爬升）
+    eff 高 → 放行。"""
+    st = decisive_stats(rows, n)
+    return bool(st and st["ok"])
+
+
 # 买区宽度红线：now_zone 必须是「当下能挂单的窄带」，不是统计区间。
 # 历史 bug：下沿取 max(low3, ref*0.97) 未对收盘价做约束，急拉票会出现
 # 「买区 28.00~476.36」这种跨越式伪区间——数学上 close 落在区内，

@@ -55,7 +55,7 @@ MODE_LABEL = {
     "intraday_am": "盘中", "intraday_pm": "尾盘",
     "exec_auto": "模拟", "exec_open": "模拟", "exec_scan": "模拟",
     "exec_tail": "模拟", "exec_now": "模拟", "exec_review": "模拟",
-    "data_holiday": "休市",
+    "period": "周期", "data_holiday": "休市",
 }
 
 
@@ -395,8 +395,11 @@ def _pick_line(d):
 
 
 def _compact_row(d):
+    wait = d.get("wait_days") or 0
+    mark = (f' <span style="color:#e6a700;font-size:11px">[已挂{wait}日]</span>'
+            if wait >= 2 else "")
     return ('<tr><td style="padding:4px 2px;border-bottom:1px solid #2b313d">'
-            f'{_esc(_pick_line(d))}</td></tr>')
+            f'{_esc(_pick_line(d))}{mark}</td></tr>')
 
 
 MAX_COMPACT_ROWS = 14        # 紧凑行总预算：放开限量后的"推送长度保险丝"
@@ -518,6 +521,15 @@ def render_card(d, first=False, head=None, accent=None):
                f'<span style="color:#ff8a80;font-weight:700">'
                f'{d["stop"]:.2f}</span>' if d.get("stop") else "—")
         + (_row("板块热度", _sector_row_html(d)) if d.get("sector") else "")
+        # 决断力证据（2026-09-19「要么上要么下」）：让读者看见它为什么
+        # 不属于磨叽票——20 日净位移与方向效率，绿=达标。
+        + (_row("决断力(20日)",
+                f'<span style="color:#4ecf8e;font-weight:700">'
+                f'净移{d["decisive"]["net"]:+.1f}% · 效率{d["decisive"]["eff"]:.2f}'
+                f'</span>') if d.get("decisive") else "")
+        + (_row("等待兑现", f'<span style="color:#e6a700;font-weight:700">'
+                f'已挂榜 {d["wait_days"]} 日，再不动自动移出'
+                f'</span>') if d.get("wait_days", 0) >= 2 else "")
         + (_row("建议仓位", _esc(d.get("position") or "1成"))
            if d.get("position") or first else "")
         + _row("有效期至", _esc(d.get("valid_until")))
@@ -920,8 +932,153 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
     return html
 
 
+def render_daily_summary(rep, today=""):
+    """★ 用户需求①：模拟盘每日盈亏总结（净值 / 当日盈亏 / 亏损归因）。
+
+    与主推送同 <table> 风格、同三色纪律：盈利绿(#3fae6b)/亏损红(#e25c5c)。
+    结构：① 账户概要条（净值·现金·累计·当日）② 持仓当日表现
+    （成本/现价/当日涨跌幅/与板块·大盘对比）③ 亏损归因结论。"""
+    eq = rep.get("equity") or 0
+    day_pct = rep.get("day_pct") or 0
+    day_amt = rep.get("day_amt") or 0
+    ret_pct = rep.get("ret_pct") or 0
+    sign = "#3fae6b" if day_amt >= 0 else "#e25c5c"
+    summary = (f"净值 ¥{eq:,.0f}　现金 ¥{rep.get('cash',0):,.0f}　"
+               f"持仓 {rep.get('n_hold',0)} 只　累计 {ret_pct:+.2f}%<br>"
+               f'<b style="font-size:16px;color:{sign}">当日 '
+               f'{day_amt:+,.0f} 元（{day_pct:+.2f}%）</b>')
+    body = [f'<h3 style="margin:6px 0 2px">📊 模拟盘日结 {_esc(today)}</h3>',
+            f'<p style="color:#9aa4b2;font-size:13px;margin:0 0 10px">'
+            f'{summary}</p>']
+    # ② 持仓当日表现
+    hrows = []
+    for h in (rep.get("rows") or []):
+        pnl = h.get("pnl_pct")
+        pcol = ("#e25c5c" if (pnl is not None and pnl < 0)
+                else "#5cc8e2" if (pnl is not None and pnl > 0)
+                else "#9aa4b2")
+        dchg = h.get("day_chg")
+        dcol = ("#3fae6b" if (dchg is not None and dchg >= 0)
+                else "#e25c5c" if dchg is not None else "#9aa4b2")
+        dchg_txt = f"{dchg:+.2f}%" if dchg is not None else "—"
+        weak = h.get("weak") or ""
+        weak_txt = (f'<span style="color:#e0a93b">⚠{weak}</span>'
+                    if weak else '<span style="color:#8a93a3">正常</span>')
+        sec = h.get("sector") or "—"
+        hrows.append(
+            "<tr>"
+            f'<td><b>{_esc(h.get("name") or h["code"])}</b><br>'
+            f'<span style="color:#8a93a3;font-size:12px">{_esc(h["code"])}</span></td>'
+            f'<td>{_fmt2(h.get("cost"))}<br>{_fmt2(h.get("price"))}</td>'
+            f'<td style="color:{pcol};font-weight:700">'
+            f'{f"{pnl:+.2f}%" if pnl is not None else "—"}</td>'
+            f'<td style="color:{dcol};font-weight:700">{dchg_txt}</td>'
+            f'<td style="font-size:12px">{_esc(sec)}</td>'
+            f"<td style='font-size:12px'>{weak_txt}</td>"
+            "</tr>")
+    if hrows:
+        htbl = _table(
+            "<tr><th>持仓</th><th>成本/现价</th><th>浮盈</th><th>当日</th>"
+            "<th>板块</th><th>诊断</th></tr>" + "".join(hrows))
+        body.append(_card(htbl, border="#2b313d"))
+    else:
+        body.append('<p style="color:#8a93a3">当前空仓，无持仓可总结</p>')
+    # ③ 亏损归因结论
+    reasons = rep.get("reasons") or []
+    rtxt = "".join(f"<li>{_esc(r)}</li>" for r in reasons) or "<li>—</li>"
+    body.append(
+        f'<div style="margin-top:10px;padding:10px 12px;background:#1d222b;'
+        f'border-radius:8px;font-size:13px;color:#c4ccd6">'
+        f'<b style="color:#9aa4b2">📉 今日结论</b><ul style="margin:6px 0 0;'
+        f'padding-left:18px">{rtxt}</ul></div>')
+    html = ('<div style="' + _STY["doc"] + '">' + "".join(body) + "</div>")
+    if len(html) > PP_HTML_CAP:
+        html = _clip_html(html)
+    return html
+
+
+def render_evening_digest(date, narrative_html="", daily_html="",
+                          holding_html="", watch_html=""):
+    """★ 用户需求⑤：把复盘原本分散的多条推送（AI叙事 / 模拟盘日结 / 持仓体检 /
+    自选建议）合并为**一条**晚间综合推送，显著降低消息数量。
+
+    各段落已是独立渲染好的 HTML 片段，这里只做拼接 + 标题分组 + 截断保护。"""
+    parts = []
+    if narrative_html:
+        parts.append(narrative_html)
+    if daily_html:
+        parts.append(daily_html)
+    if holding_html:
+        parts.append(holding_html)
+    if watch_html:
+        parts.append(watch_html)
+    if not parts:
+        return ""
+    html = ('<div style="' + _STY["doc"] + '">' +
+            f'<h3 style="margin:6px 0 4px">🌙 晚间综合 {_esc(date)}</h3>' +
+            "".join(parts) + "</div>")
+    if len(html) > PP_HTML_CAP:
+        html = _clip_html(html)
+    return html
+
+
+def render_period_report(rep, today="", days=30):
+    """★ 用户需求①：半月/月度复盘汇总（盈利最大化 + 系统改进建议）。
+
+    与主推送同 <table> 风格、同三色纪律：盈利红(#ff6b5e)/亏损绿(#4ecf8e)。
+    结构：① 周期总览（净值/累计/本期净盈亏/平仓胜率）② 板块盈亏榜
+    ③ 盈利最大化 ④ 系统改进建议。"""
+    eq = rep.get("equity") or 0
+    init = rep.get("init") or 0
+    ret = rep.get("ret_total") or 0
+    net = rep.get("net") or 0
+    realized = rep.get("realized") or 0
+    unreal = rep.get("unrealized") or 0
+    wr = rep.get("win_rate")
+    sign = "#ff6b5e" if net >= 0 else "#4ecf8e"
+    summary = (f"净值 ¥{eq:,.0f}　累计 {ret:+.2f}%　"
+               f"本期（{days}天）净盈亏 "
+               f'<b style="color:{sign}">{net:+,.0f} 元</b>'
+               f'（已实现 {realized:+,.0f} / 未实现 {unreal:+,.0f}）')
+    if wr is not None:
+        summary += f'　平仓胜率 {wr:.0f}%'
+    else:
+        summary += "　平仓胜率 —（无平仓）"
+    body = [f'<h3 style="margin:6px 0 2px">📈 {days}天周期复盘 {_esc(today)}</h3>',
+            f'<p style="color:#9aa4b2;font-size:13px;margin:0 0 10px">'
+            f'{summary}</p>']
+    # ② 板块盈亏榜（按净盈亏排序，前 8）
+    sec = rep.get("sector_pnl") or {}
+    rows = sorted(sec.items(), key=lambda kv: kv[1], reverse=True)[:8]
+    if rows:
+        srows = ""
+        for s, v in rows:
+            col = "#ff6b5e" if v >= 0 else "#4ecf8e"
+            srows += (
+                "<tr>"
+                f'<td style="padding:4px 8px 4px 0;color:#e8eaed;font-size:13px">'
+                f'{_esc(s)}</td>'
+                f'<td style="padding:4px 0;font-weight:700;color:{col}">'
+                f'{v:+,.0f} 元</td></tr>')
+        body.append(f'<div style="{_STY["h2"]}">板块盈亏榜（净盈亏）</div>')
+        body.append(_card(_table(srows), border="#2b313d"))
+    # ③ 盈利最大化
+    body.append(f'<div style="{_STY["h2"]}">💰 盈利最大化</div>')
+    for m in (rep.get("maximize") or []):
+        body.append(f'<div style="font-size:13px;color:#c4ccd6;margin:4px 0">'
+                    f'· {_esc(m)}</div>')
+    # ④ 系统改进建议
+    body.append(f'<div style="{_STY["h2"]}">🔧 系统改进建议</div>')
+    for m in (rep.get("improve") or []):
+        body.append(f'<div style="font-size:13px;color:#c4ccd6;margin:4px 0">'
+                    f'· {_esc(m)}</div>')
+    html = ('<div style="' + _STY["doc"] + '">' + "".join(body) + "</div>")
+    if len(html) > PP_HTML_CAP:
+        html = _clip_html(html)
+    return html
+
+
 def save_detail_report(html, today, data_json=None):
-    """详情落盘：HTML + JSON（程序读取/归因），微信只发摘要。"""
     d = os.path.join(BASE_DIR, "dist", "reports")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, f"{today}.html"), "w", encoding="utf-8") as f:
@@ -1080,6 +1237,16 @@ def push(mode, title, content, date=None, con=None,
     primary = cfg.get("primary_channel") or "wxpusher"
     if channels is None:
         channels = (primary,)
+    # 推送开关（用户 2026-09-19「消息很多很乱」）：notify.json 里
+    # "push_modes": {"pre": true, "auction": false, "intraday": true, ...}
+    # 键匹配：精确 mode → 首段前缀（exec_auto 匹配 "exec"）→ 默认开。
+    # 关掉的 mode 不发送、不占额度、不写账本——像从未触发过一样。
+    switches = cfg.get("push_modes") or {}
+    _allowed = switches.get(mode, switches.get(str(mode).split("_")[0], True))
+    if _allowed is False:
+        print(f"[push] {mode} 被 push_modes 关闭 → 静默跳过")
+        return {"sent": False, "skipped": True, "mode": mode,
+                "reason": "push_modes 关闭"}
     codes = re.findall(r"\d{6}", content)
     key = biz_key(mode, date, codes)
     # 日级保险丝：同 mode 同日期已 sent → 拦截（force=True 可绕过）。
