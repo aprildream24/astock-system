@@ -150,6 +150,28 @@ def screen_uptrend(rows, streak=0):
             "worth_score": max(0.0, min(100.0, score))}
 
 
+# ── RS 超额动量（2026-09-19 融入经典横截面动量因子）────────────────
+# 学术源头：Jegadeesh & Titman (1993) 横截面动量；qlib Alpha158 动量族、
+# alphalens IC 分析均把「个股收益 − 基准收益」列为一阶有效因子。
+# 口径：RS = 个股 20 日涨幅 − 上证指数 20 日涨幅。跑赢大盘 ≥5% 视为
+# 强相对动量，跑输 ≥5% 视为弱势股（哪怕绝对值在涨也是跟风货）。
+RS_STRONG = 5.0
+RS_WEAK = -5.0
+
+
+def rs_momentum(rows, index_rows, n=20):
+    """个股 20 日涨幅 − 指数 20 日涨幅（%）。数据不足返回 None（中性处理）。"""
+    if len(rows) < n + 1 or not index_rows or len(index_rows) < n + 1:
+        return None
+    c = rows[-1][2]
+    c0 = rows[-(n + 1)][2]
+    ic = index_rows[-1][2]
+    ic0 = index_rows[-(n + 1)][2]
+    if not c0 or not ic0 or not c or not ic:
+        return None
+    return round((c / c0 - ic / ic0) * 100, 2)
+
+
 # ── 决断门控（用户 2026-09-18：「后续所有磨磨唧唧的股票都不要推荐了」）────
 # 横盘/震荡 = 没方向也没位移：20 日净位移很小，或净位移占全程路程比很低
 # （来回折腾、进二退一）。两者任一成立即判「磨叽」，不推荐。

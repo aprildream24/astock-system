@@ -147,6 +147,15 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
             eff *= 0.90
         elif c.get("trend_state") == "加速上行":
             eff *= 1.05
+        # RS 超额动量因子（2026-09-19，engines.rs_momentum 供数）：
+        # 跑赢大盘 ≥5% ×1.05；跑输 ≥5% ×0.95——绝对动量相同的前提下，
+        # 相对强度才是横截面排序的信息来源（Jegadeesh & Titman 1993）。
+        rs = c.get("rs_mom")
+        if rs is not None:
+            if rs >= engines.RS_STRONG:
+                eff *= 1.05
+            elif rs <= engines.RS_WEAK:
+                eff *= 0.95
         c["eff_score"] = round(eff, 2)
         scored.append(c)
     scored.sort(key=lambda c: (c["eff_score"], ACTION_RANK.get(c.get("action"), 0)),

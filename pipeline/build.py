@@ -170,6 +170,7 @@ def scan_all(con, date, bar_anchor=None):
     ⇒ 用户收到一份**没有任何标的的盘前计划**（比收不到更让人困惑）。
     修法：盘前任务把锚改到**上一交易日**（由 build 传入），收盘任务保持 date。
     """
+    index_rows = recent_rows(con, "sh000001", n=25)
     holdings = {h["code"] for h in load_holdings()}
     watch = {c if c[:2] in ("sh", "sz") else
              ("sh" if c.startswith("6") else "sz") + c
@@ -230,6 +231,12 @@ def scan_all(con, date, bar_anchor=None):
 
     def commit(c):
         """买区自洽闸门：过宽/倒挂/无盈利空间 → 不推（推出去也下不了单）。"""
+        # RS 超额动量 + 决断力证据（2026-09-19）：统一在入口注入一次，
+        # 三池候选卡都能展示「为什么它不磨叽」的硬数据。
+        _r = recent_rows(con, c["code"], n=25)
+        c["rs_mom"] = engines.rs_momentum(_r, index_rows)
+        if not c.get("decisive"):
+            c["decisive"] = engines.decisive_stats(_r)
         c["dist_pct"] = scoring.dist_pct(c)
         if not scoring.buy_zone_ok(c):
             reject(c["code"], c.get("pool", "-"),
@@ -777,7 +784,7 @@ def build(task="close", date=None, period_days=30):
                                   "buy_low", "buy_high", "stop",
                                   "entry_hint", "cycle_hint", "trend_state",
                                   "gate_evidence", "hot_pick",
-                                  "wait_days", "decisive")},
+                                  "wait_days", "decisive", "rs_mom")},
                                 ensure_ascii=False)))
     for s in skipped:                    # 333-五：未入选原因全量落库
         con.execute("INSERT OR REPLACE INTO candidate_snapshots VALUES(?,?,?,?,?,?,?,?)",
