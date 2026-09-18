@@ -60,6 +60,25 @@ def _plan(con, code, lo, hi, score=80.0, action="现在买", date=DATE):
     con.commit()
 
 
+def _hist(con, code, closes, start="2026-09-01"):
+    """写一段日K历史（closes 升序，跳过周末），用于构造 ATR 保护线场景。"""
+    import datetime as _dt
+    d = _dt.date.fromisoformat(start)
+    for c in closes:
+        while d.weekday() >= 5:
+            d += _dt.timedelta(days=1)
+        con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (code, d.isoformat(), c, c, c * 0.99, c, 1e6, 3e7, 0.0, 1.0))
+        d += _dt.timedelta(days=1)
+    con.commit()
+
+
+def _today_bar(con, code, o, h, l, c, date=DATE):
+    con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (code, date, o, h, l, c, 1e6, 3e7, 0.0, 1.0))
+    con.commit()
+
+
 class TestAutoOpen(unittest.TestCase):
     """A. 自动建仓必须真的能建成仓。"""
 
@@ -222,6 +241,36 @@ class TestRunWiring(unittest.TestCase):
         self.assertNotIn("BUY", [a for _, a, _ in log])
         self.assertEqual(con.execute(
             "SELECT COUNT(*) FROM position_batches").fetchone()[0], 0)
+
+    def test_no_same_day_exit_noise(self):
+        """★ 当日新建仓不得进入退出裁决。
+
+        实测血案（09-18 CI run 35325322271）：auto 建仓当天，3 只新仓**全部**
+        被判「触发ATR保护线但 T+1 受限」——用当日收盘价买入，却拿当日盘中
+        最低价当"持有期触及止损"来判，时序本身错位；而且 T+1 决定它们今天
+        无论如何卖不出去，判决没有行动价值，纯噪音。
+        """
+        con = _mkcon()
+        # 10 天稳定在 10.5 元 ⇒ hh10=10.5、ATR 极小 ⇒ 保护线≈10.12。
+        # ⚠️ 不用 12 元：那会让当日 10.0 变成 -16.7%，越过跌停线被
+        # place_order 判"跌停卖不出"（那是 M27 的另一条路径，会掩盖本用例
+        # 想验的东西——必须走通真正的 SELL 成交路径）。
+        _hist(con, "sh600001", [10.5] * 10)
+        # 当日：最低 9.5 远低于保护线（老逻辑必然判触发），收盘 10.0（在买区内）
+        _today_bar(con, "sh600001", 10.0, 10.2, 9.5, 10.0)
+        _plan(con, "sh600001", 9.8, 10.2)
+        log, _ = self._run("auto", con)
+        actions = [(c, a) for c, a, _ in log]
+        self.assertIn(("sh600001", "BUY"), actions, "先得建仓成功")
+        self.assertNotIn("RISK_FLAGGED", [a for _, a in actions],
+                         "买入当天不得产生 T+1 受限的退出裁决噪音")
+        # 但次日（已解锁）必须正常评估、该触发就触发
+        con.execute("UPDATE position_batches SET buy_date=?, available=qty",
+                    (PREV,))
+        con.commit()
+        log2, _ = self._run("scan", con)
+        self.assertIn("SELL", [a for _, a, _ in log2],
+                      "跨日后 ATR 保护线该触发就要触发（M24 不许被本次修复关掉）")
 
 
 class TestWorkflowWiring(unittest.TestCase):

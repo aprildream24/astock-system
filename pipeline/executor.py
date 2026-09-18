@@ -354,8 +354,18 @@ def run(task="scan", price_of=None):
     log = []
     if task in ("auto", "open"):
         log.extend(auto_open(con, today))
+    # ⚠️ 2026-09-18 修（实测噪音）：巡逻范围 = **存在已解锁批次（buy_date<today）**
+    # 的持仓。原实现取 `SELECT DISTINCT code FROM position_batches`（含当日新建仓），
+    # 于是 auto 建仓当天会把刚买的票全部判一遍 —— 而 T+1 决定它们今天无论如何都
+    # 卖不出去，判决必然落成 `RISK_FLAGGED`（09-18 CI 实测：3 只新仓全部报
+    # "触发退出但 T+1 受限：ATR保护线"）。这不是风险提示，是纯噪音，而且时序
+    # 本身错位：用**当日收盘价**买入，却拿**当日盘中最低价**当"持有期触及止损"
+    # 来判 —— 买入之前那段行情并不属于持有期。
+    # M27 的语义（"触发但卖不出"要留痕）针对的是**跌停卖不出**，由已解锁批次
+    # 正常覆盖，不受本改动影响。
     codes = [r[0] for r in con.execute(
-        "SELECT DISTINCT code FROM position_batches")]
+        "SELECT DISTINCT code FROM position_batches WHERE buy_date<?",
+        (today,))]
     for code in codes:
         action, reasons, detail = evaluate_exit(con, code, today)
         if action == "SELL":
