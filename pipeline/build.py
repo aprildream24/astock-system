@@ -915,6 +915,38 @@ def build(task="close", date=None):
         nr = notifier.push("narrative", date, notifier.md2html(text),
                            date=date, con=con, force=_force_push())
         print(f"[build] narrative push={nr}")
+        # 真实持仓体检 + 换股建议（用户实盘；config/holdings.json 本地不公开）。
+        # ★ 降噪纪律：只在「有持仓且需处理」或「有可下单候选」时推送，避免每天噪音。
+        try:
+            _hold = load_holdings()
+            if _hold:
+                from . import executor as _ex
+                heval = _ex.evaluate_real_holdings(con, date, _hold)
+                cur = con.execute(
+                    "SELECT code,name,action,buy_low,buy_high,stop,score "
+                    "FROM rec_picks WHERE date=?", (date,)).fetchall()
+                cands = [{"code": r[0], "name": r[1], "action": r[2],
+                         "buy_low": r[3], "buy_high": r[4], "stop": r[5],
+                         "score": r[6]} for r in cur]
+                for c in cands:
+                    ind = con.execute(
+                        "SELECT sector FROM stock_industry WHERE code=?",
+                        (c["code"],)).fetchone()
+                    if ind:
+                        c["sector"] = ind[0]
+                hadvice = notifier.render_holding_advice(heval, cands, date)
+                actionable = (any(h["exit_action"] == "SELL" for h in heval)
+                              or any(c.get("action") in
+                                     ("现在买", "可买", "小仓试", "次日竞价达标买")
+                                     for c in cands))
+                if actionable:
+                    hr = notifier.push("holding_check", date, hadvice,
+                                       date=date, con=con, force=_force_push())
+                    print(f"[build] holding_check push={hr}")
+                else:
+                    print("[build] holding_check skipped（持仓健康且无可下单候选）")
+        except Exception as e:  # noqa: BLE001
+            print(f"[build] holding_check failed: {e}")
     return {"date": date, "candidates": len(cands), "picks": picks,
             "ladder_next": ladder_next, "emotion": emo, "changes": changes}
 

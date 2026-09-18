@@ -50,6 +50,8 @@ RULE_VERSION = "v2-20260912"   # 内容+规则版本：升级后 biz_key 自动�
 MODE_LABEL = {
     "build_pre": "盘前", "build_auction": "竞价", "build_close": "收盘",
     "narrative": "复盘", "watch_advice": "自选",
+    # 2026-09-18 新增：真实持仓体检（含换股建议），只在该动的时候才发
+    "holding_check": "持仓",
     "intraday_am": "盘中", "intraday_pm": "尾盘",
     "exec_auto": "模拟", "exec_open": "模拟", "exec_scan": "模拟",
     "exec_tail": "模拟", "exec_now": "模拟", "exec_review": "模拟",
@@ -113,6 +115,16 @@ _LABEL_W = 80          # 指标标签列固定宽（两列表对齐的关键）
 def _esc(s):
     """统一转义 + 空值占位（避免推送里出现 None / 空档位）。"""
     return html.escape("—" if s is None or s == "" else str(s))
+
+
+def _fmt2(v):
+    """价格/数值统一 2 位小数（None → 占位），避免 21.56165~22.32… 这类拖尾。"""
+    if v is None or v == "":
+        return "—"
+    try:
+        return f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return _esc(v)
 
 
 def _table(inner):
@@ -806,6 +818,103 @@ def render_exec_report(today, acct, opened=(), blocked=(), holdings=(),
                  f'未到买点（现价跳出买区/无行情），未下单</div>')
 
     html = ('<div style="' + _STY["doc"] + '">' + "".join(h) + "</div>")
+    if len(html) > PP_HTML_CAP:
+        html = _clip_html(html)
+    return html
+
+
+def render_holding_advice(holdings_eval, candidates=(), date=""):
+    """★ 用户需求（2026-09-18）：真实持仓体检 + 换股候选。
+
+    三段式（与主推送同 <table> 风格、同三色纪律）：
+      ① 概要条：持仓 N 只 · 需处理 M 只 + 弱市提示
+      ② 持仓体检：每只 成本/现价/浮盈 · 裁决徽章 · 触发原因 · 止损/买区 · 板块(热/冷)
+      ③ 换股候选：今日推荐中可下单优先，其次高分等回踩
+    颜色：浮亏红(#e25c5c)/浮盈蓝(#5cc8e2)；SELL 红徽章、警惕黄、持有蓝；
+    候选可买绿徽章、等回踩黄徽章。"""
+    # ① 概要
+    he = list(holdings_eval or [])
+    need = sum(1 for h in he if h.get("exit_action") == "SELL")
+    summary = (f"持仓 {len(he)} 只 · 需处理 {need} 只　｜ "
+               f"磨叽/震荡市里：弱者优先减、强势热板块优先换")
+    body = [f'<h3 style="margin:6px 0 2px">📋 持仓体检 {_esc(date)}</h3>',
+            f'<p style="color:#9aa4b2;font-size:13px;margin:0 0 8px">'
+            f'{_esc(summary)}</p>']
+
+    # ② 持仓体检
+    hrows = []
+    for h in he:
+        pnl = h.get("pnl_pct")
+        pnl_txt = f"{pnl:+.2f}%" if pnl is not None else "—"
+        pnl_col = ("#e25c5c" if (pnl is not None and pnl < 0)
+                   else "#5cc8e2" if (pnl is not None and pnl > 0)
+                   else "#9aa4b2")
+        verdict = h.get("verdict") or "—"
+        if h.get("exit_action") == "SELL":
+            badge = _badge(verdict, "#e25c5c")
+        elif "止损" in verdict or "警惕" in verdict:
+            badge = _badge(verdict, "#e0a93b")
+        else:
+            badge = _badge(verdict, "#5cc8e2")
+        reasons = "；".join(h.get("exit_reasons") or []) or "—"
+        sector = h.get("sector") or "—"
+        if h.get("sector_hot"):
+            sector += " 🔥热"
+        elif h.get("sector"):
+            sector += " ❄️冷"
+        zone = h.get("zone")
+        ztxt = f"{zone[0]}~{zone[1]}" if zone else "—"
+        stop = h.get("stop")
+        stxt = f"{stop}" if stop else "—"
+        bp = h.get("buy_price")
+        cl = h.get("close")
+        hrows.append(
+            "<tr>"
+            f'<td><b>{_esc(h.get("name") or h["code"])}</b><br>'
+            f'<span style="color:#8a93a3;font-size:12px">{_esc(h["code"])}</span></td>'
+            f"<td>成本 {_esc(bp)}<br>现价 {_esc(cl)}</td>"
+            f'<td style="color:{pnl_col};font-weight:700">{pnl_txt}</td>'
+            f"<td>{badge}</td>"
+            f'<td style="font-size:12px;color:#c4ccd6">{_esc(reasons)}</td>'
+            f"<td>止损 {_esc(stxt)}<br>买区 {_esc(ztxt)}</td>"
+            f'<td style="font-size:12px">{_esc(sector)}</td>'
+            "</tr>")
+    if hrows:
+        hold_tbl = _table(
+            "<tr><th>持仓</th><th>成本/现价</th><th>浮盈</th><th>裁决</th>"
+            "<th>触发原因</th><th>止损/买区</th><th>板块</th></tr>"
+            + "".join(hrows))
+        body.append(_card(hold_tbl, border="#2b313d"))
+    else:
+        body.append('<p style="color:#8a93a3">今日无登记持仓</p>')
+
+    # ③ 换股候选
+    body.append('<h4 style="margin:12px 0 4px">🔁 换股候选（今日推荐）</h4>')
+    crows = []
+    for c in (candidates or []):
+        act = c.get("action") or "—"
+        is_buy = act in ("现在买", "可买", "小仓试", "次日竞价达标买")
+        badge = _badge(act, "#3fae6b" if is_buy else "#e0a93b")
+        crows.append(
+            "<tr>"
+            f'<td><b>{_esc(c.get("name") or c.get("code", ""))}</b><br>'
+            f'<span style="color:#8a93a3;font-size:12px">'
+            f'{_esc(c.get("code", ""))}</span></td>'
+            f"<td>{badge}</td>"
+            f'<td>{_esc(c.get("score"))}</td>'
+            f'<td>{_fmt2(c.get("buy_low"))}~{_fmt2(c.get("buy_high"))}</td>'
+            f'<td>{_fmt2(c.get("stop"))}</td>'
+            f'<td style="font-size:12px">{_esc(c.get("sector") or c.get("pool") or "—")}</td>'
+            "</tr>")
+    if crows:
+        cand_tbl = _table(
+            "<tr><th>候选</th><th>动作</th><th>评分</th><th>买区</th>"
+            "<th>止损</th><th>板块</th></tr>" + "".join(crows))
+        body.append(_card(cand_tbl, border="#2b313d"))
+    else:
+        body.append('<p style="color:#8a93a3">今日无换股候选</p>')
+
+    html = ('<div style="' + _STY["doc"] + '">' + "".join(body) + "</div>")
     if len(html) > PP_HTML_CAP:
         html = _clip_html(html)
     return html

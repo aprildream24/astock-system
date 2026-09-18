@@ -220,11 +220,20 @@ def place_order(con, code, side, qty, price, today, prev_close=None,
     return oid, "filled", reason or "模拟成交"
 
 
-def evaluate_exit(con, code, today, protect_prev=None):
+def evaluate_exit(con, code, today, protect_prev=None, cost_override=None):
     """M24：收集全部触发规则 → 固定优先级定动作；M25 按持仓收益。
 
     返回 (action, reasons, detail)。action ∈ SELL/HOLD。
-    N07：ATR 保护线只收紧——调用方传入上一日保护线，取 max。"""
+    N07：ATR 保护线只收紧——调用方传入上一日保护线，取 max。
+
+    ★ 2026-09-18 新增 `cost_override`（真实持仓体检用）：成本原本只从
+    `position_batches`（模拟盘）取。真实持仓（config/holdings.json）**不在**
+    那张表里 ⇒ cost 为 None ⇒ pnl 恒 0.0% ⇒ **所有按收益率的规则（-3%/-6%/
+    +15%）全部失效**，只剩与收益无关的 ATR/MA20 会触发。
+    实测表现：对用户真实持仓返回「持仓收益 +0.0%」——这个数字是假的，
+    拿它当"没亏"会把已经亏钱的持仓判成完好。
+    ⇒ 真实持仓必须把 `buy_price` 传进来，口径才成立。
+    默认 None = 完全保持原行为（模拟盘不受影响）。"""
     row = con.execute(
         "SELECT c FROM klines WHERE code=? ORDER BY date DESC LIMIT 1",
         (code,)).fetchone()
@@ -250,6 +259,8 @@ def evaluate_exit(con, code, today, protect_prev=None):
     ma20 = ma20_row[0] if ma20_row else None
     cost = con.execute(
         "SELECT AVG(cost) FROM position_batches WHERE code=?", (code,)).fetchone()[0]
+    if not cost and cost_override:
+        cost = cost_override                           # 真实持仓外部成本
     pnl = (close / cost - 1) * 100 if cost else 0.0    # 持仓收益（M25）
     triggered = [(rid, name) for rid, name, cond in RULES
                  if cond(pnl, low_today, protect, ma20)]
@@ -260,6 +271,91 @@ def evaluate_exit(con, code, today, protect_prev=None):
     priority = {r[0]: i for i, r in enumerate(RULES)}
     triggered.sort(key=lambda t: priority.get(t[0], 99))
     return "SELL", [n for _, n in triggered], f"持仓收益 {pnl:+.1f}%"
+
+
+def _sector_hot(con, date, industry):
+    """板块是否处于当日主力净流入第一梯队（前 20）。"""
+    rows = con.execute(
+        "SELECT sector, net_yi FROM sector_heat WHERE date=? "
+        "ORDER BY net_yi DESC", (date,)).fetchall()
+    if not rows:
+        return False
+    return industry in {r[0] for r in rows[:20]}
+
+
+def evaluate_real_holdings(con, date, holdings):
+    """★ 用户需求（2026-09-18）：真实持仓体检 + 换股依据。
+
+    与模拟盘 `position_batches` 完全隔离——这里是用户**实盘**自建仓，不在那张
+    表里，所以成本必须靠 `buy_price` 外部传入（evaluate_exit 的 cost_override）。
+
+    对每只持仓：外部成本跑退出裁决（ATR/MA20/-3%/-6%/+15%）→ 取四态买区/止损
+    → 板块热度 → 产出结构化体检。单只数据缺失 → 标「数据不足」，不阻断整份。
+
+    返回 list[dict]，字段：code,name,buy_price,shares,buy_date,close,pnl_pct,
+    verdict,exit_action,exit_reasons,stop,zone,state,sector,sector_hot,tradable。
+    verdict 颜色语义：SELL→红（建议减仓/离场）、含「止损/警惕」→黄、其余→蓝（持有观察）。"""
+    from . import engines
+    from . import mktfilter
+    out = []
+    for h in holdings or []:
+        code = h.get("code")
+        if not code:
+            continue
+        num = code[2:] if code[:2] in ("sh", "sz") else code
+        bp = h.get("buy_price")
+        item = {"code": code, "name": h.get("name") or _name_of(con, code),
+                "buy_price": bp, "shares": h.get("shares"),
+                "buy_date": h.get("buy_date"),
+                "close": None, "pnl_pct": None, "verdict": "数据不足",
+                "exit_action": None, "exit_reasons": [], "stop": None,
+                "zone": None, "state": None, "sector": None,
+                "sector_hot": False,
+                "tradable": mktfilter.tradable(num)}
+        out.append(item)
+        row = con.execute(
+            "SELECT c FROM klines WHERE code=? AND date<=? "
+            "ORDER BY date DESC LIMIT 1", (code, date)).fetchone()
+        if not row or not row[0]:
+            continue
+        close = float(row[0])
+        item["close"] = close
+        if bp:
+            item["pnl_pct"] = round((close / bp - 1) * 100, 2)
+        act, reasons, _ = evaluate_exit(con, code, date, cost_override=bp)
+        item["exit_action"] = act
+        item["exit_reasons"] = reasons
+        # 四态买区 / 止损
+        krows = con.execute(
+            "SELECT date,o,c,h,l,v FROM klines WHERE code=? AND date<=? "
+            "ORDER BY date DESC LIMIT 60", (code, date)).fetchall()
+        krows = [[d, o, c, h, l, v] for d, o, c, h, l, v in reversed(krows)]
+        if len(krows) >= 5:
+            plan = engines.entry_plan(krows)
+            item["stop"] = round(plan["stop"], 2)
+            item["zone"] = [round(plan["pull_zone"][0], 2),
+                            round(plan["pull_zone"][1], 2)]
+            item["state"] = plan["state"]
+        # 板块热度
+        ind = con.execute(
+            "SELECT sector FROM stock_industry WHERE code=?", (code,)).fetchone()
+        if ind and ind[0]:
+            item["sector"] = ind[0]
+            item["sector_hot"] = _sector_hot(con, date, ind[0])
+        # 裁决文本
+        if act == "SELL":
+            item["verdict"] = ("建议减仓/离场" if (item["pnl_pct"] is not None
+                                                  and item["pnl_pct"] < 0)
+                               else "触发退出")
+        else:
+            if item["stop"] and close <= item["stop"]:
+                item["verdict"] = "已破止损·警惕"
+                item["exit_action"] = "SELL"
+                item["exit_reasons"] = (item["exit_reasons"] or []) + \
+                    ["现价跌破止损线"]
+            else:
+                item["verdict"] = "持有观察"
+    return out
 
 
 def _last_price(con, code, date, slot=None):

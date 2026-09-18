@@ -80,7 +80,14 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           # 附带锁住：place_order 此前**没有资金充足性检查**（现金能买成负数）
           # 与本套件自身的账本隔离纪律（血案：第一轮就把 exec_auto 写进仓库
           # 账本，第二轮 _daily_sent 命中导致自爆）。
-          "test_exec_push.py"]
+          "test_exec_push.py",
+          # 2026-09-18 第三轮新增（用户实盘需求）：真实持仓体检 + 换股建议。
+          #   · evaluate_exit 的 cost_override 口径（实盘不在模拟盘批次 → 必须
+          #     外部传 buy_price，否则 pnl 恒 +0.0% 把亏损判成完好）
+          #   · evaluate_real_holdings 结构化体检（浮亏/裁决/板块热冷）
+          #   · render_holding_advice 三段式（概要/体检/候选）
+          #   · build.py 在 review 挂 holding_check，且只在 actionable 时推（降噪）
+          "test_holding_check.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")
