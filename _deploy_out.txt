@@ -1,5 +1,0 @@
-token: ghp_riUd...UC9B len 40
-repo: 200 aprildream24/astock-system
-sync: OK
-远端 timeout-minutes: ['timeout-minutes: 75']
-远端 continue-on-error 次数: 3
