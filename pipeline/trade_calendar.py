@@ -71,3 +71,62 @@ def why_closed(d=None):
 
 def calendar_covered(d=None):
     return _to_date(d).year in COVERED_YEARS
+
+
+# ---------------------------------------------------------------------------
+# 交易时段守门（用户 2026-09-18 需求：「需要考虑周末和节假日，今天已经不在
+# 交易时间了又开始购买」）
+# ---------------------------------------------------------------------------
+# ★ 为什么必须单独做时段判断，而不是只看日期：
+#   `close` 这班定时器是 **15:22**（收盘后 22 分钟），`pre` 是 08:50（开盘前）。
+#   如果只判"今天是不是交易日"，15:22 那班就会拿**当日收盘价**去建仓——
+#   用户看到的是"收盘了还在买"。日期对、时段错，是两件不同的事。
+#   沪深交易时段：集合竞价 09:15–09:25，连续竞价 09:30–11:30 / 13:00–15:00。
+#   取并集 09:15–11:30 + 13:00–15:00 作为「可下单窗口」。
+SESSIONS = ((9, 15, 11, 30), (13, 0, 15, 0))
+CST = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def now_cst():
+    """北京时间当前时刻。
+
+    ⚠️ CI runner 是 UTC：`datetime.now()` 在 15:22（北京）拿到的是 07:22。
+    任何"现在几点"的判断都必须显式换算到 UTC+8，否则时段门控形同虚设。
+    """
+    return datetime.datetime.now(CST)
+
+
+def in_trading_session(now=None):
+    """当前是否处于「可下单」交易时段（同时要求当天是交易日）。
+
+    ★ 必须 `astimezone(CST)` 归一化：调用方可能给一个 UTC 表示的同一时刻
+    （CI runner 的 `datetime.now()` 就是 UTC）。直接用 `t.hour` 读到的会是
+    凌晨 2 点而不是北京 10 点 —— 闸门于是在正确的时间点放行/拦截全反。
+    """
+    t = (now or now_cst()).astimezone(CST)
+    if not is_trade_day(t):
+        return False
+    hm = t.hour * 60 + t.minute
+    return any(a * 60 + b <= hm <= c * 60 + d for a, b, c, d in SESSIONS)
+
+
+def session_note(now=None, today=None):
+    """不处于交易时段时的**人类可读原因**（直接进推送正文）。
+
+    `today` 用于区分"日期本身是不是交易日"与"时刻是否在盘中"——
+    两者会给出完全不同的解释，混在一起会让读者以为系统坏了。
+    """
+    t = (now or now_cst()).astimezone(CST)
+    hhmm = t.strftime("%H:%M")
+    if today is not None and not is_trade_day(today):
+        return f"{today} {why_closed(today)}，不建仓"
+    if not is_trade_day(t):
+        return f"{t.strftime('%Y-%m-%d')} {why_closed(t)}，不建仓"
+    hm = t.hour * 60 + t.minute
+    if hm < 9 * 60 + 15:
+        return f"北京时间 {hhmm}，开盘前（09:15 才开始撮合），不建仓"
+    if 11 * 60 + 30 < hm < 13 * 60:
+        return f"北京时间 {hhmm}，午间休市（11:30–13:00），不建仓"
+    if hm > 15 * 60:
+        return f"北京时间 {hhmm}，已收盘（15:00 后不再撮合），不建仓"
+    return f"北京时间 {hhmm} 非交易时段，不建仓"

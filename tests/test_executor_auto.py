@@ -23,6 +23,7 @@ import re
 import sqlite3
 import sys
 import unittest
+from datetime import datetime, timezone, timedelta
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +37,10 @@ import pipeline.notifier as notifier      # noqa: E402
 
 DATE = "2026-09-18"
 PREV = "2026-09-17"
+# ★ 2026-09-18 新增：所有建仓路径都要过「交易时段闸门」，测试必须给出一个
+# **盘中时刻**（北京时间 10:00），否则用例会在收盘后跑并一律被闸门拦下。
+# 这也正是我们要锁的行为：闸门不是可选项。
+NOW = datetime(2026, 9, 18, 10, 0, tzinfo=timezone(timedelta(hours=8)))
 
 
 def _mkcon():
@@ -95,14 +100,14 @@ class TestAutoOpen(unittest.TestCase):
 
     def test_no_plan_no_trade(self):
         con = _mkcon()
-        self.assertEqual(executor.auto_open(con, DATE), [],
+        self.assertEqual(executor.auto_open(con, DATE, now=NOW), [],
                          "没有推荐必须静默（不推空消息、不硬凑）")
 
     def test_buys_when_price_in_zone(self):
         con = _mkcon()
         _price(con, "sh600001", 10.0, prev=9.9)
         _plan(con, "sh600001", 9.8, 10.2)
-        log = executor.auto_open(con, DATE)
+        log = executor.auto_open(con, DATE, now=NOW)
         actions = [a for _, a, _ in log]
         self.assertIn("BUY", actions, f"现价在买区内必须建仓，实得 {log}")
         self.assertEqual(con.execute(
@@ -119,7 +124,7 @@ class TestAutoOpen(unittest.TestCase):
         con = _mkcon()
         _price(con, "sh600001", 10.0)
         _plan(con, "sh600001", 9.8, 10.2)
-        executor.auto_open(con, DATE)
+        executor.auto_open(con, DATE, now=NOW)
         qty = con.execute("SELECT qty FROM position_batches").fetchone()[0]
         self.assertEqual(qty % 100, 0, "A 股必须整手（100 股）下单")
 
@@ -127,7 +132,7 @@ class TestAutoOpen(unittest.TestCase):
         con = _mkcon()
         _price(con, "sh600001", 10.0)
         _plan(con, "sh600001", 9.8, 10.2)
-        executor.auto_open(con, DATE)
+        executor.auto_open(con, DATE, now=NOW)
         self.assertEqual(executor.available_qty(con, "sh600001", DATE), 0,
                          "当日买入批次 T+1 不可卖（M26）")
         # 解锁发生在**日切**（ensure_account 跨日）——必须走真实路径验证，
@@ -141,7 +146,7 @@ class TestAutoOpen(unittest.TestCase):
         con = _mkcon()
         _price(con, "sh600001", 12.0)
         _plan(con, "sh600001", 9.8, 10.2)
-        log = executor.auto_open(con, DATE)
+        log = executor.auto_open(con, DATE, now=NOW)
         self.assertEqual([a for _, a, _ in log], ["SKIP"])
         self.assertEqual(con.execute(
             "SELECT COUNT(*) FROM position_batches").fetchone()[0], 0)
@@ -149,7 +154,7 @@ class TestAutoOpen(unittest.TestCase):
     def test_skips_when_no_price(self):
         con = _mkcon()
         _plan(con, "sh600001", 9.8, 10.2)      # 没有任何行情
-        log = executor.auto_open(con, DATE)
+        log = executor.auto_open(con, DATE, now=NOW)
         self.assertEqual([a for _, a, _ in log], ["SKIP"])
         self.assertIn("无当日价格", log[0][2])
 
@@ -158,7 +163,7 @@ class TestAutoOpen(unittest.TestCase):
         con = _mkcon()
         _price(con, "sh600001", 300.0)
         _plan(con, "sh600001", 290.0, 310.0)
-        log = executor.auto_open(con, DATE)
+        log = executor.auto_open(con, DATE, now=NOW)
         self.assertEqual([a for _, a, _ in log], ["SKIP"])
         self.assertIn("1 手", log[0][2])
 
@@ -167,7 +172,7 @@ class TestAutoOpen(unittest.TestCase):
         for i in range(6):
             _price(con, f"sh60000{i}", 10.0)
             _plan(con, f"sh60000{i}", 9.8, 10.2)
-        executor.auto_open(con, DATE)
+        executor.auto_open(con, DATE, now=NOW)
         n = con.execute("SELECT COUNT(DISTINCT code) FROM position_batches").fetchone()[0]
         self.assertEqual(n, executor.RISK["max_holdings"],
                          f"最多持有 {executor.RISK['max_holdings']} 只")
@@ -176,7 +181,7 @@ class TestAutoOpen(unittest.TestCase):
         con = _mkcon()
         _price(con, "sh600001", 10.0)
         _plan(con, "sh600001", 9.8, 10.2)
-        executor.auto_open(con, DATE)
+        executor.auto_open(con, DATE, now=NOW)
         second = executor.auto_open(con, DATE)
         self.assertNotIn("BUY", [a for _, a, _ in second],
                          "已持仓的票不得重复建仓")
@@ -191,7 +196,7 @@ class TestAutoOpen(unittest.TestCase):
         executor.ensure_account(con, DATE)
         con.execute("UPDATE account_state SET frozen=1 WHERE id=1")
         con.commit()
-        log = executor.auto_open(con, DATE)
+        log = executor.auto_open(con, DATE, now=NOW)
         self.assertEqual([a for _, a, _ in log], ["HOLD"])
         self.assertEqual(con.execute(
             "SELECT COUNT(*) FROM position_batches").fetchone()[0], 0)
@@ -201,7 +206,7 @@ class TestAutoOpen(unittest.TestCase):
         con = _mkcon()
         _price(con, "sh600001", 10.0)
         _plan(con, "sh600001", 9.8, 10.2)
-        executor.auto_open(con, DATE)
+        executor.auto_open(con, DATE, now=NOW)
         cash = con.execute("SELECT cash FROM account_state").fetchone()[0]
         flow = con.execute("SELECT SUM(amount) FROM cashflow").fetchone()[0]
         self.assertAlmostEqual(cash, flow, delta=0.01,
@@ -217,12 +222,12 @@ class TestRunWiring(unittest.TestCase):
         _plan(con, "sh600001", 9.8, 10.2)
         return con
 
-    def _run(self, task, con):
+    def _run(self, task, con, now=NOW):
         with mock.patch.object(executor, "get_conn", return_value=con), \
                 mock.patch.object(executor, "today_str", return_value=DATE), \
                 mock.patch.object(notifier, "push",
                                   return_value={"status": "sent"}) as push:
-            log = executor.run(task)
+            log = executor.run(task, now=now)
         return log, push
 
     def test_run_auto_opens_and_pushes(self):
@@ -231,8 +236,17 @@ class TestRunWiring(unittest.TestCase):
         self.assertTrue(push.called, "建仓必须有推送（否则用户看不到模拟盘在跑）")
         mode = push.call_args[0][0]
         self.assertEqual(mode, "exec_auto", "mode 必须按 task 分流，避免撞去重保险丝")
+        title = push.call_args[0][1]
         body = push.call_args[0][2]
-        self.assertIn("起步 ¥100,000", body)
+        # 标题摘要（【模拟】【Astra】前缀由 notifier 拼，正文只需给行情摘要）
+        self.assertIn("建仓", title)
+        self.assertIn("持仓", title)
+        # 账户概览必须在正文里（用户："按 100000 元起步自动运行"就得看得见净值）
+        self.assertIn("起步资金", body)
+        self.assertIn("100,000", body)
+        # 版式必须分组（用户："到底买了什么，持有什么，完全不知道"）
+        self.assertIn("本次建仓", body)
+        self.assertIn("当前持仓", body)
 
     def test_run_scan_does_not_buy(self):
         """scan/tail/now 保持原语义：只巡逻，不买入（不许静默改变行为）。"""

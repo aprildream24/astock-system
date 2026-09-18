@@ -23,6 +23,7 @@ import uuid
 from datetime import datetime
 
 from . import core
+from . import trade_calendar as tc
 from .core import get_conn, today_str
 
 RISK = {"max_pos_pct": 0.70, "max_holdings": 4, "max_daily_orders": 6,
@@ -41,6 +42,10 @@ RULES = [
      ma20 is not None and low < ma20 and pnl < 0),
 ]
 TAKE_PROFIT_PNL = 15.0       # 持仓浮盈 ≥15% → 止盈（按持仓收益，M25）
+
+# 「实质动作」= 值得单独发一条推送的判决（用户 2026-09-18：推送太多分不清）。
+# 对照：SESSION（非交易时段）/ SKIP（未到买点）/ HOLD（持有）都不触发推送。
+ACTIONABLE = ("BUY", "SELL", "REJECT", "RISK_BLOCKED", "RISK_FLAGGED")
 
 
 def _now():
@@ -164,6 +169,15 @@ def place_order(con, code, side, qty, price, today, prev_close=None,
                           "WHERE code=?", (code,)).fetchone()[0]
         if (cur + amt) / eq > RISK["max_pos_pct"]:
             return reject(f"单票累计敞口超 {RISK['max_pos_pct']:.0%}（M21）")
+        # ★ 2026-09-18 补：**资金充足性**。原实现查了金额上下限、持仓数、
+        # 集中度，**唯独没查现金够不够** ⇒ `cash -= (amt+fee)` 会把余额买成
+        # 负数。这不是理论风险：auto_open 的单票预算 = 净值×min(70%/4, 25%)
+        # ≈ 17.5%，上限 6 万；4 只满仓理论上要 24 万，而初始资金只有 10 万
+        # ⇒ 走到第 3、4 只时必然触达（用户原话："比如资金不足等等"）。
+        need = amt * (1 + FEE_RATE)
+        cash_avail = ensure_account(con, today)[0]
+        if need > cash_avail:
+            return reject(f"资金不足：需 ¥{need:,.0f}，可用 ¥{cash_avail:,.0f}")
         if con.execute("SELECT 1 FROM orders WHERE code=? AND side='buy' "
                        "AND status='pending'", (code,)).fetchone():
             return reject("存在同标的未成交买单（N06 重复订单）")
@@ -248,8 +262,22 @@ def evaluate_exit(con, code, today, protect_prev=None):
     return "SELL", [n for _, n in triggered], f"持仓收益 {pnl:+.1f}%"
 
 
-def _last_price(con, code, date):
-    """当日可用价格：优先当日快照（盘前/盘中也能拿到），回退最近一根K线。"""
+def _last_price(con, code, date, slot=None):
+    """当日可用价格。
+
+    优先级（★ 顺序不能乱，否则盘中会拿盘前价当实时价）：
+      ① `snapshot_live[date, slot]` —— 盘中任务**真实抓到的那一刻**的价格。
+         `slot` 只在 intraday 任务里传（am/pm），是唯一"当下价"来源。
+      ② `snapshot[date]` —— 盘前/竞价抓的快照（09:25 是撮合价）。收盘任务
+         在收盘抓取后也写这里，所以 close 班拿到的是当日收盘价。
+      ③ 最近一根K线 —— 兜底（停牌/新股）。
+    """
+    if slot:
+        row = con.execute(
+            "SELECT price FROM snapshot_live WHERE date=? AND slot=? AND code=?",
+            (date, slot, code)).fetchone()
+        if row and row[0]:
+            return float(row[0])
     row = con.execute("SELECT price FROM snapshot WHERE date=? AND code=?",
                       (date, code)).fetchone()
     if row and row[0]:
@@ -261,7 +289,7 @@ def _last_price(con, code, date):
 
 
 def account_line(con, today):
-    """账户概览行（推送头部用）：净值 / 现金 / 持仓数 / 累计收益。"""
+    """账户概览行（纯文本，供日志/测试复用）：净值/现金/持仓/累计。"""
     acct = ensure_account(con, today)
     eq = equity(con)
     ret = (eq / RISK["init_cash"] - 1) * 100
@@ -271,7 +299,90 @@ def account_line(con, today):
             f"累计 {ret:+.2f}% ｜ 起步 ¥{RISK['init_cash']:,.0f}）")
 
 
-def auto_open(con, today, max_new=None):
+def account_snapshot(con, today):
+    """账户结构化快照（卡片渲染用）。与 account_line 同源同口径。"""
+    acct = ensure_account(con, today)
+    eq = equity(con)
+    return {
+        "equity": eq, "cash": acct[0], "init": RISK["init_cash"],
+        "n_hold": con.execute(
+            "SELECT COUNT(DISTINCT code) FROM position_batches").fetchone()[0],
+        "ret_pct": (eq / RISK["init_cash"] - 1) * 100,
+        "day_pct": day_pnl_pct(con, today),
+        "frozen": bool(acct[3]),
+    }
+
+
+def session_gate(today, now=None):
+    """★ 用户需求（2026-09-18）：「需要考虑周末和节假日，今天已经不在交易
+    时间了又开始购买」。返回 (可下单?, 原因)。
+
+    为什么必须查**时刻**、不能只查日期：`close` 班定时器是 15:22、`pre` 班是
+    08:50——两天都是不折不扣的交易日，却都不在撮合时段。只看日期 ⇒ 15:22 会
+    拿当日收盘价建仓，用户看到的就是"收盘了还在买"（实测就是这么发生的）。
+    """
+    t = now or tc.now_cst()
+    if tc.in_trading_session(t):
+        return True, ""
+    return False, tc.session_note(t, today=today)
+
+
+def _name_of(con, code):
+    """取股票名（rec_picks → snapshot）。取不到就退化成代码，绝不让整行消失。"""
+    for sql in ("SELECT name FROM rec_picks WHERE code=? AND name<>'' "
+                "ORDER BY date DESC LIMIT 1",
+                "SELECT name FROM snapshot WHERE code=? AND name<>'' "
+                "ORDER BY date DESC LIMIT 1"):
+        row = con.execute(sql, (code,)).fetchone()
+        if row and row[0]:
+            return row[0]
+    return code
+
+
+def _pick_of(con, today, code):
+    """当日推荐里的这只票（名称/动作/买区/评分）。供推送渲染回溯。"""
+    return con.execute(
+        "SELECT name, action, buy_low, buy_high, score FROM rec_picks "
+        "WHERE date=? AND code=? ORDER BY score DESC LIMIT 1",
+        (today, code)).fetchone()
+
+
+def opened_today(con, today):
+    """今日是否已经建过仓（★ 每天最多一批，见 auto_open 的说明）。"""
+    return con.execute("SELECT 1 FROM exec_log WHERE action='auto_open' "
+                       "AND code=?", (today,)).fetchone() is not None
+
+
+def holdings_rows(con, today, slot=None):
+    """当前持仓明细（推送「持有什么」区块）。"""
+    out = []
+    for code, qty, cost, buy_date in con.execute(
+            "SELECT code, SUM(qty), "
+            "CASE WHEN SUM(qty)>0 THEN SUM(qty*cost)/SUM(qty) ELSE 0 END, "
+            "MIN(buy_date) FROM position_batches GROUP BY code "
+            "ORDER BY MIN(buy_date)").fetchall():
+        price = _last_price(con, code, today, slot) or cost
+        status, why = "持有", ""
+        try:
+            act, reasons, _d = evaluate_exit(con, code, today)
+            if act == "SELL":
+                status, why = "待卖出", "；".join(reasons)
+        except Exception:  # noqa: BLE001 —— 一根K线缺失不该让整段持仓消失
+            pass
+        try:
+            days = (datetime.fromisoformat(today)
+                    - datetime.fromisoformat(buy_date)).days
+        except Exception:  # noqa: BLE001
+            days = 0
+        out.append({"code": code, "name": _name_of(con, code), "qty": qty,
+                    "cost": cost, "price": price,
+                    "pnl_pct": (price / cost - 1) * 100 if cost else 0.0,
+                    "days": days, "status": status, "status_reason": why,
+                    "amount": qty * price})
+    return out
+
+
+def auto_open(con, today, max_new=None, slot=None, now=None):
     """按当日推荐自动建仓——模拟盘「自动运行」的核心（2026-09-18 新增）。
 
     ⚠️ 为什么需要：原实现**只有退出裁决、没有任何买入路径**。账户永远空仓
@@ -279,6 +390,8 @@ def auto_open(con, today, max_new=None):
     跑"根因就在这里（叠加 executor workflow 此前从未挂定时器）。
 
     纪律：
+      · **先过交易时段闸门**（用户需求）：周末/法定节假日、开盘前、午休、
+        收盘后一律不建仓。日期对不等于时段对，两件事都要查。
       · 只买与推送**同源口径**的票（当日 rec_picks 里 action ∈ 现在买/等回踩/
         小仓试，且现价确实落在买区内）——推什么就模拟买什么，避免出现
         "推的票没买、买的票没推"这种无法对账的状态；
@@ -286,11 +399,20 @@ def auto_open(con, today, max_new=None):
         到 100 股；不足 1 手直接跳过（不硬凑、不放松风控凑单）；
       · 风控**只走 place_order 一处**（涨跌停/资金/T+1/累计敞口/持仓上限/
         单日委托数全在那），本函数不重复实现判定，避免两套规则打架；
+      · ★ **每天最多建一批**：一旦有成交就落 `exec_log` 标记，当天后续的
+        盘中 run 不再开新仓。理由不是省事——是**推送已经发过了**：日级保险
+        丝按 mode+date 只放行一条 `exec_auto`，如果下午再偷偷买，那笔成交
+        就永远没人告诉用户，正是"模拟盘很乱"的来源。
       · 无推荐 / 已满仓 / 熔断锁定 → 返回空列表，不推空消息。
     """
+    ok, why = session_gate(today, now)
+    if not ok:
+        return [("-", "SESSION", why)]
     acct = ensure_account(con, today)
     if acct[3]:
         return [("-", "HOLD", "日内亏损熔断锁定，不开新仓（M22）")]
+    if opened_today(con, today):
+        return [("-", "HOLD", "今日已建仓（每天最多一批），本次只巡逻")]
     rows = con.execute(
         "SELECT code, name, action, buy_low, buy_high, score FROM rec_picks "
         "WHERE date=? AND action IN ('现在买','等回踩','小仓试') "
@@ -302,14 +424,15 @@ def auto_open(con, today, max_new=None):
     eq = equity(con)
     per_amt = eq * min(RISK["max_pos_pct"] / RISK["max_holdings"], 0.25)
     log = []
+    filled = 0
     for code, name, action, lo, hi, score in rows:
-        if max_new and len(log) >= max_new:
+        if max_new and filled >= max_new:
             break
         if code in held:
             continue
         if len(held) >= RISK["max_holdings"]:
             break
-        price = _last_price(con, code, today)
+        price = _last_price(con, code, today, slot)
         if not price or price <= 0:
             log.append((code, "SKIP", "无当日价格，跳过"))
             continue
@@ -331,18 +454,106 @@ def auto_open(con, today, max_new=None):
             reason=f"自动建仓 {action}")
         if status == "filled":
             held.add(code)
+            filled += 1
             log.append((code, "BUY", f"{qty}股@{price:.2f}（{action}）"))
         else:
+            # ★ 用户需求：**到价了却买不进，必须说清楚原因**（资金不足/
+            # 满仓/涨停/单日额度…）。原实现也记 REJECT，但推送里混在流水里
+            # 没人看得见，等于没告诉。
             log.append((code, "REJECT", why))
+    # 建成即封板（见 docstring：下午再偷偷买会让成交无人知晓）
+    if filled:
+        con.execute("INSERT INTO exec_log VALUES(?,?,?,?,?)",
+                    (_now(), today, "auto_open", None,
+                     f"slot={slot or '-'} 成交 {filled} 只"))
+        con.commit()
     return log
 
 
-def run(task="scan", price_of=None):
-    """模拟盘日常：自动建仓（task=auto）+ 全部持仓退出裁决。
+
+def _annotate_sector(con, today, items):
+    """给推送条目打板块标签（best-effort：拿不到就不标注，绝不阻断推送）。"""
+    if not items:
+        return
+    try:
+        from . import sector
+        sector.annotate(con, today, items)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _exec_push(con, task, today, log, slot=None):
+    """组装并发送模拟盘报告。返回推送结果；无实质动作 → None（不推送）。
+
+    ★ 只在「有实质动作」时推送 —— 用户原话「推送消息太多我根本分不清」。
+      实质动作 = 建仓 / 卖出·退出 / 到价未成交（含资金不足）。非交易时段的
+      说明、未到买点、纯持有，都不单独成条消息：每天有 09:25 / 09:45 / 14:40 /
+      15:22 四个 run，若每个都推一条"无事发生"，模拟盘自己就是最大噪音源。
+    """
+    from . import notifier
+    if not any(a in ACTIONABLE for _, a, _ in log):
+        print("[executor] 无实质动作，不推送（避免噪音）")
+        return None
+    opened, blocked, sold, skipped = [], [], [], []
+    for code, action, detail in log:
+        pk = _pick_of(con, today, code) if code != "-" else None
+        name = (pk[0] if pk and pk[0] else None) or _name_of(con, code)
+        if action == "BUY":
+            b = con.execute(
+                "SELECT qty, cost FROM position_batches WHERE code=? "
+                "AND buy_date=? LIMIT 1", (code, today)).fetchone()
+            item = {"code": code, "name": name,
+                    "qty": b[0] if b else 0, "price": b[1] if b else 0}
+            item["amount"] = item["qty"] * item["price"]
+            if pk:
+                item.update({"action": pk[1], "buy_low": pk[2] or 0,
+                             "buy_high": pk[3] or 0, "score": pk[4]})
+            opened.append(item)
+        elif action == "REJECT":
+            # ★ 用户需求：「无法买入的到达买点了也同样告诉我，比如资金不足」
+            blocked.append({"code": code, "name": name,
+                            "buy_low": (pk[2] if pk else 0) or 0,
+                            "buy_high": (pk[3] if pk else 0) or 0,
+                            "price": _last_price(con, code, today, slot),
+                            "reason": detail})
+        elif action in ("SELL", "RISK_BLOCKED", "RISK_FLAGGED"):
+            sold.append({"code": code, "name": name, "action": action,
+                         "detail": detail})
+        else:
+            skipped.append((code, detail))
+    _annotate_sector(con, today, opened)
+    acct = account_snapshot(con, today)
+    holdings = holdings_rows(con, today, slot)
+    note = next((d for _c, a, d in log if a == "SESSION"), "")
+    html = notifier.render_exec_report(
+        today, acct, opened=opened, blocked=blocked, sold=sold,
+        holdings=holdings, skipped=skipped, note=note,
+        slot_label={"am": " · 早盘", "pm": " · 尾盘"}.get(slot, ""))
+    # 标题摘要（配合 notifier 的【模拟】【Astra】前缀，一眼知行情）
+    head = f"建仓 {len(opened)} 只 · 持仓 {len(holdings)} 只"
+    if blocked:
+        head += f" · 未成交 {len(blocked)} 只"
+    if sold:
+        head += f" · 退出 {len(sold)} 只"
+    r = notifier.push(
+        f"exec_{task}", head, html, date=today, con=con,
+        force=any(a in ("SELL", "RISK_BLOCKED", "RISK_FLAGGED")
+                  for _, a, _ in log))
+    # 打印推送三态（记忆纪律：日志必须能回答"到底发出去了没"——
+    # 只看"步骤 success"会漏掉 uncertain 这类静默失败）。
+    print(f"[executor] push={r}")
+    return r
+
+
+def run(task="scan", price_of=None, slot=None, now=None):
+    """模拟盘日常：自动建仓（task=auto）+ 持仓退出裁决 + 结构化推送。
 
     task 语义（2026-09-18 明确化，原实现忽略 task 参数）：
       · `auto` —— 自动建仓 + 巡逻（默认自动运行形态）
       · `scan`/`tail`/`now` —— 只巡逻（保持原有语义，不做买入）
+
+    slot：盘中任务传 "am"/"pm" ⇒ 取 `snapshot_live` 的**当下价**（唯一实时来源）。
+    now ：可注入的"现在"（测试用）。None ⇒ 取北京时间当前时刻。
     """
     con = get_conn()
     today = today_str()
@@ -353,7 +564,7 @@ def run(task="scan", price_of=None):
         con.commit()
     log = []
     if task in ("auto", "open"):
-        log.extend(auto_open(con, today))
+        log.extend(auto_open(con, today, slot=slot, now=now))
     # ⚠️ 2026-09-18 修（实测噪音）：巡逻范围 = **存在已解锁批次（buy_date<today）**
     # 的持仓。原实现取 `SELECT DISTINCT code FROM position_batches`（含当日新建仓），
     # 于是 auto 建仓当天会把刚买的票全部判一遍 —— 而 T+1 决定它们今天无论如何都
@@ -390,21 +601,5 @@ def run(task="scan", price_of=None):
         else:
             log.append((code, "HOLD", detail))
     con.commit()
-    # 推送（模拟盘只走 PushPlus；重要退出风险不被普通去重拦截）
-    if log:
-        from . import notifier
-        # 账户概览打头（用户要"按 100000 元起步自动运行"，那就得看得见净值）
-        lines = [account_line(con, today)]
-        for c, a, r in log:
-            mark = {"SELL": "⛔", "RISK_BLOCKED": "⛔", "RISK_FLAGGED": "⚠️",
-                    "BUY": "🔴", "REJECT": "✋"}.get(a, "·")
-            lines.append(f"{mark} {c} {a} {r}")
-        md = "# 模拟盘 " + today + "\n" + "\n".join(lines)
-        force = any(a in ("SELL", "RISK_BLOCKED", "RISK_FLAGGED")
-                    for _, a, _ in log)
-        r = notifier.push(f"exec_{task}", today, notifier.md2html(md),
-                          date=today, con=con, force=force)
-        # 打印推送三态（记忆纪律：日志必须能回答"到底发出去了没"——
-        # 只看"步骤 success"会漏掉 uncertain 这类静默失败）。
-        print(f"[executor] push={r}")
+    _exec_push(con, task, today, log, slot)
     return log

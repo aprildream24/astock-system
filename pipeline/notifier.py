@@ -34,6 +34,48 @@ ACTION_BADGE = {"现在买": "✅买入", "等回踩": "⏳等回踩", "小仓�
 
 RULE_VERSION = "v2-20260912"   # 内容+规则版本：升级后 biz_key 自动换新放行
 
+# ---------------------------------------------------------------------------
+# 标题规范（用户 2026-09-18 需求：「推送消息太多我根本分不清」）
+#
+# 旧版所有消息的标题都是 `【Astra·PushPlus】2026-09-18` —— 只有渠道、没有任务。
+# 一天 5~6 条消息长得一模一样，读者必须点进去才知道这条是盘前还是收盘，
+# 是主报告还是模拟盘。用户点名的目标形态是 `【模拟】【Astra】`、`【竞价】【Astra】`。
+#
+# 新规范：`【{任务}】【{tag}】{摘要}`，例如
+#   【竞价】【Astra】2026-09-18 竞价裁决 · 可买 3 只
+#   【模拟】【Astra】建仓 2 只 · 持仓 3 只
+# ⚠️ 未登记的 mode 一律回退到旧的 `【{tag}·{来源}】` 形态：这条回退是**必需的**，
+#    否则任何新加的任务都会变成裸标题（比"分不清"更糟）。
+# ---------------------------------------------------------------------------
+MODE_LABEL = {
+    "build_pre": "盘前", "build_auction": "竞价", "build_close": "收盘",
+    "narrative": "复盘", "watch_advice": "自选",
+    "intraday_am": "盘中", "intraday_pm": "尾盘",
+    "exec_auto": "模拟", "exec_open": "模拟", "exec_scan": "模拟",
+    "exec_tail": "模拟", "exec_now": "模拟", "exec_review": "模拟",
+    "data_holiday": "休市",
+}
+
+
+def mode_label(mode):
+    """任务中文名（标题用）。未登记 → 空串（调用方回退旧形态）。"""
+    if not mode:
+        return ""
+    if mode in MODE_LABEL:
+        return MODE_LABEL[mode]
+    if str(mode).startswith("data_blocked"):
+        return "告警"
+    return ""
+
+
+def title_prefix(mode, tag, source=""):
+    """标题前缀。已登记任务 → `【任务】【tag】`；未登记 → 旧形态 `【tag·来源】`。"""
+    label = mode_label(mode)
+    if label:
+        return f"【{label}】【{tag}】"
+    return f"【{tag}·{source}】" if source else f"【{tag}】"
+
+
 
 # ---------------------------------------------------------------------------
 # 渲染（表格化内联样式）
@@ -610,6 +652,165 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
     return html
 
 
+def _pnl_color(v):
+    """A 股配色：盈利/上涨=红，亏损/下跌=绿（与欧美相反，项目约定）。"""
+    if v is None:
+        return "#9aa0a6"
+    if v > 0:
+        return "#ff6b5e"
+    if v < 0:
+        return "#4ecf8e"
+    return "#9aa0a6"
+
+
+def _kv_cell(k, v, color="#e8eaed"):
+    return (f'<td width="25%" align="center" style="padding:7px 0">'
+            f'<div style="font-size:11px;color:#9aa0a6">{_esc(k)}</div>'
+            f'<div style="font-size:15px;font-weight:700;color:{color}">'
+            f'{_esc(v)}</div></td>')
+
+
+def render_exec_report(today, acct, opened=(), blocked=(), holdings=(),
+                       skipped=(), sold=(), note="", slot_label=""):
+    """模拟盘报告（版式与主推送**同源**，2026-09-18 重做）。
+
+    用户原话：「模拟盘推送的板式也需要参考前面的，现在板式非常混乱，到底买了
+    什么，持有什么，完全不知道」。旧版是一段 `md2html` 的纯文本流水：没有分组、
+    没有对齐、账户与明细混在一起，读者无法回答"我买了什么/我持有什么"。
+
+    新分组按"读者最想知道什么"排序：
+
+      ① 概要条 —— 净值/现金/持仓/今日动作，手机上不必下滑就有结论
+      ② 本次建仓 —— 买了什么、成交价、多少股、多少钱、依据
+      ③ 本次卖出 —— 卖出了什么；"触发退出但卖不出"也在这里留痕（M27）
+      ④ 到价未成交 —— **到了买点却没买成**，逐条给出原因（资金不足/满仓/涨停…）
+      ⑤ 当前持仓 —— 持有什么、成本→现价、浮盈、拿了几天
+      ⑥ 未到买点 —— 折叠成一行汇总（避免刷屏）
+
+    ⚠️ 图标与本项目三色纪律一致：买入红 / 卖出绿 / 持有蓝。
+    """
+    h = [f'<div style="{_STY["h1"]}">模拟盘 · {_esc(today)}'
+         f'{_esc(slot_label)}</div>']
+    # ① 概要（两行 4 列，纯 table —— webview 对 flex/float 支持极差）
+    h.append(_card(_table(
+        "<tr>"
+        + _kv_cell("账户净值", f"¥{acct.get('equity', 0):,.0f}", "#f1f3f4")
+        + _kv_cell("可用现金", f"¥{acct.get('cash', 0):,.0f}", "#9aa0a6")
+        + _kv_cell("持仓", f"{acct.get('n_hold', 0)} 只", "#6ab0ff")
+        + _kv_cell("累计收益", f"{acct.get('ret_pct', 0):+.2f}%",
+                   _pnl_color(acct.get("ret_pct")))
+        + "</tr><tr>"
+        + _kv_cell("本次建仓", f"{len(opened)} 只",
+                   "#ff6b5e" if opened else "#9aa0a6")
+        + _kv_cell("到价未成交", f"{len(blocked)} 只",
+                   "#ff8a80" if blocked else "#9aa0a6")
+        + _kv_cell("今日盈亏", f"{acct.get('day_pct', 0):+.2f}%",
+                   _pnl_color(acct.get("day_pct")))
+        + _kv_cell("起步资金", f"¥{acct.get('init', 0):,.0f}", "#9aa0a6")
+        + "</tr>"), border="#2b313d"))
+
+    if note:
+        h.append(f'<div style="{_STY["meta"]}">⏸ {_esc(note)}</div>')
+
+    # ② 本次建仓
+    if opened:
+        h.append(f'<div style="{_STY["h2"]}">本次建仓 {len(opened)} 只</div>')
+        for o in opened:
+            st = _sector_label(o) if o.get("sector") else ""
+            extra = (f'<div style="font-size:12px;color:#9aa0a6;'
+                     f'margin-top:5px">{st}</div>' if st else "")
+            h.append(_card(
+                _table(
+                    '<tr><td style="padding:0 0 7px">'
+                    f'<span style="font-size:16px;font-weight:700;'
+                    f'color:#e8eaed">{_esc(o.get("name"))}</span>'
+                    f'<span style="color:#9aa0a6;font-size:12px;'
+                    f'margin-left:6px"> {_esc(o.get("code"))}</span></td>'
+                    f'<td align="right" valign="top" style="padding:0 0 7px">'
+                    f'{_badge("🔴已建仓", "#c0392b")}</td></tr>'
+                    + _row("成交价", f'{o.get("price", 0):.2f} 元 / '
+                                     f'{o.get("qty", 0):,.0f} 股')
+                    + _row("成交金额", f'¥{o.get("amount", 0):,.0f}',
+                           v_color="#ff6b5e", v_bold=True)
+                    + _row("买区", f'{o.get("buy_low", 0):.2f} ~ '
+                                   f'{o.get("buy_high", 0):.2f}')
+                    + _row("建仓依据", f'{o.get("action", "")} · '
+                                       f'评分 {o.get("score", "—")}')
+                    + extra),
+                border="#2b313d", accent="#ff6b5e"))
+
+    # ③ 本次卖出 / 退出（含"触发了但卖不出"的留痕，M27）
+    if sold:
+        h.append(f'<div style="{_STY["h2"]}">本次卖出 · 退出 {len(sold)} 只</div>')
+        inner = ""
+        for s in sold:
+            act = s.get("action")
+            ok = act == "SELL"
+            inner += (
+                '<tr><td style="padding:6px 0">'
+                f'<span style="font-weight:700;color:#e8eaed">'
+                f'{_esc(s.get("name"))}</span>'
+                f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
+                f' {_esc(s.get("code"))}</span>'
+                f'<div style="font-size:12px;margin-top:2px;color:'
+                f'{"#4ecf8e" if ok else "#ff8a80"}">'
+                f'{"⛔ 已卖出" if ok else "⚠️ 触发退出但未成交"} · '
+                f'{_esc(s.get("detail"))}</div></td></tr>')
+        h.append(_card(_table(inner), border="#2b313d"))
+
+    # ④ 到价未成交（★ 用户明确要求：买不进也要说，并给出原因）
+    if blocked:
+        h.append(f'<div style="{_STY["h2"]}">到价未成交 {len(blocked)} 只</div>')
+        inner = ""
+        for b in blocked:
+            inner += (
+                '<tr><td style="padding:6px 0">'
+                f'<span style="font-weight:700;color:#e8eaed">'
+                f'{_esc(b.get("name"))}</span>'
+                f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
+                f' {_esc(b.get("code"))}</span>'
+                f'<div style="font-size:12px;color:#9aa0a6;margin-top:2px">'
+                f'买区 {b.get("buy_low", 0):.2f} ~ {b.get("buy_high", 0):.2f}'
+                f' · 现价 {b.get("price") or 0:.2f}</div>'
+                f'<div style="font-size:12px;color:#ff8a80;margin-top:2px">'
+                f'✋ {_esc(b.get("reason"))}</div></td></tr>')
+        h.append(_card(_table(inner), border="#8a2a2e"))
+
+    # ⑤ 当前持仓
+    if holdings:
+        h.append(f'<div style="{_STY["h2"]}">当前持仓 {len(holdings)} 只</div>')
+        inner = ""
+        for p in holdings:
+            col = _pnl_color(p.get("pnl_pct"))
+            st = p.get("status") or "持有"
+            st_col = {"待卖出": "#ff8a80"}.get(st, "#6ab0ff")
+            inner += (
+                '<tr><td style="padding:6px 0 2px">'
+                f'<span style="font-weight:700;color:#e8eaed">'
+                f'{_esc(p.get("name"))}</span>'
+                f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
+                f' {_esc(p.get("code"))}</span></td>'
+                f'<td align="right" style="padding:6px 0 2px">'
+                f'<span style="color:{col};font-weight:700;font-size:14px">'
+                f'{p.get("pnl_pct", 0):+.2f}%</span></td></tr>'
+                '<tr><td style="padding:0 0 6px;font-size:12px;color:#9aa0a6">'
+                f'{p.get("qty", 0):,.0f} 股 · 成本 {p.get("cost", 0):.2f} → '
+                f'现价 {p.get("price", 0):.2f} · 持有 {p.get("days", 0)} 天</td>'
+                f'<td align="right" style="padding:0 0 6px;font-size:12px;'
+                f'color:{st_col}">{_esc(st)}</td></tr>')
+        h.append(_card(_table(inner), border="#2b313d"))
+
+    # ⑥ 未到买点（折叠）
+    if skipped:
+        h.append(f'<div style="{_STY["meta"]}">其余 {len(skipped)} 只'
+                 f'未到买点（现价跳出买区/无行情），未下单</div>')
+
+    html = ('<div style="' + _STY["doc"] + '">' + "".join(h) + "</div>")
+    if len(html) > PP_HTML_CAP:
+        html = _clip_html(html)
+    return html
+
+
 def save_detail_report(html, today, data_json=None):
     """详情落盘：HTML + JSON（程序读取/归因），微信只发摘要。"""
     d = os.path.join(BASE_DIR, "dist", "reports")
@@ -814,8 +1015,12 @@ def push(mode, title, content, date=None, con=None,
         from . import wxpusher
         wx_accounts = wxpusher.resolve_targets(mode, cfg=cfg) \
             if "wxpusher" in channels else []
+        multi = len(wx_accounts) > 1
         for a in wx_accounts:
-            t = f"【{tag}·{a.get('name', '')}】{title}"
+            # 单收件人 → 用户要求的纯净形态【任务】【Astra】；
+            # 多收件人才在第二段带上账号名（保留"多账号分不清"的防混淆能力）
+            src = f"{tag}·{a.get('name', '')}" if multi else tag
+            t = f"{title_prefix(mode, src)}{title}"
             body = f"<p><small>📮 {tag} · {a.get('name', '')}</small></p>" + content
             st, detail = wxpusher.send(a, t, body)
             results[f"wxpusher:{a['name']}"] = {"status": st, "detail": detail}
@@ -824,13 +1029,13 @@ def push(mode, title, content, date=None, con=None,
             s == "failed" for s in statuses)
         if all_failed and cfg.get("serverchan_key"):
             st2, d2 = _send_serverchan(cfg["serverchan_key"],
-                                       f"【{tag}·备用SC】{title}", content)
+                                       f"{title_prefix(mode, tag, '备用SC')}{title}", content)
             results["serverchan"] = {"status": st2, "detail": d2,
                                      "role": "fallback"}
         if not wx_accounts or "wxpusher" not in channels:
             if "pushplus" in channels and cfg.get("pushplus_token"):
                 st, detail = _send_pushplus(cfg["pushplus_token"],
-                                            f"【{tag}·PushPlus】{title}",
+                                            f"{title_prefix(mode, tag, 'PushPlus')}{title}",
                                             f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
                 results["pushplus"] = {"status": st, "detail": detail}
                 # ⚠️ 2026-09-16 修（血案：PushPlus 是当前唯一通道，却无兜底）：
@@ -855,7 +1060,7 @@ def push(mode, title, content, date=None, con=None,
                     print(f"[notify] PushPlus failed → ServerChan 兜底 {st2}")
             elif "serverchan" in channels and cfg.get("serverchan_key"):
                 st, detail = _send_serverchan(cfg["serverchan_key"],
-                                              f"【{tag}·SC】{title}", content)
+                                              f"{title_prefix(mode, tag, 'SC')}{title}", content)
                 results["serverchan"] = {"status": st, "detail": detail}
     # 聚合口径：任一通道送达即 sent；不确定优先于 failed
     statuses = [r["status"] for r in results.values()] or ["dry-run"]

@@ -171,8 +171,11 @@ class TestPushTag(unittest.TestCase):
                 r = notifier.push("build_close", "收盘观察 09-11", "<p>x</p>",
                                   date="2026-09-12", con=con)
                 self.assertEqual(r["status"], "sent")
-                self.assertTrue(captured["title"].startswith("【Astra·PushPlus】"),
-                                f"标题必须带来源标识: {captured['title']}")
+                # ★ 2026-09-18 标题规范改为 `【{任务}】【{tag}】`（用户原话：
+                # "推送消息太多我根本分不清"）。来源标识从**标题**移到**正文角标**，
+                # 下面第二条断言继续锁"角标必须在"。
+                self.assertTrue(captured["title"].startswith("【收盘】【Astra】"),
+                                f"标题必须带任务标识【任务】【tag】: {captured['title']}")
                 self.assertIn("PushPlus", captured["content"][:120],
                               "正文顶部应有同源角标")
                 con.close()

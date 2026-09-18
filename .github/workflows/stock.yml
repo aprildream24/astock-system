@@ -250,19 +250,31 @@ jobs:
       #   · 模拟盘状态与行情库同处 cache/，随本 workflow 的 save 一起持久化，
       #     不会出现"两个 workflow 各存一份、缓存 GC 删掉另一份"的状态回退；
       #   · 不需要在 cron-job.org 增加定时器（少一个会失效的环节）。
-      # continue-on-error：模拟盘是旁路，任何异常都不允许影响主链推送。
+      # ── 2026-09-18 二次修（用户："需要考虑周末和节假日，今天已经不在交易
+      #    时间了又开始购买"）────────────────────────────────────────────
+      #   **建仓的时段闸门在代码里**（executor.session_gate：周末/法定节假日、
+      #   开盘前、午休、收盘后一律不下单），本步骤只是"喂数据"：
+      #     · close(15:22)/pre(08:50) 都不在撮合时段 ⇒ 只巡逻+风控，不建仓；
+      #     · 真正会建仓的是 auction(09:25) 与 intraday(09:45/14:40) ——
+      #       故这里必须把 auction / intraday 也纳入（否则永远没有可下单时刻）；
+      #     · intraday 传 --slot am|pm ⇒ 取 snapshot_live 的**当下价**，
+      #       而不是盘前快照价（否则拿 09:25 的价去当 14:40 的价成交）。
+      #   continue-on-error：模拟盘是旁路，任何异常都不允许影响主链推送。
       - name: 模拟盘自动运行（建仓+巡逻）
         if: >-
-          github.event.inputs.task != 'watch-sync' &&
-          github.event.inputs.task != 'intraday' &&
-          (github.event.inputs.task == 'close' ||
-           github.event.inputs.task == '')
+          github.event.inputs.task == '' ||
+          github.event.inputs.task == 'close' ||
+          github.event.inputs.task == 'auction' ||
+          github.event.inputs.task == 'intraday'
         continue-on-error: true
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
-        run: python -m tools.executor --task auto
+        run: |
+          SLOT="${{ github.event.inputs.slot }}"
+          echo "[executor] slot=$SLOT（空=非盘中任务；建仓时段闸门在 executor 内部）"
+          python -m tools.executor --task auto --slot "$SLOT"
       - name: 收盘复盘（自选股建议+AI叙事）
         if: >-
           github.event.inputs.task != 'watch-sync' &&
