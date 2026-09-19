@@ -972,10 +972,12 @@ def _exec_push(con, task, today, log, slot=None):
         head += f" · 未成交 {len(blocked)} 只"
     if sold:
         head += f" · 退出 {len(sold)} 只"
+    # 2026-09-22 用户需求：「模拟盘中购入的必须全部推送」。凡有实质动作
+    # （买入/卖出/到价未成交/风控）一律 force 即时送达——本函数仅在
+    # 有实质动作时才被调用，所以这里 force 恒为 True；噪音已由
+    # ACTIONABLE 过滤兜底，不该再让日熔丝吞掉任何一笔成交。
     r = notifier.push(
-        f"exec_{task}", head, html, date=today, con=con,
-        force=any(a in ("SELL", "RISK_BLOCKED", "RISK_FLAGGED")
-                  for _, a, _ in log))
+        f"exec_{task}", head, html, date=today, con=con, force=True)
     # 打印推送三态（记忆纪律：日志必须能回答"到底发出去了没"——
     # 只看"步骤 success"会漏掉 uncertain 这类静默失败）。
     print(f"[executor] push={r}")

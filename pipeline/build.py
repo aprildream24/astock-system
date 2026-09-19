@@ -800,7 +800,8 @@ def build(task="close", date=None, period_days=30):
         con.execute("INSERT OR REPLACE INTO rec_picks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (date, c["code"], c.get("name", ""), c["tag"], c["action"],
                      c["buy_low"], c["buy_high"], c.get("stop"),
-                     c.get("sell_low"), c.get("sell_high"), c["score"], "", None))
+                     c.get("sell_low"), c.get("sell_high"),
+                     c.get("eff_score") or c["score"], "", None))
     for c in cands:
         con.execute("INSERT OR REPLACE INTO candidate_snapshots VALUES(?,?,?,?,?,?,?,?)",
                     (date, c["code"], c.get("name", ""), c["pool"], c["score"],
@@ -840,7 +841,7 @@ def build(task="close", date=None, period_days=30):
     for c in picks:
         d = decisions.make_decision(c, date, missing_fields=())
         d["valid_until"] = valid_until
-        d["score"] = c.get("score")
+        d["score"] = c.get("eff_score") or c.get("score")
         decisions.persist_decision(con, d)
     def close_of(code):
         row = con.execute(

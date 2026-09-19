@@ -855,87 +855,110 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
             f'{_esc(summary)}</p>']
 
     # ② 持仓体检
-    hrows = []
+    cards = []
     for h in he:
         pnl = h.get("pnl_pct")
         pnl_txt = f"{pnl:+.2f}%" if pnl is not None else "—"
-        pnl_col = ("#e25c5c" if (pnl is not None and pnl < 0)
-                   else "#5cc8e2" if (pnl is not None and pnl > 0)
+        pnl_col = ("#ff6b5e" if (pnl is not None and pnl < 0)
+                   else "#3fae6b" if (pnl is not None and pnl > 0)
                    else "#9aa4b2")
         verdict = h.get("verdict") or "—"
         if h.get("exit_action") == "SELL":
-            badge = _badge(verdict, "#e25c5c")
+            badge = _badge(verdict, "#ff6b5e")
         elif "止损" in verdict or "警惕" in verdict:
             badge = _badge(verdict, "#e0a93b")
         else:
             badge = _badge(verdict, "#5cc8e2")
-        reasons = "；".join(h.get("exit_reasons") or []) or "—"
-        if h.get("sector_retreat") and "板块退潮" not in str(h.get("verdict", "")):
-            reasons = (f'<span style="color:#e0a93b">❄ 板块退潮：'
-                       f'{_esc(h["sector_retreat"])}</span><br>' + reasons)
+        reasons = []
         if h.get("swap_hint"):
-            reasons = (f'<span style="color:#e25c5c;font-weight:700">'
-                       f'{_esc(h["swap_hint"])}</span>'
-                       + (f"<br>{_esc(reasons)}" if reasons != "—" else ""))
+            reasons.append(f'<span style="color:#ff6b5e;font-weight:700">'
+                           f'{_esc(h["swap_hint"])}</span>')
         if h.get("phase") in ("已到期", "接近到期"):
-            _lc = "#e25c5c" if h.get("phase") == "已到期" else "#e0a93b"
-            reasons = (f'<span style="color:{_lc};font-weight:700">'
-                       f'⏰ 持有 {h.get("hold_days")}/'
-                       f'{h.get("hold_limit")} 个交易日（{h.get("phase")}）'
-                       f'</span><br>' + reasons)
+            _lc = "#ff6b5e" if h.get("phase") == "已到期" else "#e0a93b"
+            reasons.append(f'<span style="color:{_lc};font-weight:700">'
+                           f'⏰ 持有 {h.get("hold_days")}/'
+                           f'{h.get("hold_limit")} 个交易日（{h.get("phase")}）'
+                           f'</span>')
+        if h.get("sector_retreat"):
+            reasons.append(f'<span style="color:#e0a93b">❄ 板块退潮：'
+                           f'{_esc(h["sector_retreat"])}</span>')
+        for r in h.get("exit_reasons") or []:
+            reasons.append(_esc(str(r)))
+        zone = h.get("zone")
+        ztxt = f"{zone[0]}~{zone[1]}" if zone else "—"
+        bp, cl = h.get("buy_price"), h.get("close")
         sector = h.get("sector") or "—"
         if h.get("sector_hot"):
             sector += " 🔥热"
         elif h.get("sector"):
             sector += " ❄️冷"
-        zone = h.get("zone")
-        ztxt = f"{zone[0]}~{zone[1]}" if zone else "—"
-        stop = h.get("stop")
-        stxt = f"{stop}" if stop else "—"
-        bp = h.get("buy_price")
-        cl = h.get("close")
-        hrows.append(
-            "<tr>"
-            f'<td><b>{_esc(h.get("name") or h["code"])}</b><br>'
-            f'<span style="color:#8a93a3;font-size:12px">{_esc(h["code"])}</span></td>'
-            f"<td>成本 {_esc(bp)}<br>现价 {_esc(cl)}</td>"
-            f'<td style="color:{pnl_col};font-weight:700">{pnl_txt}</td>'
-            f"<td>{badge}</td>"
-            f'<td style="font-size:12px;color:#c4ccd6">{_esc(reasons)}</td>'
-            f"<td>止损 {_esc(stxt)}<br>买区 {_esc(ztxt)}</td>"
-            f'<td style="font-size:12px">{_esc(sector)}</td>'
-            "</tr>")
-    if hrows:
-        hold_tbl = _table(
-            "<tr><th>持仓</th><th>成本/现价</th><th>浮盈</th><th>裁决</th>"
-            "<th>触发原因</th><th>止损/买区</th><th>板块</th></tr>"
-            + "".join(hrows))
-        body.append(_card(hold_tbl, border="#2b313d"))
+        row1 = (f'<td><span style="font-size:15px;font-weight:700;'
+                f'color:#e8eaed">{_esc(h.get("name") or h["code"])}</span>'
+                f'<span style="color:#8a93a3;font-size:12px;margin-left:6px">'
+                f'{_esc(h["code"])}</span></td>'
+                f'<td align="right" valign="top">{badge}</td>')
+        row2 = (f'<td style="color:#8a93a3">成本</td>'
+                f'<td align="right">{_esc(bp)}</td>'
+                f'<td style="color:#8a93a3">现价</td>'
+                f'<td align="right">{_esc(cl)}</td>'
+                f'<td style="color:#8a93a3">浮盈</td>'
+                f'<td align="right" style="color:{pnl_col};font-weight:700">'
+                f'{pnl_txt}</td>')
+        row3 = (f'<td style="color:#8a93a3">止损</td>'
+                f'<td align="right">{_esc(h.get("stop") or "—")}</td>'
+                f'<td style="color:#8a93a3">板块</td>'
+                f'<td align="right" style="font-size:12px">{_esc(sector)}</td>')
+        inner = (_table(f"<tr>{row1}</tr>")
+                 + _table(f"<tr>{row2}</tr>")
+                 + _table(f"<tr>{row3}</tr>"))
+        if reasons:
+            inner += ('<div style="font-size:12.5px;color:#c4ccd6;'
+                      'margin-top:6px;border-top:1px dashed #2b313d;'
+                      'padding-top:6px">' + "<br>".join(reasons) + "</div>")
+        cards.append(_card(inner, border="#2b313d"))
+    if cards:
+        body.append(f'<h4 style="margin:12px 0 4px">📋 持仓体检（一票一卡）'
+                    f'</h4>')
+        body.extend(cards)
     else:
         body.append('<p style="color:#8a93a3">今日无登记持仓</p>')
 
     # ③ 换股候选
-    body.append('<h4 style="margin:12px 0 4px">🔁 换股候选（今日推荐）</h4>')
+    body.append('<h4 style="margin:12px 0 4px">🔁 换股候选（今日推荐·'
+                '排序即优先级）</h4>')
+    body.append('<p style="color:#9aa4b2;font-size:12px;margin:0 0 6px">'
+                '排在前面的更值得买。可下单=现在就能买；等回踩=到价再买、'
+                '勿追高。综合分是同策略池内的相对强度（0-100），'
+                '跨动作类型以排序为准——「可买 80 分」优先于「等回踩 96 分」'
+                '，因为 96 分那只要等价格回到买区，机会成本在你这边。</p>')
+    _ACT_ORDER = {"现在买": 0, "可买": 0, "小仓试": 1, "等回踩": 2,
+                  "次日竞价达标买": 3}
+    cands_sorted = sorted(candidates or [],
+                          key=lambda c: (_ACT_ORDER.get(c.get("action"), 9),
+                                         -(c.get("eff_score")
+                                           or c.get("score") or 0)))
     crows = []
-    for c in (candidates or []):
+    for rank, c in enumerate(cands_sorted, start=1):
         act = c.get("action") or "—"
         is_buy = act in ("现在买", "可买", "小仓试", "次日竞价达标买")
         badge = _badge(act, "#3fae6b" if is_buy else "#e0a93b")
+        eff = c.get("eff_score") or c.get("score") or "—"
         crows.append(
             "<tr>"
+            f'<td><b>{rank}</b></td>'
             f'<td><b>{_esc(c.get("name") or c.get("code", ""))}</b><br>'
             f'<span style="color:#8a93a3;font-size:12px">'
             f'{_esc(c.get("code", ""))}</span></td>'
             f"<td>{badge}</td>"
-            f'<td>{_esc(c.get("score"))}</td>'
+            f'<td>{_esc(eff)}</td>'
             f'<td>{_fmt2(c.get("buy_low"))}~{_fmt2(c.get("buy_high"))}</td>'
             f'<td>{_fmt2(c.get("stop"))}</td>'
             f'<td style="font-size:12px">{_esc(c.get("sector") or c.get("pool") or "—")}</td>'
             "</tr>")
     if crows:
         cand_tbl = _table(
-            "<tr><th>候选</th><th>动作</th><th>评分</th><th>买区</th>"
-            "<th>止损</th><th>板块</th></tr>" + "".join(crows))
+            "<tr><th>#</th><th>候选</th><th>动作</th><th>综合分</th>"
+            "<th>买区</th><th>止损</th><th>板块</th></tr>" + "".join(crows))
         body.append(_card(cand_tbl, border="#2b313d"))
     else:
         body.append('<p style="color:#8a93a3">今日无换股候选</p>')
