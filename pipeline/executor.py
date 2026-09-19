@@ -19,6 +19,8 @@ RiskGate 参数基线（9.1【待验证 V05】——保留原值，非通用标�
 持仓批次(position_batches) / 资金流水(cashflow) / 账户(account_state)。
 净值 = 现金余额 + 持仓市值（可对账）。
 """
+import json
+import os
 import uuid
 from datetime import datetime
 
@@ -29,6 +31,25 @@ from .core import get_conn, today_str
 RISK = {"max_pos_pct": 0.70, "max_holdings": 4, "max_daily_orders": 6,
         "min_order_amt": 1000.0, "max_order_amt": 60000.0,
         "daily_loss_halt": -0.03, "init_cash": 100000.0}
+# 分仓计划（用户 2026-09-21：「模拟盘购买要分成 3322 或者 3331」）。
+# 第 N 笔建仓占用第 N 档仓位比例（按净值计），允许 config/sim.json
+# {"position_plan": "3331"} 切换；缺省 3322。
+POSITION_PLANS = {"3322": [0.30, 0.30, 0.20, 0.20],
+                  "3331": [0.30, 0.30, 0.30, 0.10]}
+
+
+def _position_plan():
+    key = "3322"
+    p = os.path.join(core.CONFIG_DIR, "sim.json")
+    if os.path.exists(p):
+        try:
+            key = json.load(open(p, encoding="utf-8")).get(
+                "position_plan", key)
+        except Exception:  # noqa: BLE001
+            pass
+    return POSITION_PLANS.get(key, POSITION_PLANS["3322"])
+
+
 FEE_RATE = 0.0003            # 佣金近似；卖出另计印花税 0.0005
 STAMP_TAX = 0.0005
 
@@ -336,6 +357,25 @@ def evaluate_real_holdings(con, date, holdings):
             item["zone"] = [round(plan["pull_zone"][0], 2),
                             round(plan["pull_zone"][1], 2)]
             item["state"] = plan["state"]
+        # ★ 去弱留强·持续弱量化（用户 2026-09-21：「如果一直持续弱，我拿着
+        # 也没什么意义」）：近 10 个交易日里收盘低于 MA20 的天数 + 近 10 日
+        # 跌幅。两者同时恶化 → 明确给「换股」建议（去弱留强）。
+        if len(krows) >= 21:
+            closes = [r[2] for r in krows]
+            ma20 = [sum(closes[i - 19:i + 1]) / 20
+                    for i in range(19, len(closes))]
+            tail_c, tail_m = closes[-10:], ma20[-10:]
+            weak_days = sum(1 for c, m in zip(tail_c, tail_m) if c < m)
+            drop10 = (closes[-1] / closes[-11] - 1) * 100                 if len(closes) >= 11 else 0.0
+            item["weak_days"] = weak_days
+            item["drop10"] = round(drop10, 2)
+            if weak_days >= 7 and drop10 <= -5:
+                item["swap_hint"] = (
+                    f"持续走弱：10 日中 {weak_days} 日收在 MA20 下方，"
+                    f"近 10 日 {drop10:+.1f}%——建议换股（去弱留强）")
+                item["verdict"] = "建议换股"
+                if act != "SELL":
+                    item["exit_reasons"] = (item["exit_reasons"] or []) +                         [f"持续走弱（{weak_days}/10 日 < MA20）"]
         # 板块热度
         ind = con.execute(
             "SELECT sector FROM stock_industry WHERE code=?", (code,)).fetchone()
@@ -682,7 +722,7 @@ def holdings_rows(con, today, slot=None):
     return out
 
 
-def auto_open(con, today, max_new=None, slot=None, now=None):
+def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
     """按当日推荐自动建仓——模拟盘「自动运行」的核心（2026-09-18 新增）。
 
     ⚠️ 为什么需要：原实现**只有退出裁决、没有任何买入路径**。账户永远空仓
@@ -711,8 +751,10 @@ def auto_open(con, today, max_new=None, slot=None, now=None):
     acct = ensure_account(con, today)
     if acct[3]:
         return [("-", "HOLD", "日内亏损熔断锁定，不开新仓（M22）")]
-    if opened_today(con, today):
-        return [("-", "HOLD", "今日已建仓（每天最多一批），本次只巡逻")]
+    # 2026-09-21 用户需求：盘中出现更合适的买点 → **直接按区间买入推荐**。
+    # 原「每天最多一批」硬闸取消，改为三层护栏兜底：最大持仓只数、单日委托
+    # 数上限、现价必须落在买区（place_order 内还有资金/涨跌停/T+1/敞口）。
+    # 推送纪律不变：换仓/追加批次由 run() 以 force 推送，成交必被告知。
     rows = con.execute(
         "SELECT code, name, action, buy_low, buy_high, score FROM rec_picks "
         "WHERE date=? AND action IN ('现在买','等回踩','小仓试') "
@@ -722,7 +764,7 @@ def auto_open(con, today, max_new=None, slot=None, now=None):
     held = {r[0] for r in con.execute(
         "SELECT DISTINCT code FROM position_batches")}
     eq = equity(con)
-    per_amt = eq * min(RISK["max_pos_pct"] / RISK["max_holdings"], 0.25)
+    plan = _position_plan()
     log = []
     filled = 0
     for code, name, action, lo, hi, score in rows:
@@ -738,12 +780,27 @@ def auto_open(con, today, max_new=None, slot=None, now=None):
             continue
         # 现价必须落在买区内（与推送 buyable_now 同一把尺子）
         if lo and hi and not (lo * 0.995 <= price <= hi * 1.005):
-            log.append((code, "SKIP",
-                        f"现价{price:.2f}不在买区{lo:.2f}-{hi:.2f}，不追"))
+            if not quiet:
+                log.append((code, "SKIP",
+                            f"现价{price:.2f}不在买区{lo:.2f}-{hi:.2f}，不追"))
             continue
-        qty = int(min(per_amt, RISK["max_order_amt"]) / price / 100) * 100
+        # 分仓档位：第 len(held)+1 笔占用 plan 对应档（3322/3331）
+        slot_i = min(len(held), len(plan) - 1)
+        slot_pct = plan[slot_i]
+        per_amt = eq * slot_pct
+        # 现金预算钳制：3322 四档总和 = 100% 净值，最后一档必须给手续费
+        # 留缓冲，否则差几块钱被拒单 → 永远建不满 4 仓
+        _cash = con.execute(
+            "SELECT cash FROM account_state WHERE id=1").fetchone()
+        budget = min(per_amt, RISK["max_order_amt"],
+                     max((_cash[0] if _cash else 0) * 0.985, 0))
+        qty = int(budget / price / 100) * 100
         if qty < 100:
-            log.append((code, "SKIP", f"单票资金不足 1 手（价{price:.2f}）"))
+            # 资金不足 1 手 = 到价买不进 → REJECT（进「到价未成交」组，
+            # 用户必须被告知；用户需求：「到价了却买不进，必须说清楚原因」）
+            log.append((code, "REJECT",
+                        f"资金不足 1 手（价{price:.2f}，"
+                        f"档位目标 {budget:,.0f} 元）"))
             continue
         prev = con.execute(
             "SELECT c FROM klines WHERE code=? AND date<? "
@@ -751,11 +808,14 @@ def auto_open(con, today, max_new=None, slot=None, now=None):
         oid, status, why = place_order(
             con, code, "buy", qty, price, today,
             prev_close=prev[0] if prev else None,
-            reason=f"自动建仓 {action}")
+            reason=(f"自动建仓 {action}（第{slot_i + 1}档 "
+                    f"{slot_pct:.0%}·目标{per_amt:,.0f}元）"))
         if status == "filled":
             held.add(code)
             filled += 1
-            log.append((code, "BUY", f"{qty}股@{price:.2f}（{action}）"))
+            log.append((code, "BUY",
+                        f"{qty}股@{price:.2f}（{action}·"
+                        f"第{slot_i + 1}档{slot_pct:.0%}≈{per_amt:,.0f}元）"))
         else:
             # ★ 用户需求：**到价了却买不进，必须说清楚原因**（资金不足/
             # 满仓/涨停/单日额度…）。原实现也记 REJECT，但推送里混在流水里
@@ -900,6 +960,11 @@ def run(task="scan", price_of=None, slot=None, now=None):
                         why))
         else:
             log.append((code, "HOLD", detail))
+    # ★ 去弱留强（用户 2026-09-21「持续弱拿着没意义，本质是去弱留强」）：
+    # 本轮 patrol 卖出成交腾出名额后，同一次 run 内直接按买区回补更优候选
+    # （quiet=True：未到买点的 SKIP 不重复进推送，未到买点组已有同信息）。
+    if any(a == "SELL" for _, a, _ in log):
+        log.extend(auto_open(con, today, slot=slot, now=now, quiet=True))
     con.commit()
     _exec_push(con, task, today, log, slot)
     return log

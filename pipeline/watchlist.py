@@ -23,6 +23,17 @@ def _name_of(con, code):
     return row[0] if row and row[0] else ""
 
 
+def zone_stop_for(krows):
+    """自选关注区/止损的唯一口径（build_watch_advice 与 intraday 共用，
+    防"两处各算一套"漂移）：箱体买区优先，无箱体用回踩档绝对锚。
+    返回 (zone, stop, box, plan)——box/plan 供理由行使用，可为 None。"""
+    box = engines.detect_stage_bottom(krows)
+    plan = engines.entry_plan(krows, box_low=box["box_low"] if box else None)
+    zone = (box and [box["buy_low"], box["buy_high"]]) or plan["pull_zone"]
+    stop = box["stop"] if box else plan["stop"]
+    return [round(zone[0], 2), round(zone[1], 2)], round(stop, 2), box, plan
+
+
 def build_watch_advice(con, date, watch_codes, holdings_codes=()):
     """watch_codes: ["sh600000", ...]；holdings_codes: 持仓集合（语境切换）。
     返回 [{code,name,close,action,advice,dist_pct,zone,stop,reasons,tradable}]"""
@@ -70,10 +81,8 @@ def build_watch_advice(con, date, watch_codes, holdings_codes=()):
         # 注：now_zone 已于 2026-09-13 修正为 ≤4.5% 窄带（旧版相对现价构造会让
         # 任何票都落在区间内），但自选语境仍须**绝对锚**——pull_zone 由
         # 均线/近端低点绝对定位，不随当日收盘漂移，破位票不会失真。
-        box = engines.detect_stage_bottom(rows)
-        plan = engines.entry_plan(rows, box_low=box["box_low"] if box else None)
-        zone = (box and [box["buy_low"], box["buy_high"]]) or plan["pull_zone"]
-        stop = box["stop"] if box else plan["stop"]
+        # 买卖区间：统一走 zone_stop_for（箱体优先；无箱体用回踩档绝对锚）
+        zone, stop, box, plan = zone_stop_for(rows)
         item["zone"] = [round(zone[0], 2), round(zone[1], 2)]
         item["stop"] = round(stop, 2)
         if close <= stop:

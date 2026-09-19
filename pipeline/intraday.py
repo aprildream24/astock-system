@@ -257,6 +257,50 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         print(f"[intraday] 真实持仓体检失败（不阻断）：{e}")
     out["sell_hits"] = len(sell_hits)
 
+    # ---- 自选股到点提醒（用户 2026-09-21：盘中也要给自选操作建议）----
+    # 与 watchlist.zone_stop_for 同一口径；持仓股已由体检覆盖，不重复。
+    watch_zone_hits, watch_stop_hits = [], []
+    try:
+        from .build import _codes_conf
+        from . import watchlist as _wl
+        from .mood import is_limit_up as _lu
+        _wc = _codes_conf("WATCH_CODES", "watch.json")
+        for code in _wc:
+            pc = prefixed(code)
+            if pc in held:
+                continue
+            v = q(pc) or {}
+            live = v.get("price")
+            if not live:
+                continue
+            krows = con.execute(
+                "SELECT date,o,c,h,l,v FROM klines WHERE code=? AND date<=? "
+                "ORDER BY date DESC LIMIT 60", (pc, date)).fetchall()
+            krows = [[d, o, c, h, l, vv]
+                     for d, o, c, h, l, vv in reversed(krows)]
+            if len(krows) < 30:
+                continue
+            prev = con.execute(
+                "SELECT c FROM klines WHERE code=? AND date<? "
+                "ORDER BY date DESC LIMIT 1", (pc, date)).fetchone()
+            if prev and prev[0] and _lu(pc[2:], krows[-1][2], prev[0]):
+                continue          # 涨停买不进，归连板通道
+            zone, stop, _box, _plan = _wl.zone_stop_for(krows)
+            nm = v.get("name") or ""
+            if live <= stop:
+                watch_stop_hits.append({
+                    "code": pc, "name": nm, "price": live,
+                    "pct": v.get("pct"), "stop": stop})
+            elif zone[0] <= live <= zone[1]:
+                watch_zone_hits.append({
+                    "code": pc, "name": nm, "price": live,
+                    "pct": v.get("pct"),
+                    "lo": zone[0], "hi": zone[1]})
+    except Exception as e:                       # noqa: BLE001
+        print(f"[intraday] 自选到点检查失败（不阻断）：{e}")
+    out["watch_zone"] = len(watch_zone_hits)
+    out["watch_stop"] = len(watch_stop_hits)
+
     out.update({"plan_n": len(plans), "in_zone": len(in_zone),
                 "broken": len(below), "stops": len(hold_hits),
                 "above": len(above), "limit": len(limit)})
@@ -266,6 +310,14 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
 
     # ---- 打扰纪律：只有下列情形才推 ----
     groups = []
+    if watch_zone_hits:
+        groups.append({
+            "title": "★ 自选进入买区（可下单）",
+            "hint": "自选票回落到关注区间；按各自止损纪律执行",
+            "rows": [((w["code"], w["name"], f'{w["price"]:.2f}',
+                       f'{w["pct"]:+.1f}%' if w["pct"] is not None else "—",
+                       f'{w["lo"]:.2f}~{w["hi"]:.2f}'),
+                      [_TXT, _TXT, _HL, _HL, _HL]) for w in watch_zone_hits]})
     if hold_hits:
         groups.append({
             "title": "⚠ 持仓触及止损", "hint": "按纪律处置，勿临场改判",
@@ -299,7 +351,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                       [_TXT, _TXT, _DN, _DN, _DN]) for p in below]})
 
     out["_groups"] = groups
-    if not groups and not sell_hits:
+    if not groups and not sell_hits and not watch_stop_hits:
         out["reason"] = "无实质变化（静默）"
         print("[intraday] 无实质变化 → 静默不发（不占推送额度）")
         return out
@@ -325,6 +377,20 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                            shtml, date=date, con=con, force=True)
         out["sell_pushed"] = bool(sr.get("sent"))
         print(f"[intraday] holding sell push={sr}")
+    # 自选破止损：同为确定性事故级信号，独立 force 推送（不被日熔丝吞掉）
+    if watch_stop_hits:
+        wgroup = [{
+            "title": "🚨 自选跌破止损（盘中）",
+            "hint": "关注票已破位——放弃买入计划；已持有者按止损纪律处理",
+            "rows": [((w["code"], w["name"], f'{w["price"]:.2f}',
+                       f'{w["pct"]:+.1f}%' if w["pct"] is not None else "—",
+                       f'止损 {w["stop"]:.2f}'), [_TXT, _TXT, _UP, _UP, _UP])
+                     for w in watch_stop_hits]}]
+        whtml = render_html(date, slot, now, wgroup, len(plans))
+        wr = notifier.push("watch_intraday", f"自选破止损 {date[5:]}",
+                           whtml, date=date, con=con, force=True)
+        out["watch_stop_pushed"] = bool(wr.get("sent"))
+        print(f"[intraday] watch stop push={wr}")
     head = "早盘校验" if slot == "am" else "尾盘机会"
     title = f"盘中{head} {date[5:]}"
     html = render_html(date, slot, now, groups, len(plans))

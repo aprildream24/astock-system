@@ -161,11 +161,13 @@ class TestAutoOpen(unittest.TestCase):
     def test_skips_when_less_than_one_lot(self):
         """高价股买不到 1 手 → 跳过，不许放松风控去凑单。"""
         con = _mkcon()
-        _price(con, "sh600001", 300.0)
-        _plan(con, "sh600001", 290.0, 310.0)
+        _price(con, "sh600001", 400.0)
+        _plan(con, "sh600001", 390.0, 410.0)
         log = executor.auto_open(con, DATE, now=NOW)
-        self.assertEqual([a for _, a, _ in log], ["SKIP"])
+        # 2026-09-21：资金不足 1 手升级为 REJECT（进「到价未成交」组告知用户）
+        self.assertEqual([a for _, a, _ in log], ["REJECT"])
         self.assertIn("1 手", log[0][2])
+        self.assertIn("资金不足", log[0][2])
 
     def test_max_holdings_respected(self):
         con = _mkcon()

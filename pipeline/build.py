@@ -947,6 +947,63 @@ def build(task="close", date=None, period_days=30):
         r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
                           force=_force_push())
         print(f"[build] push={r}")
+    # ★ 用户需求（2026-09-21「盘前、竞价、盘中都可以对我的自选、购买股票
+    # 提出操作建议」）：pre/auction 时点对持仓（去弱留强·换股建议）与自选
+    # （可买/破位/急跌）各推一条可执行建议——只在有实质动作时推，且各 mode
+    # 日熔丝一天一条，绝不刷屏。盘中已有 holding_intraday（force 卖出信号）。
+    if task in ("pre", "auction"):
+        _hold2 = load_holdings()
+        if _hold2:
+            try:
+                from . import executor as _ex2
+                _heval = _ex2.evaluate_real_holdings(con, date, _hold2)
+                _cur = con.execute(
+                    "SELECT code,name,action,buy_low,buy_high,stop,score "
+                    "FROM rec_picks WHERE date=?", (date,)).fetchall()
+                _cands = [{"code": x[0], "name": x[1], "action": x[2],
+                           "buy_low": x[3], "buy_high": x[4], "stop": x[5],
+                           "score": x[6]} for x in _cur]
+                for _c in _cands:
+                    _ind = con.execute(
+                        "SELECT sector FROM stock_industry WHERE code=?",
+                        (_c["code"],)).fetchone()
+                    if _ind:
+                        _c["sector"] = _ind[0]
+                _hhtml = notifier.render_holding_advice(_heval, _cands, date)
+                if any(x.get("exit_action") == "SELL" or x.get("swap_hint")
+                       for x in _heval):
+                    hr = notifier.push(
+                        "holding_check",
+                        f"持仓操作建议 {date[5:]}"
+                        + ("（盘前）" if task == "pre" else "（竞价）"),
+                        _hhtml, date=date, con=con, force=_force_push())
+                    print(f"[build] holding push={hr}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[build] pre/auction holding advice failed: {e}")
+        try:
+            from . import watchlist as _wl
+            _watch2 = _codes_conf("WATCH_CODES", "watch.json")
+            watch_advice = (_wl.build_watch_advice(
+                con, date, _watch2, [h["code"] for h in _hold2])
+                if _watch2 else [])
+        except Exception as e:  # noqa: BLE001
+            print(f"[build] pre/auction watch advice failed: {e}")
+            watch_advice = []
+        if watch_advice:
+            _act_watch = [a for a in watch_advice if a.get("action") in
+                          ("可买（回落至买区）", "已破位", "急跌", "已涨停")]
+            if _act_watch:
+                _wlines = ["# 自选股操作建议 " + date]
+                for a in _act_watch:
+                    ln = (f"- **{a.get('name', '')} {a['code']}**"
+                          f"（{a['action']}）：{a['advice']}")
+                    if a.get("dist_pct") is not None:
+                        ln += f"｜距买区 {a['dist_pct']:+.1f}%"
+                    _wlines.append(ln)
+                wr = notifier.push("watch_advice", f"自选股建议 {date[5:]}",
+                                   notifier.md2html("\n".join(_wlines)),
+                                   date=date, con=con, force=_force_push())
+                print(f"[build] watch push={wr}")
     # ★ 用户需求⑤：晚间原本分散的多条推送（AI叙事 / 模拟盘日结 / 真实持仓体检 /
     # 自选建议）合并为**一条**「晚间综合」在 review 时点发出，显著降低消息数量。
     # 仅在 review 时点汇总（close 时点只发主报告，避免重复）。

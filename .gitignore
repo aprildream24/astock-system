@@ -4,6 +4,7 @@ config/users.json
 config/holdings.json
 config/watch.json
 config/models.json
+config/sim.json
 
 # 数据与构建产物
 cache/

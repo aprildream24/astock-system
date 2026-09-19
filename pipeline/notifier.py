@@ -846,9 +846,10 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
     候选可买绿徽章、等回踩黄徽章。"""
     # ① 概要
     he = list(holdings_eval or [])
-    need = sum(1 for h in he if h.get("exit_action") == "SELL")
+    need = sum(1 for h in he if h.get("exit_action") == "SELL"
+               or h.get("swap_hint"))
     summary = (f"持仓 {len(he)} 只 · 需处理 {need} 只　｜ "
-               f"磨叽/震荡市里：弱者优先减、强势热板块优先换")
+               f"磨叽/震荡市里：弱者优先减、强势热板块优先换（去弱留强）")
     body = [f'<h3 style="margin:6px 0 2px">📋 持仓体检 {_esc(date)}</h3>',
             f'<p style="color:#9aa4b2;font-size:13px;margin:0 0 8px">'
             f'{_esc(summary)}</p>']
@@ -869,6 +870,10 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
         else:
             badge = _badge(verdict, "#5cc8e2")
         reasons = "；".join(h.get("exit_reasons") or []) or "—"
+        if h.get("swap_hint"):
+            reasons = (f'<span style="color:#e25c5c;font-weight:700">'
+                       f'{_esc(h["swap_hint"])}</span>'
+                       + (f"<br>{_esc(reasons)}" if reasons != "—" else ""))
         sector = h.get("sector") or "—"
         if h.get("sector_hot"):
             sector += " 🔥热"
