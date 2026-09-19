@@ -1237,6 +1237,13 @@ def push(mode, title, content, date=None, con=None,
     primary = cfg.get("primary_channel") or "wxpusher"
     if channels is None:
         channels = (primary,)
+    # 演练通道（用户 2026-09-19「全部在网络上运行一次，该推送的全部推送」）：
+    # ASTOCK_REHEARSAL=1 时账本键加 rehearsal_ 前缀（与正式推送的日级保险丝
+    # 完全隔离，周末实弹演练不影响周一正式推送），标题加【演练】；
+    # 标题的【任务】标签仍按原始 mode 渲染（【收盘】【Astra】等）。
+    _rh = os.environ.get("ASTOCK_REHEARSAL") == "1"
+    if _rh:
+        title = "【演练】" + str(title)
     # 推送开关（用户 2026-09-19「消息很多很乱」）：notify.json 里
     # "push_modes": {"pre": true, "auction": false, "intraday": true, ...}
     # 键匹配：精确 mode → 首段前缀（exec_auto 匹配 "exec"）→ 默认开。
@@ -1248,7 +1255,8 @@ def push(mode, title, content, date=None, con=None,
         return {"sent": False, "skipped": True, "mode": mode,
                 "reason": "push_modes 关闭"}
     codes = re.findall(r"\d{6}", content)
-    key = biz_key(mode, date, codes)
+    ledger_mode = ("rehearsal_" + str(mode)) if _rh else mode
+    key = biz_key(ledger_mode, date, codes)
     # 日级保险丝：同 mode 同日期已 sent → 拦截（force=True 可绕过）。
     # 触发端重复（GitHub cron 幽灵延迟）的最后一道防线——候选集合变了
     # biz_key 不同照样拦。失败/不确定的首次推送不拦，次日触发可补发。
@@ -1263,7 +1271,7 @@ def push(mode, title, content, date=None, con=None,
     #  而实现才是准的，这次以实现为准修数据模型）。
     # 当日正常推送时 date == today ⇒ ts 与旧行为逐字节一致，零影响。
     ts = f"{date} {datetime.now(_CST).strftime('%H:%M:%S')}"
-    if not force and _reconcile(con, key, mode, ts, True):
+    if not force and _reconcile(con, key, ledger_mode, ts, True):
         return {"sent": False, "dedup": True, "key": key}
     # 网页端入口：按钮式（旧版把 50+ 字符裸 URL 直接铺在正文末尾，
     # 手机上换行成一坨，是版面难看的一大来源）
@@ -1296,7 +1304,7 @@ def push(mode, title, content, date=None, con=None,
             # 单收件人 → 用户要求的纯净形态【任务】【Astra】；
             # 多收件人才在第二段带上账号名（保留"多账号分不清"的防混淆能力）
             src = f"{tag}·{a.get('name', '')}" if multi else tag
-            t = f"{title_prefix(mode, src)}{title}"
+            t = f"{"【演练】" if _rh else ""}{title_prefix(mode, src)}{title}"
             body = f"<p><small>📮 {tag} · {a.get('name', '')}</small></p>" + content
             st, detail = wxpusher.send(a, t, body)
             results[f"wxpusher:{a['name']}"] = {"status": st, "detail": detail}
@@ -1305,13 +1313,13 @@ def push(mode, title, content, date=None, con=None,
             s == "failed" for s in statuses)
         if all_failed and cfg.get("serverchan_key"):
             st2, d2 = _send_serverchan(cfg["serverchan_key"],
-                                       f"{title_prefix(mode, tag, '备用SC')}{title}", content)
+                                       f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, '备用SC')}{title}", content)
             results["serverchan"] = {"status": st2, "detail": d2,
                                      "role": "fallback"}
         if not wx_accounts or "wxpusher" not in channels:
             if "pushplus" in channels and cfg.get("pushplus_token"):
                 st, detail = _send_pushplus(cfg["pushplus_token"],
-                                            f"{title_prefix(mode, tag, 'PushPlus')}{title}",
+                                            f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
                                             f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
                 results["pushplus"] = {"status": st, "detail": detail}
                 # ⚠️ 2026-09-16 修（血案：PushPlus 是当前唯一通道，却无兜底）：
@@ -1352,14 +1360,14 @@ def push(mode, title, content, date=None, con=None,
     if os.path.exists(DIST_LEDGER):
         with open(DIST_LEDGER, "r", encoding="utf-8") as f:
             dist = json.load(f)
-    dist[key] = {"mode": mode, "ts": ts, "status": worst,
+    dist[key] = {"mode": ledger_mode, "ts": ts, "status": worst,
                  "channels": {c: r["status"] for c, r in results.items()}}
     os.makedirs(os.path.dirname(DIST_LEDGER), exist_ok=True)
     with open(DIST_LEDGER, "w", encoding="utf-8") as f:
         json.dump(dist, f, ensure_ascii=False, indent=1)
     try:
         con.execute("INSERT OR REPLACE INTO push_ledger VALUES(?,?,?,?,?,?,?)",
-                    (key, mode, ts, 1, worst,
+                    (key, ledger_mode, ts, 1, worst,
                      ",".join(results.keys()),
                      json.dumps({c: r["status"] for c, r in results.items()},
                                 ensure_ascii=False)))

@@ -560,6 +560,15 @@ def build(task="close", date=None, period_days=30):
     # 故在休市门与就绪门之前早退；可由 cron/自动化在每月 1 日、16 日触发。
     if task == "period":
         return _build_period(con, date, period_days)
+    # ★ 演练模式（2026-09-19 用户「全部在网络上运行一次，该推送的全部推送」）：
+    # ASTOCK_REHEARSAL=1 时锚定**最近交易日**（而非今天），让周末也能在 CI
+    # 上用真实数据走完 pre/auction/close/review 全链路并真实推送
+    # （notifier 侧 mode 加 rehearsal_ 前缀，与正式推送的日熔丝完全隔离，
+    # 不影响周一）。仅演练启用——正常调度的行为零变化。
+    if (os.environ.get("ASTOCK_REHEARSAL") == "1"
+            and task in ("pre", "auction", "close", "review")):
+        date = trade_calendar(con)[-1]
+        print(f"[build] 演练模式：锚定最近交易日 {date}")
     # ★ 2026-09-16 新增：休市日（周末 / 法定节假日）**第一道门**就早退。
     # 放在所有就绪判定之前，避免休市日还去做快照/K线检查、更避免
     # 四个任务各发一条告警（详见 _notify_holiday 注释）。

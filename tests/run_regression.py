@@ -71,6 +71,9 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           "test_decisive_20260919.py",
           # 2026-09-19 第二批：RS 超额动量因子（横截面动量，qlib Alpha158 同源）
           "test_rs_momentum.py",
+          # 2026-09-19 第三批：云端全链路演练通道（rehearsal_* 独立账本
+          # 通道 + 【演练】标题 + build 锚定最近交易日 + workflow 分支）。
+          "test_rehearsal.py",
           # 2026-09-18 新增：模拟盘自动运行（用户："是不是还有模拟盘没运行？
           # 按 100000 元起步开始自动运行"）。根因：executor 只有退出裁决、
           # 没有任何买入路径 ⇒ 永远空仓 ⇒ 无日志 ⇒ 一条推送都不发。

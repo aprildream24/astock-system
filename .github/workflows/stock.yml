@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "build 任务: pre | auction | close | review | site | intraday | watch-sync"
+        description: "build 任务: pre | auction | close | review | site | intraday | rehearsal | watch-sync"
         default: close
       slot:
         description: "intraday 专用: am=早盘校验(09:45) | pm=尾盘机会(14:40)"
@@ -240,6 +240,25 @@ jobs:
             # 它才会从 SITE_USERS 写入 config/users.json）——本步骤若执行
             # build --task site 会因 users.json 未写入而失败（2026-09-14 修复）
             echo "[site] 站点任务不在本步骤推送"
+            exit 0
+          fi
+          if [ "$TASK" = "rehearsal" ]; then
+            # 云端全链路演练（2026-09-19 用户：「全部在网络上运行一次，
+            # 该推送的信息全部推送一遍」）。锚定最近交易日用真实数据，
+            # notifier/build 走 ASTOCK_REHEARSAL 独立通道：
+            #   · mode 加 rehearsal_ 前缀 → 与正式推送的日熔丝完全隔离，
+            #     不影响周一；
+            #   · 标题加【演练】；
+            #   · force=1 便于反复演练（每次都真发）。
+            # 链式跑四种版式：盘前 → 竞价 → 收盘 → 晚间综合。
+            export ASTOCK_REHEARSAL=1
+            export ASTOCK_FORCE_PUSH=1
+            echo "[rehearsal] 全链路演练开始（锚定最近交易日）"
+            python -m pipeline.build --task pre
+            python -m pipeline.build --task auction
+            python -m pipeline.build --task close
+            python -m pipeline.build --task review
+            echo "[rehearsal] 四版式推送完成"
             exit 0
           fi
           if [ "$TASK" = "intraday" ]; then
