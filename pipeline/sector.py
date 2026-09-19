@@ -258,3 +258,35 @@ def sector_tag(c):
     if pct is None:
         return f"{sec}{mark}"
     return f"{sec}{pct:+.1f}%{mark}"
+
+
+def retreat_signal(con, date, sector, lookback=3):
+    """板块退潮检测（用户 2026-09-21：「考虑板块更换周期，不要才进去就暴跌」）。
+
+    口径（满足任一即判退潮）：
+      ① 最近 lookback 日累计涨幅 ≤ -3%（资金撤离中）；
+      ② 连续 ≥2 日下跌 且 最新一日 ≤ -1%（破位下台阶）。
+    数据不足（板块历史 <2 日）→ 不判退潮（None）——绝不因数据缺失误杀。
+    返回 {"retreat": bool|None, "streak_down": int, "cum": float, "detail": str}。
+    """
+    rows = con.execute(
+        "SELECT pct FROM sector_heat WHERE sector=? AND date<=? "
+        "ORDER BY date DESC LIMIT ?", (sector, date, lookback)).fetchall()
+    pcts = [r[0] for r in rows][::-1]          # 正序
+    if len(pcts) < 2:
+        return None
+    cum = sum(pcts)
+    streak = 0
+    for v in reversed(pcts):
+        if v < 0:
+            streak += 1
+        else:
+            break
+    if cum <= -3.0:
+        return {"retreat": True, "streak_down": streak, "cum": round(cum, 2),
+                "detail": f"近{len(pcts)}日累计 {cum:+.1f}%，资金撤离"}
+    if streak >= 2 and pcts[-1] <= -1.0:
+        return {"retreat": True, "streak_down": streak, "cum": round(cum, 2),
+                "detail": f"连跌{streak}日（最新 {pcts[-1]:+.1f}%），下台阶"}
+    return {"retreat": False, "streak_down": streak, "cum": round(cum, 2),
+            "detail": ""}

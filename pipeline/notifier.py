@@ -870,10 +870,19 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
         else:
             badge = _badge(verdict, "#5cc8e2")
         reasons = "；".join(h.get("exit_reasons") or []) or "—"
+        if h.get("sector_retreat") and "板块退潮" not in str(h.get("verdict", "")):
+            reasons = (f'<span style="color:#e0a93b">❄ 板块退潮：'
+                       f'{_esc(h["sector_retreat"])}</span><br>' + reasons)
         if h.get("swap_hint"):
             reasons = (f'<span style="color:#e25c5c;font-weight:700">'
                        f'{_esc(h["swap_hint"])}</span>'
                        + (f"<br>{_esc(reasons)}" if reasons != "—" else ""))
+        if h.get("phase") in ("已到期", "接近到期"):
+            _lc = "#e25c5c" if h.get("phase") == "已到期" else "#e0a93b"
+            reasons = (f'<span style="color:{_lc};font-weight:700">'
+                       f'⏰ 持有 {h.get("hold_days")}/'
+                       f'{h.get("hold_limit")} 个交易日（{h.get("phase")}）'
+                       f'</span><br>' + reasons)
         sector = h.get("sector") or "—"
         if h.get("sector_hot"):
             sector += " 🔥热"

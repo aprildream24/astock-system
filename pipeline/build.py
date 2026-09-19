@@ -708,6 +708,26 @@ def build(task="close", date=None, period_days=30):
               f"/{len(cands)} 只；前三 {' '.join(s['sector'] for s in hot_sectors[:3])}")
     except Exception as e:  # noqa: BLE001 — 板块标注失败不得阻断主链
         print(f"[build] 板块标注失败（不影响主链）：{type(e).__name__} {e}")
+    # ★ 板块退潮否决（2026-09-21 用户：「考虑板块更换周期，不要才进去就
+    # 暴跌」）：候选所属板块若处于退潮（3日累计≤-3% 或 连跌≥2日且最新≤-1%），
+    # 直接否决——个股再强也容易陪板块补跌。留痕进 skipped，绝不静默。
+    try:
+        from . import sector as _sec
+        _still = []
+        for c in cands:
+            sec = c.get("sector")
+            ret = _sec.retreat_signal(con, date, sec) if sec else None
+            if ret and ret.get("retreat"):
+                skipped.append({"code": c["code"], "pool": c.get("pool", "-"),
+                                "reason": f"板块退潮不接刀：{sec} "
+                                          f"{ret['detail']}"})
+                continue
+            _still.append(c)
+        if len(_still) < len(cands):
+            print(f"[build] 板块退潮否决 {len(cands) - len(_still)} 只")
+        cands = _still
+    except Exception as e:  # noqa: BLE001 — 退潮检测失败不得阻断主链
+        print(f"[build] 板块退潮检测失败（不影响主链）：{e}")
     # 行情档位 → 推荐配额（用户口径：行情好时不再限制 3 只，全部推荐）
     heat_level, pick_limit, per_sector, ladder_cap = scoring.market_heat(emo)
     if pick_limit is None:
@@ -971,7 +991,8 @@ def build(task="close", date=None, period_days=30):
                         _c["sector"] = _ind[0]
                 _hhtml = notifier.render_holding_advice(_heval, _cands, date)
                 if any(x.get("exit_action") == "SELL" or x.get("swap_hint")
-                       for x in _heval):
+                       or x.get("phase") in ("已到期", "接近到期")
+                       or x.get("sector_retreat") for x in _heval):
                     hr = notifier.push(
                         "holding_check",
                         f"持仓操作建议 {date[5:]}"

@@ -26,7 +26,7 @@ from datetime import datetime
 
 from . import core
 from . import trade_calendar as tc
-from .core import get_conn, today_str
+from .core import get_conn, today_str, trade_calendar
 
 RISK = {"max_pos_pct": 0.70, "max_holdings": 4, "max_daily_orders": 6,
         "min_order_amt": 1000.0, "max_order_amt": 60000.0,
@@ -304,6 +304,30 @@ def _sector_hot(con, date, industry):
     return industry in {r[0] for r in rows[:20]}
 
 
+def hold_limit_for(con, code, buy_date, default=20):
+    """该持仓的持有周期上限（交易日）：优先取买入日前后 ±4 天内系统推荐的
+    hold_days（快箱体 8 / N字二波 12 / 常规 20），找不到退回默认 20。"""
+    try:
+        rows = con.execute(
+            "SELECT date FROM rec_picks WHERE code=? "
+            "AND date BETWEEN date(?, '-4 day') AND date(?, '+4 day')",
+            (code, buy_date, buy_date)).fetchall()
+    except Exception:  # noqa: BLE001
+        return default
+    for (d,) in rows:
+        extra = con.execute(
+            "SELECT extra FROM candidate_snapshots WHERE code=? AND date=?",
+            (code, d)).fetchone()
+        if extra and extra[0]:
+            try:
+                hd = json.loads(extra[0]).get("hold_days")
+                if hd:
+                    return int(hd)
+            except Exception:  # noqa: BLE001
+                continue
+    return default
+
+
 def evaluate_real_holdings(con, date, holdings):
     """★ 用户需求（2026-09-18）：真实持仓体检 + 换股依据。
 
@@ -382,6 +406,35 @@ def evaluate_real_holdings(con, date, holdings):
         if ind and ind[0]:
             item["sector"] = ind[0]
             item["sector_hot"] = _sector_hot(con, date, ind[0])
+        # ★ 持有生命周期（用户 2026-09-21：「告诉我买入后持有几天」）：
+        # hold_days = 已持有交易日数；hold_limit = 推荐携带的周期上限
+        # （快箱体 8 / N字二波 12 / 常规 20）；phase = 持有中/接近到期/已到期。
+        from .trade_calendar import is_trade_day as _itd
+        bd = h.get("buy_date")
+        if bd and _itd(bd):
+            days = trade_calendar(con)
+            try:
+                i0, i1 = days.index(bd), -1
+                later = [d for d in days if d >= date]
+                if later:
+                    i1 = days.index(later[0])
+                hd = max(0, i1 - i0)
+                limit = hold_limit_for(con, code, bd)
+                item["hold_days"] = hd
+                item["hold_limit"] = limit
+                item["phase"] = ("已到期" if hd >= limit else
+                                 "接近到期" if hd >= limit * 0.8 else "持有中")
+            except ValueError:  # noqa: BLE001 — buy_date 不在日历（停牌穿越等）
+                pass
+        # ★ 持仓板块退潮预警（同日买入就暴跌的预防针）
+        if item.get("sector"):
+            try:
+                from .sector import retreat_signal
+                ret = retreat_signal(con, date, item["sector"])
+                if ret and ret.get("retreat"):
+                    item["sector_retreat"] = ret["detail"]
+            except Exception:  # noqa: BLE001
+                pass
         # 裁决文本
         if act == "SELL":
             item["verdict"] = ("建议减仓/离场" if (item["pnl_pct"] is not None
@@ -395,6 +448,30 @@ def evaluate_real_holdings(con, date, holdings):
                     ["现价跌破止损线"]
             else:
                 item["verdict"] = "持有观察"
+        # 生命周期/板块退潮 → 升级裁决与建议（放最后，优先级低于 SELL）：
+        #   · 已到期：红/黄提示按纪律了结（弱市=红）；
+        #   · 接近到期：黄灯预告，让用户有心理准备；
+        #   · 板块退潮：黄灯预警补跌风险（去弱留强的前置信号）。
+        # 生命周期/退潮原因**无条件追加**（SELL 行同样要显示到期/退潮提示）；
+        # verdict 升级仅在未触发 SELL 时（SELL 本身已是最高级处置）。
+        phase = item.get("phase")
+        pnl = item.get("pnl_pct")
+        if phase == "已到期":
+            item["exit_reasons"] = (item["exit_reasons"] or []) +                 [f"持有周期已到（{item.get('hold_days')}/"
+                 f"{item.get('hold_limit')} 个交易日），按纪律了结"]
+            if act != "SELL":
+                item["verdict"] = ("到期·建议了结" if (pnl is not None
+                                                     and pnl < 0)
+                                   else "到期·兑现观察")
+        elif phase == "接近到期":
+            item["exit_reasons"] = (item["exit_reasons"] or []) +                 [f"接近持有周期上限（{item.get('hold_days')}/"
+                 f"{item.get('hold_limit')} 日）"]
+            if act != "SELL" and item["verdict"] == "持有观察":
+                item["verdict"] = "接近到期·警惕"
+        if item.get("sector_retreat"):
+            item["exit_reasons"] = (item["exit_reasons"] or []) +                 [f"板块退潮：{item['sector_retreat']}（注意补跌）"]
+            if act != "SELL" and item["verdict"] == "持有观察":
+                item["verdict"] = "板块退潮·警惕"
     return out
 
 
