@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime as _dt
+from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -91,7 +91,8 @@ class TestAutoOpenIntraday(unittest.TestCase):
             pick=("sz002493", "荣盛石化", 14.0, 15.2))
         executor.ensure_account(con, today)
         log = executor.auto_open(con, today, slot="am",
-                                 now=_dt(2026, 9, 18, 10, 0))
+                                 now=_dt(2026, 9, 18, 10, 0,
+            tzinfo=_tz(_td(hours=8))))
         buys = [x for x in log if x[1] == "BUY"]
         self.assertTrue(buys, f"盘中应直接买入：{log}")
         code, act, detail = buys[0]
@@ -119,7 +120,8 @@ class TestAutoOpenIntraday(unittest.TestCase):
                 mock.patch.object(executor, "today_str",
                                   return_value=DATES[-1]):
             log = executor.run("auto", slot="am",
-                               now=_dt(2026, 9, 18, 10, 0))
+                               now=_dt(2026, 9, 18, 10, 0,
+            tzinfo=_tz(_td(hours=8))))
         sells = [x for x in log if x[1] == "SELL"]
         self.assertTrue(sells, "持续阴跌持仓应触发退出")
         # 回补：买入今日推荐（quiet 模式下只留 BUY/REJECT）
