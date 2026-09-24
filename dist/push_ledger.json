@@ -511,5 +511,45 @@
   "channels": {
    "pushplus": "sent"
   }
+ },
+ "c240e103b8a21795": {
+  "mode": "rehearsal_build_pre",
+  "ts": "2026-09-24 06:29:51",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "2721ae264c284a5c": {
+  "mode": "rehearsal_holding_check",
+  "ts": "2026-09-24 06:29:58",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "8752242156899eb9": {
+  "mode": "rehearsal_build_auction",
+  "ts": "2026-09-24 06:29:57",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "10c3437e8672158c": {
+  "mode": "rehearsal_build_close",
+  "ts": "2026-09-24 06:30:01",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "ad17aa16775b528e": {
+  "mode": "rehearsal_review",
+  "ts": "2026-09-24 06:30:09",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
  }
 }
