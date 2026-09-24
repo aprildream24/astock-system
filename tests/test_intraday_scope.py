@@ -281,12 +281,14 @@ class TestPushDiscipline(_LedgerIsolated):
         self.assertTrue(res["pushed"], f"计划多数跌破必须警示，实际 {res}")
         self.assertEqual(res["broken"], 3)
 
-    def test_am_silent_when_plan_holds(self):
+    def test_am_in_zone_pushes(self):
+        """2026-09-22 用户改需求：「但凡到达买点的股票无论什么时候都要给我
+        提示」——早盘在买区不再静默，立即推送。"""
         con = _mkcon()
         _plan(con, "sh600519", "贵州茅台", 20.0, 21.0)
         res, _, _ = _run("am", _snap([("600519", 20.5, 0.5)]), con=con,
                          now=_dt.datetime(2026, 9, 16, 9, 45, tzinfo=BJT))
-        self.assertFalse(res["pushed"])
+        self.assertTrue(res["pushed"], "早盘进买区必须提示（用户改需求）")
 
     def test_holding_stop_always_pushes(self):
         """持仓破止损是最高优先：即使 pm 无票进买区也必须推。"""

@@ -791,11 +791,23 @@ def holdings_rows(con, today, slot=None):
                     - datetime.fromisoformat(buy_date)).days
         except Exception:  # noqa: BLE001
             days = 0
+        note = ""
+        if buy_date == today and cost and price and abs(price / cost - 1) < 0.001:
+            # 用户 09-22「今日已经涨停，获利还是 0」：以涨停价买入时，
+            # 当日浮盈就是 0（T+1 明天才开始体现），必须写明而不是让人困惑
+            k = con.execute(
+                "SELECT c, h FROM klines WHERE code=? AND date=?",
+                (code, today)).fetchone()
+            prev = con.execute(
+                "SELECT c FROM klines WHERE code=? ORDER BY date DESC "
+                "LIMIT 1 OFFSET 1", (code,)).fetchone()
+            if k and prev and prev[0] and k[0] >= prev[0] * 1.095:
+                note = "今日以涨停/现价买入，当日浮盈 0 属正常；明日 T+1 起体现"
         out.append({"code": code, "name": _name_of(con, code), "qty": qty,
                     "cost": cost, "price": price,
                     "pnl_pct": (price / cost - 1) * 100 if cost else 0.0,
                     "days": days, "status": status, "status_reason": why,
-                    "amount": qty * price})
+                    "amount": qty * price, "note": note})
     return out
 
 

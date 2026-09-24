@@ -483,7 +483,15 @@ def render_card(d, first=False, head=None, accent=None):
               if zone[0] and zone[1] else "—")
     cap = f"{zone[1] * 1.03:.2f}" if zone[1] else "—"
     status = d.get("status", "等待确认")
+    # 双/三确认标注（2026-09-22「三确认基本强」）
+    if d.get("confirms") and d.get("confirms") >= 2:
+        status = (f"{status}·{d.get('confirms')}确认"
+                  f'{"(强)" if d.get("confirms") >= 3 else ""}')
     badge = _badge(status, STATUS_CLS.get(status, "#6b7280"))
+    if d.get("confirms") and d.get("confirms") >= 2:
+        # 双/三确认（用户 2026-09-22「标注好双、三确认，三确认基本强」）
+        head = (f'【{d.get("confirms")}确认{"（强）" if d.get("confirms") >= 3 else ""}】'
+                f'{head or ""}')
     if head is None:
         label = "首选观察" if first else "备选观察"
         if d.get("pool"):
@@ -568,12 +576,24 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
     n_pending = len(pending)
     n_ladder = len(ladder_next)
     heat_s = f' · 行情{_esc(meta.get("heat_level"))}' if meta.get("heat_level") else ""
-    out = [f'<div style="{_STY["h1"]}">收盘观察 {_esc(today)}</div>',
-           _summary_strip(meta, n_buy, n_pending, n_ladder),
-           f'<div style="{_STY["meta"]}">'
-           f'复核 {_esc(meta.get("reviewed", "—"))} 只 · '
-           f'数据日期 {_esc(meta.get("data_date", today))} · '
-           f'有效期至 {_esc(meta.get("valid_until", "—"))}{cov_s}{heat_s}</div>']
+    out = [f'<div style="{_STY["h1"]}">收盘观察 {_esc(today)}</div>']
+    # 今日仓位裁决（2026-09-22 用户：「告诉我今天能不能开仓、或者离场」）
+    if meta.get("verdict"):
+        _vc = {"可开仓": "#3fae6b", "轻仓试探": "#e0a93b",
+               "观望为主": "#e0a93b", "离场为主": "#ff6b5e",
+               "谨慎": "#9aa4b2"}.get(meta["verdict"], "#9aa4b2")
+        out.append(_card(
+            f'<span style="background:{_vc};color:#fff;border-radius:4px;'
+            f'padding:2px 10px;font-weight:700;font-size:14px">'
+            f'{_esc(meta["verdict"])}</span>'
+            f'<span style="color:#c4ccd6;font-size:13px;margin-left:8px">'
+            f'{_esc(meta.get("verdict_text", ""))}</span>',
+            border="#2b313d"))
+    out.append(_summary_strip(meta, n_buy, n_pending, n_ladder))
+    out.append(f'<div style="{_STY["meta"]}">'
+               f'复核 {_esc(meta.get("reviewed", "—"))} 只 · '
+               f'数据日期 {_esc(meta.get("data_date", today))} · '
+               f'有效期至 {_esc(meta.get("valid_until", "—"))}{cov_s}{heat_s}</div>')
     # 今日板块热度（2026-09-18 用户需求：推荐要标注板块热度）。
     # 放在最顶部而不是塞进每张卡：一张榜就能看出"钱在往哪个方向走"。
     hot = meta.get("hot_sectors") or []

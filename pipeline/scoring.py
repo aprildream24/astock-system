@@ -190,7 +190,7 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
 # 3.12 行情档位 → 推荐配额（2026-09-18 用户需求）
 # ---------------------------------------------------------------------------
 
-NORMAL_PICKS = 3        # 行情一般：维持原有 TOP3 纪律
+NORMAL_PICKS = 8        # 行情一般：用户 2026-09-22「不再限定 3 个，10 个以内，标注池别与高/中/低位」
 HOT_PICKS = None        # 行情好：**不限量**（None = 全部符合条件标的）
 
 
@@ -206,16 +206,18 @@ def market_heat(emo):
       · 行情一般/偏冷：维持 3 只不变（不因本次改动收紧，避免用户感知突变）。
     """
     if not emo or emo.get("score") is None:
-        return "未知", NORMAL_PICKS, 1, 2
+        return "未知", NORMAL_PICKS, 2, 2
     score = float(emo.get("score"))
     level = emo.get("label") or "未知"
     if not emo.get("qualified"):
-        return level, NORMAL_PICKS, 1, 2      # 覆盖不足 ⇒ 情绪分不用于加权
+        return level, NORMAL_PICKS, 2, 2      # 覆盖不足 ⇒ 情绪分不用于加权
     if score >= 76:                            # 亢奋
         return level, HOT_PICKS, 3, 4
     if score >= 60:                            # 偏热
         return level, HOT_PICKS, 2, 3
-    return level, NORMAL_PICKS, 1, 2
+    if score >= 30:                            # 均衡/偏冷：上限 8（用户 09-22）
+        return level, NORMAL_PICKS, 2, 2
+    return level, 5, 1, 1                      # 冰点：最多 5，宁缺毋滥
 
 
 

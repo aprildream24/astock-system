@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS push_ledger(
     biz_key TEXT PRIMARY KEY, mode TEXT, ts TEXT, dist_ok INTEGER,
     status TEXT DEFAULT 'pending', channel TEXT DEFAULT '',
     detail TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS confirm_log(
+    date TEXT, task TEXT, code TEXT, PRIMARY KEY(date, task, code));
 CREATE TABLE IF NOT EXISTS batch_meta(
     batch_id TEXT PRIMARY KEY, source TEXT, trade_date TEXT,
     source_time TEXT, fetched_at TEXT, field_caliber TEXT,

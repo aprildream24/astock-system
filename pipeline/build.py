@@ -331,6 +331,25 @@ def scan_all(con, date, bar_anchor=None):
                       "entry_hint": f"四态:{plan['state']}",
                       # 决断力证据（卡片展示：为什么它不磨叽）
                       "decisive": engines.decisive_stats(rows)})
+        # ★ 一字板标注（用户 2026-09-22「推送的大部分都是涨停而且一字」）：
+        # low==high 且涨停 = 全天无成交机会，当日起就买不进 → 只保留在
+        # 连板观察通道并显式标注，绝不进"当下可买"主推。
+        if c and c.get("pool") == "连板" and rows:
+            _l, _h = rows[-1][4], rows[-1][3]
+            _pc = rows[-1][2] / rows[-2][2] - 1 if rows[-2][2] else 0
+            if _l == _h and _pc >= 0.095:
+                c["yizi"] = True
+                c["yizi_note"] = "一字板，全天无买入机会"
+        # ★ 高/中/低位标签（用户 2026-09-22）：20 日区间位置
+        if c and rows:
+            _w = rows[-20:]
+            _hi = max(r[3] for r in _w)
+            _lo = min(r[4] for r in _w)
+            if _hi > _lo:
+                _pos = (c["close"] - _lo) / (_hi - _lo)
+                c["pos_label"] = ("低位" if _pos < 0.33 else
+                                  "中位" if _pos < 0.66 else "高位")
+                c["pos_pct"] = round(_pos * 100, 1)
         # ★ 决断门控（用户 2026-09-18：不要推荐磨磨唧唧的股票）。
         # 趋势票也必须"走得出来"——缓坡震荡（net 为正但一路回撤、eff 低）
         # 同样属于磨叽，剔除。标准慢牛（稳定爬升）eff 高 → 放行。
@@ -784,10 +803,15 @@ def build(task="close", date=None, period_days=30):
         env_w, winrates, sector_of=lambda c: c.get("sector") or c["pool"],
         limit=pick_limit, per_sector=per_sector, ladder_cap=ladder_cap)
     ladder_next = scoring.compute_top_picks(
-        [c for c in cands if c.get("action") == "次日竞价达标买"],
+        [c for c in cands if c.get("action") == "次日竞价达标买"
+         and not c.get("yizi")],
         env_w, winrates, sector_of=lambda c: c.get("sector") or c["pool"],
         limit=pick_limit if pick_limit is None else 2,
         per_sector=per_sector, ladder_cap=ladder_cap)
+    for c in cands:
+        if c.get("yizi") and c.get("action") == "次日竞价达标买":
+            skipped.append({"code": c["code"], "pool": "连板",
+                            "reason": "一字板无法买入，仅观察（次日竞价确认）"})
     for code in _stale:
         skipped.append({"code": code, "pool": "-",
                         "reason": "连续>=5日挂推荐位未兑现，自动移出（不让名单躺平）"})
@@ -814,7 +838,9 @@ def build(task="close", date=None, period_days=30):
                                   "buy_low", "buy_high", "stop",
                                   "entry_hint", "cycle_hint", "trend_state",
                                   "gate_evidence", "hot_pick",
-                                  "wait_days", "decisive", "rs_mom")},
+                                  "wait_days", "decisive", "rs_mom",
+                                  "pos_label", "pos_pct", "yizi",
+                                  "yizi_note")},
                                 ensure_ascii=False)))
     for s in skipped:                    # 333-五：未入选原因全量落库
         con.execute("INSERT OR REPLACE INTO candidate_snapshots VALUES(?,?,?,?,?,?,?,?)",
@@ -910,7 +936,16 @@ def build(task="close", date=None, period_days=30):
             print(f"[build] prev review failed: {e}")
         cov = LAST_SCAN_COVERAGE
         ut = cov.get("untradable", 0)
+        _cc = _confirm_counts(con, date)
+        for c in picks + ladder_next:
+            n_conf = _cc.get(c["code"], 0) + 1     # +1 = 本身收盘时点
+            c["confirms"] = n_conf
+            c["confirm_note"] = ({3: "三确认（强）",
+                                  2: "双确认"}.get(n_conf)
+                                 or f"{n_conf} 时点在列")
+        _vd_level, _vd_text = today_verdict(emo, mood)
         meta = {"reviewed": len(cands), "data_date": date,
+                "verdict": _vd_level, "verdict_text": _vd_text,
                 "valid_until": valid_until,
                 "coverage": cov.get("coverage"),
                 "universe": cov.get("universe"),
@@ -968,6 +1003,8 @@ def build(task="close", date=None, period_days=30):
         r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
                           force=_force_push())
         print(f"[build] push={r}")
+        if r.get("sent") and task in ("pre", "auction"):
+            _record_confirms(con, date, task, picks)
     # ★ 用户需求（2026-09-21「盘前、竞价、盘中都可以对我的自选、购买股票
     # 提出操作建议」）：pre/auction 时点对持仓（去弱留强·换股建议）与自选
     # （可买/破位/急跌）各推一条可执行建议——只在有实质动作时推，且各 mode
@@ -1114,6 +1151,47 @@ def _wait_days_map(con, date, window=5):
         by_code.setdefault(code, set()).add(d)
     latest = prev_days[-1]
     return {code: len(ds) for code, ds in by_code.items() if latest in ds}
+
+
+def today_verdict(emo, mood):
+    """今日仓位裁决（用户 2026-09-22：「告诉我今天能不能开仓、或者离场」）。
+
+    基于十维情绪（达标才有效）+ 炸板率，输出 (级别, 说明)：
+      可开仓 / 轻仓试探 / 观望为主 / 离场为主（持仓反弹减）。
+    情绪数据覆盖不足 → 「谨慎」——不装懂。"""
+    if not emo or not emo.get("qualified"):
+        return ("谨慎", "情绪数据覆盖不足，轻仓试探或观望，重仓需等数据达标")
+    s = float(emo.get("score"))
+    zb = (mood or {}).get("zhaban_rate")
+    zb_txt = f"，炸板率 {zb*100:.0f}%" if zb is not None else ""
+    if s >= 60 and not (zb is not None and zb >= 0.40):
+        return ("可开仓", f"情绪 {s:.0f} 分偏热{zb_txt}，按计划执行，"
+                          "止盈止损照旧")
+    if s >= 45:
+        if zb is not None and zb >= 0.40:
+            return ("观望为主", f"情绪 {s:.0f} 分但炸板率 {zb*100:.0f}% 偏高，"
+                                "不开新仓，持仓反弹减仓")
+        return ("轻仓试探", f"情绪 {s:.0f} 分中性{zb_txt}，只买进买区的，"
+                            "不追高")
+    return ("离场为主", f"情绪 {s:.0f} 分偏冷{zb_txt}，不开新仓，"
+                        "持仓反弹减仓、破位离场")
+
+
+def _record_confirms(con, date, task, picks):
+    """登记该时点推送过的候选，供收盘打「双确认/三确认」标签。"""
+    for c in picks:
+        con.execute("INSERT OR REPLACE INTO confirm_log VALUES(?,?,?)",
+                    (date, task, c["code"]))
+    con.commit()
+
+
+def _confirm_counts(con, date, tasks=("pre", "auction")):
+    ph = ",".join("?" * len(tasks))
+    rows = con.execute(
+        f"SELECT code, COUNT(DISTINCT task) FROM confirm_log "
+        f"WHERE date=? AND task IN ({ph}) GROUP BY code",
+        (date, *tasks)).fetchall()
+    return {code: n for code, n in rows}
 
 
 def _force_push():

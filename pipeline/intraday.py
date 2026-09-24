@@ -325,9 +325,10 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                        f'{h["pct"]:+.1f}%' if h["pct"] is not None else "—",
                        f'止损 {h["stop"]:.2f}'), [_TXT, _TXT, _UP, _UP, _UP])
                      for h in hold_hits]})
-    if slot == "pm" and in_zone:
+    if in_zone:
+        _zh = "尾盘" if slot == "pm" else "早盘"
         groups.append({
-            "title": "● 尾盘进入买区（可当日下单）",
+            "title": f"● {_zh}进入买区（可当日下单）",
             "hint": "现价已在计划买区内；收盘前有效，次日可卖",
             "rows": [((p["code"], p["name"], f'{p["price"]:.2f}',
                        f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",

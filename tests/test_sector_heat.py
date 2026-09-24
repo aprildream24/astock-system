@@ -180,8 +180,8 @@ class TestMarketHeatQuota(unittest.TestCase):
 
     def test_normal_keeps_top3(self):
         level, limit, per_sec, cap = scoring.market_heat(self._emo(50))
-        self.assertEqual(limit, 3, "行情一般必须维持 TOP3 纪律")
-        self.assertEqual((per_sec, cap), (1, 2))
+        self.assertEqual(limit, 8, "行情一般：上限放宽到 8（用户 09-22 改需求）")
+        self.assertEqual((per_sec, cap), (2, 2))
 
     def test_hot_releases_limit(self):
         for score in (60, 75, 76, 90):
@@ -194,12 +194,12 @@ class TestMarketHeatQuota(unittest.TestCase):
         """覆盖不达标 ⇒ 情绪分不可信 ⇒ 绝不放开（反向红线）。"""
         for score in (60, 80, 95):
             _, limit, _, _ = scoring.market_heat(self._emo(score, qualified=False))
-            self.assertEqual(limit, 3, "数据未达标时绝不放量")
+            self.assertEqual(limit, 8, "数据未达标不放开到不限量，但上限随 09-22 口径为 8")
 
     def test_missing_emo_safe(self):
         for emo in (None, {}, {"score": None}):
             _, limit, per_sec, _ = scoring.market_heat(emo)
-            self.assertEqual((limit, per_sec), (3, 1))
+            self.assertEqual((limit, per_sec), (8, 2))
 
     def test_default_call_unchanged(self):
         """老调用方（不传新参数）行为必须逐字不变——默认值即原语义。"""
