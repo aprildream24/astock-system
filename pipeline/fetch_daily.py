@@ -141,6 +141,23 @@ def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False, premarket=False):
     # 市场准入前置（#486）：科创板/北交所等不可交易代码不发请求——省一半无效抓取
     from . import mktfilter
     codes = [c for c in codes if mktfilter.tradable(c)]
+    # ★ 2026-09-25 修（用户「跟进的股票缺乏数据」）：**自选+持仓强制纳入**
+    # 抓取集——它们哪怕不在当日快照（新上市/停牌/快照分页遗漏），也必须有
+    # K线，否则自选建议永远「数据不足」。已同步的只补尾巴，成本可控。
+    try:
+        from .build import _codes_conf, load_holdings
+        _follow = set(_codes_conf("WATCH_CODES", "watch.json"))
+        _follow |= {h.get("code") for h in load_holdings() if h.get("code")}
+        _bare = {(c[2:] if c[:2] in ("sh", "sz") else c) for c in _follow}
+        for c in sorted(_bare):
+            if c not in codes:
+                codes.append(c)
+        if _bare - set(codes):
+            pass
+        codes = sorted(set(codes))
+        print(f"[fetch] 跟进强制纳入后: {len(codes)} 只")
+    except Exception as e:  # noqa: BLE001
+        print(f"[fetch] 跟进纳入失败（不影响主流程）: {e}")
     # 增量同步：已同步到最近交易日的只补近端尾巴（INC_DAYS 根），
     # 新票/断档票才全量拉——依托历史库做增量，不每轮重拉全部历史
     #

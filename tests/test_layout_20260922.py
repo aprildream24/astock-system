@@ -34,7 +34,7 @@ class TestHoldingLayout(unittest.TestCase):
         self.assertIn("成本", html)
         self.assertIn("现价", html)
         self.assertIn("止损", html)
-        self.assertIn("浮盈", html)
+        self.assertIn("12.85", html)  # 现价行
 
     def test_weak_reasons_prominent(self):
         html = notifier.render_holding_advice([dict(H, swap_hint="持续走弱",
@@ -42,7 +42,8 @@ class TestHoldingLayout(unittest.TestCase):
                                                     hold_days=7,
                                                     hold_limit=8)], [],
                                               "d")
-        for frag in ("持续走弱", "⏰ 持有 7/8", "接近到期"):
+        for frag in ("持续走弱", "持有周期", "7/8 日（接近到期）",
+                     "接近到期"):
             self.assertIn(frag, html)
 
 

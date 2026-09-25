@@ -290,3 +290,31 @@ def retreat_signal(con, date, sector, lookback=3):
                 "detail": f"连跌{streak}日（最新 {pcts[-1]:+.1f}%），下台阶"}
     return {"retreat": False, "streak_down": streak, "cum": round(cum, 2),
             "detail": ""}
+
+
+def sector_state(con, date, sector, temp=None, pct=None):
+    """板块所处阶段（用户 2026-09-22：「是不是主线高潮板块、接力板块，
+    还是退潮的」）。返回 (state, detail)：
+      退潮   —— retreat_signal 命中（资金撤离/下台阶），**禁止高位接力**
+      高潮   —— 🔥强 且 当日涨幅 ≥2%（情绪顶部特征，只减不加）
+      强势   —— 🔥强 但涨幅温和（主升/接力可参与）
+      启动   —— 今日 +1% 以上但还不算强（低位启动，高低切换受益者）
+      低温   —— ❄️冷或平（回避）
+    数据缺失 → ("未知", "")——不装懂。"""
+    ret = retreat_signal(con, date, sector)
+    if ret and ret.get("retreat"):
+        return "退潮", ret["detail"]
+    if temp is None:
+        row = con.execute(
+            "SELECT pct FROM sector_heat WHERE sector=? AND date=?",
+            (sector, date)).fetchone()
+        pct = row[0] if row else None
+    if pct is None:
+        return "未知", ""
+    if pct >= 2.0 and (temp or "") == "🔥强":
+        return "高潮", f"当日 {pct:+.1f}%，情绪顶部特征——只减不加，严禁高位接力"
+    if (temp or "") == "🔥强":
+        return "强势", f"当日 {pct:+.1f}%，主升/接力可参与"
+    if pct >= 1.0:
+        return "启动", f"当日 {pct:+.1f}%，低位启动——高低位切换的受益方向"
+    return "低温", f"当日 {pct:+.1f}%，回避"

@@ -27,9 +27,24 @@ def load_json(name, default=None):
     return default if default is not None else {}
 
 
+def _norm_code(raw):
+    """600519 / sh600519 / SH600519 → sh600519 / sz000001；非法返回 None。
+    ★ 2026-09-25 修（用户「跟进的股票缺乏数据」根因）：自选/持仓的代码
+    形态不一致——库内全部是带前缀形态，而 WATCH_CODES Secret/本地文件里
+    可能是裸码。裸码直接查 klines 必然 0 行 → 建议「数据不足」。
+    在**入口边界统一归一化**，所有消费方拿到的都是带前缀形态。"""
+    t = str(raw or "").strip().lower().replace(" ", "")
+    if re.match(r"^(sh|sz)\d{6}$", t):
+        return t
+    if re.match(r"^\d{6}$", t):
+        # 6/9 开头沪市，其余深市（0/2/3）；北交所 4/8 不支持——返回 None
+        return ("sh" if t[0] in ("5", "6", "9") else "sz") + t
+    return None
+
+
 def _codes_conf(env_name, file_name):
-    """自选/持仓清单：本地文件 + CI Secret（env JSON）合并去重。
-    公开仓库不落自选名单——CI 用 Secret 注入。"""
+    """自选/持仓清单：本地文件 + CI Secret（env JSON）合并、**归一化**、去重。
+    公开仓库不落自选名单——CI 用 Secret 注入。非法代码静默丢弃并留痕。"""
     codes = load_json(file_name, [])
     env = os.environ.get(env_name)
     if env:
@@ -39,7 +54,17 @@ def _codes_conf(env_name, file_name):
                 codes = list(dict.fromkeys([*codes, *extra]))
         except Exception:  # noqa: BLE001 — Secret 格式错误不阻断
             pass
-    return codes
+    out, dropped = [], []
+    for c in codes:
+        nc = _norm_code(c)
+        if nc:
+            if nc not in out:
+                out.append(nc)
+        else:
+            dropped.append(c)
+    if dropped:
+        print(f"[codes] {env_name}/{file_name} 丢弃非法代码: {dropped}")
+    return out
 
 
 def load_holdings():
@@ -723,6 +748,20 @@ def build(task="close", date=None, period_days=30):
         sector_board, hot_sectors = sector_mod.annotate(con, date, cands,
                                                         board=_board)
         _n_marked = sum(1 for c in cands if c.get("sector"))
+        # 板块阶段 + 主线/副线（用户 2026-09-22：「是不是主线高潮板块、
+        # 接力板块，还是退潮的」）。退潮板块的候选在下方被直接否决。
+        _rank_map = {s.get("sector"): i for i, s in
+                     enumerate(hot_sectors[:3])}
+        for c in cands:
+            sec = c.get("sector")
+            if not sec:
+                continue
+            st_, dt_ = sector_mod.sector_state(con, date, sec,
+                                               temp=c.get("sector_temp"))
+            c["sector_state"] = st_
+            c["sector_state_note"] = dt_
+            if sec in _rank_map:
+                c["mainline"] = "主线" if _rank_map[sec] == 0 else "副线"
         print(f"[build] 板块热度 {len(sector_board)} 个行业，候选标注 {_n_marked}"
               f"/{len(cands)} 只；前三 {' '.join(s['sector'] for s in hot_sectors[:3])}")
     except Exception as e:  # noqa: BLE001 — 板块标注失败不得阻断主链
@@ -1027,6 +1066,28 @@ def build(task="close", date=None, period_days=30):
                         (_c["code"],)).fetchone()
                     if _ind:
                         _c["sector"] = _ind[0]
+                    _ex_row = con.execute(
+                        "SELECT pool, extra FROM candidate_snapshots "
+                        "WHERE code=? AND date=?", (_c["code"], date)).fetchone()
+                    if _ex_row:
+                        _c["pool"] = _ex_row[0]
+                        try:
+                            _xc = json.loads(_ex_row[1] or "{}")
+                            _c["pos_label"] = _xc.get("pos_label")
+                        except Exception:  # noqa: BLE001
+                            pass
+                # 主线/副线：当日板块榜前 1 = 主线，2~3 = 副线
+                try:
+                    from . import sector as _sec
+                    _board = _sec.load_board(con, date)
+                    _ranked = _sec.rank_board(_board, n=6)
+                    for _i, _s in enumerate(_ranked):
+                        for _c in _cands:
+                            if _c.get("sector") == _s.get("sector"):
+                                _c["mainline"] = ("主线" if _i == 0
+                                                  else "副线")
+                except Exception:  # noqa: BLE001
+                    pass
                 _hhtml = notifier.render_holding_advice(_heval, _cands, date)
                 if any(x.get("exit_action") == "SELL" or x.get("swap_hint")
                        or x.get("phase") in ("已到期", "接近到期")

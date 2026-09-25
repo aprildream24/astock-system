@@ -529,6 +529,13 @@ def render_card(d, first=False, head=None, accent=None):
                f'<span style="color:#ff8a80;font-weight:700">'
                f'{d["stop"]:.2f}</span>' if d.get("stop") else "—")
         + (_row("板块热度", _sector_row_html(d)) if d.get("sector") else "")
+        + (_row("板块阶段", f'<span style="font-weight:700">'
+                f'{_esc(d.get("mainline") or "非主线")} · '
+                f'{_esc(d.get("sector_state") or "—")}</span>'
+                + (f'<span style="color:#9aa0a6;font-size:12px"> — '
+                   f'{_esc(d.get("sector_state_note"))}</span>'
+                   if d.get("sector_state_note") else ""))
+          if d.get("sector_state") else "")
         # 决断力证据（2026-09-19「要么上要么下」）：让读者看见它为什么
         # 不属于磨叽票——20 日净位移与方向效率，绿=达标。
         + (_row("决断力(20日)",
@@ -889,56 +896,45 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
             badge = _badge(verdict, "#e0a93b")
         else:
             badge = _badge(verdict, "#5cc8e2")
-        reasons = []
+        rows = [_row("现价", f'{_esc(h.get("close") or "—")}（'
+                     f'<span style="color:{pnl_col};font-weight:700">'
+                     f'{pnl_txt}</span>）', v_bold=True),
+                _row("成本", _esc(h.get("buy_price") or "—")),
+                _row("止损", _esc(h.get("stop") or "—")),
+                _row("板块", _esc((h.get("sector") or "—")
+                                  + (" 🔥热" if h.get("sector_hot") else "")
+                                  + (" ❄️冷" if h.get("sector")
+                                     and not h.get("sector_hot") else ""))),
+                _row("主线", _esc(h.get("mainline") or "—"))]
+        if h.get("phase"):
+            rows.append(_row("持有周期",
+                             f'{h.get("hold_days")}/{h.get("hold_limit")} 日'
+                             f'（{_esc(h.get("phase"))}）'))
+        operate = h.get("operate") or ""
+        inner = (_table(f"<tr><td><span style='font-size:15px;font-weight:700;"
+                        f"color:#e8eaed'>{_esc(h.get('name') or h['code'])}"
+                        f"</span><span style='color:#8a93a3;font-size:12px;"
+                        f"margin-left:6px'>{_esc(h['code'])}</span></td>"
+                        f'<td align="right" valign="top">{badge}</td></tr>'))
+        if operate:
+            inner += (f'<div style="background:#3a1416;border:1px solid #7a2226;'
+                      f'border-radius:6px;padding:6px 10px;margin:6px 0;'
+                      f'color:#ff8a80;font-weight:700;font-size:13.5px">'
+                      f'▶ 操作：{_esc(operate)}</div>')
+        inner += "".join(rows)
+        notes = []
         if h.get("swap_hint"):
-            reasons.append(f'<span style="color:#ff6b5e;font-weight:700">'
-                           f'{_esc(h["swap_hint"])}</span>')
-        if h.get("phase") in ("已到期", "接近到期"):
-            _lc = "#ff6b5e" if h.get("phase") == "已到期" else "#e0a93b"
-            reasons.append(f'<span style="color:{_lc};font-weight:700">'
-                           f'⏰ 持有 {h.get("hold_days")}/'
-                           f'{h.get("hold_limit")} 个交易日（{h.get("phase")}）'
-                           f'</span>')
-        if h.get("sector_retreat"):
-            reasons.append(f'<span style="color:#e0a93b">❄ 板块退潮：'
-                           f'{_esc(h["sector_retreat"])}</span>')
+            notes.append(f'<span style="color:#ff6b5e;font-weight:700">'
+                         f'{_esc(h["swap_hint"])}</span>')
         for r in h.get("exit_reasons") or []:
-            reasons.append(_esc(str(r)))
-        zone = h.get("zone")
-        ztxt = f"{zone[0]}~{zone[1]}" if zone else "—"
-        bp, cl = h.get("buy_price"), h.get("close")
-        sector = h.get("sector") or "—"
-        if h.get("sector_hot"):
-            sector += " 🔥热"
-        elif h.get("sector"):
-            sector += " ❄️冷"
-        row1 = (f'<td><span style="font-size:15px;font-weight:700;'
-                f'color:#e8eaed">{_esc(h.get("name") or h["code"])}</span>'
-                f'<span style="color:#8a93a3;font-size:12px;margin-left:6px">'
-                f'{_esc(h["code"])}</span></td>'
-                f'<td align="right" valign="top">{badge}</td>')
-        row2 = (f'<td style="color:#8a93a3">成本</td>'
-                f'<td align="right">{_esc(bp)}</td>'
-                f'<td style="color:#8a93a3">现价</td>'
-                f'<td align="right">{_esc(cl)}</td>'
-                f'<td style="color:#8a93a3">浮盈</td>'
-                f'<td align="right" style="color:{pnl_col};font-weight:700">'
-                f'{pnl_txt}</td>')
-        row3 = (f'<td style="color:#8a93a3">止损</td>'
-                f'<td align="right">{_esc(h.get("stop") or "—")}</td>'
-                f'<td style="color:#8a93a3">板块</td>'
-                f'<td align="right" style="font-size:12px">{_esc(sector)}</td>')
-        inner = (_table(f"<tr>{row1}</tr>")
-                 + _table(f"<tr>{row2}</tr>")
-                 + _table(f"<tr>{row3}</tr>"))
-        if reasons:
+            notes.append(_esc(str(r)))
+        if notes:
             inner += ('<div style="font-size:12.5px;color:#c4ccd6;'
                       'margin-top:6px;border-top:1px dashed #2b313d;'
-                      'padding-top:6px">' + "<br>".join(reasons) + "</div>")
+                      'padding-top:6px">' + "<br>".join(notes) + "</div>")
         cards.append(_card(inner, border="#2b313d"))
     if cards:
-        body.append(f'<h4 style="margin:12px 0 4px">📋 持仓体检（一票一卡）'
-                    f'</h4>')
+        body.append('<h4 style="margin:12px 0 4px">📋 持仓体检（一票一卡）</h4>')
         body.extend(cards)
     else:
         body.append('<p style="color:#8a93a3">今日无登记持仓</p>')
@@ -963,22 +959,25 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
         is_buy = act in ("现在买", "可买", "小仓试", "次日竞价达标买")
         badge = _badge(act, "#3fae6b" if is_buy else "#e0a93b")
         eff = c.get("eff_score") or c.get("score") or "—"
+        _tag = " · ".join(x for x in (
+            c.get("pool") or "—", c.get("pos_label") or "",
+            c.get("mainline") or "") if x)
         crows.append(
             "<tr>"
             f'<td><b>{rank}</b></td>'
             f'<td><b>{_esc(c.get("name") or c.get("code", ""))}</b><br>'
             f'<span style="color:#8a93a3;font-size:12px">'
-            f'{_esc(c.get("code", ""))}</span></td>'
+            f'{_esc(c.get("code", ""))}　{_esc(_tag)}</span></td>'
             f"<td>{badge}</td>"
             f'<td>{_esc(eff)}</td>'
             f'<td>{_fmt2(c.get("buy_low"))}~{_fmt2(c.get("buy_high"))}</td>'
             f'<td>{_fmt2(c.get("stop"))}</td>'
-            f'<td style="font-size:12px">{_esc(c.get("sector") or c.get("pool") or "—")}</td>'
             "</tr>")
     if crows:
         cand_tbl = _table(
-            "<tr><th>#</th><th>候选</th><th>动作</th><th>综合分</th>"
-            "<th>买区</th><th>止损</th><th>板块</th></tr>" + "".join(crows))
+            "<tr><th>#</th><th>候选（池别·位置·主线）</th><th>动作</th>"
+            "<th>综合分</th><th>买区</th><th>止损</th></tr>"
+            + "".join(crows))
         body.append(_card(cand_tbl, border="#2b313d"))
     else:
         body.append('<p style="color:#8a93a3">今日无换股候选</p>')

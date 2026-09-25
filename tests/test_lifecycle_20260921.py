@@ -140,17 +140,20 @@ class TestRenderLifecycle(unittest.TestCase):
     def test_rows_render_lifecycle_and_retreat(self):
         h = {"code": "sz002493", "name": "荣盛石化", "close": 12.85,
              "pnl_pct": -1.61, "verdict": "持有观察", "phase": "已到期",
-             "hold_days": 8, "hold_limit": 8,
+             "hold_days": 8, "hold_limit": 8, "stop": 12.08,
              "sector_retreat": "近3日累计 -3.5%，资金撤离",
-             "exit_reasons": []}
+             "exit_reasons": ["持有周期已到（8/8 个交易日），按纪律了结",
+                              "板块退潮：近3日累计 -3.5%，资金撤离（注意补跌）"]}
         html = notifier.render_holding_advice([h], [], "2026-09-18")
-        self.assertIn("⏰ 持有 8/8 个交易日（已到期）", html)
+        # 2026-09-22 新版式：周期作为独立行（持有 X/Y 日 + 阶段）
+        self.assertIn("持有周期", html)
+        self.assertIn("8/8 日（已到期）", html)
         self.assertIn("板块退潮：近3日累计", html)
         # 无字段的老数据不渲染这些行
         html2 = notifier.render_holding_advice(
             [{"code": "x", "name": "x", "close": 1, "verdict": "持有观察"}],
             [], "d")
-        self.assertNotIn("⏰ 持有", html2)
+        self.assertNotIn("持有周期", html2)
 
 
 class TestBuildVetoWiring(unittest.TestCase):

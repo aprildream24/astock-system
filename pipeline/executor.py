@@ -472,6 +472,27 @@ def evaluate_real_holdings(con, date, holdings):
             item["exit_reasons"] = (item["exit_reasons"] or []) +                 [f"板块退潮：{item['sector_retreat']}（注意补跌）"]
             if act != "SELL" and item["verdict"] == "持有观察":
                 item["verdict"] = "板块退潮·警惕"
+        # ★ 一眼可执行的操作指令（用户 2026-09-22：「根本无法区分到底该
+        # 怎么操作」）：每只持仓一行明确动作，渲染为卡片第一行。
+        zh = item.get("zone")
+        zhi = f"{zh[1]:.2f}" if zh and zh[1] else "?"
+        stp = f"{item['stop']:.2f}" if item.get("stop") else "?"
+        pnl = item.get("pnl_pct")
+        if item.get("swap_hint"):
+            item["operate"] = "卖出换股：反弹至买区上沿附近减仓，破止损无条件走"
+        elif item.get("exit_action") == "SELL":
+            item["operate"] = (f"减仓/离场：反弹至 {zhi} 附近分批减，"
+                               f"破 {stp} 无条件走")
+        elif item.get("phase") == "已到期":
+            item["operate"] = ("持有周期已到：明日按开盘情况了结，不恋战"
+                               if pnl is not None and pnl < 0
+                               else "持有周期已到：强势可留到破位再走")
+        elif item.get("sector_retreat"):
+            item["operate"] = "板块退潮：反弹减仓，切换到强势主线"
+        elif item.get("stop"):
+            item["operate"] = f"持有观察：破 {stp} 无条件离场"
+        else:
+            item["operate"] = "持有观察"
     return out
 
 

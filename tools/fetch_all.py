@@ -38,8 +38,29 @@ def main():
     con = get_conn()
     today = today_str()
     universe = fetch_universe()
-    guard_snapshot(universe, today, con, partial=True)
-    codes = [c for c in sorted(universe.keys()) if mktfilter.tradable(c)]
+    # ★ 2026-09-25 修：EM 快照被限流时 universe 可能为空——旧逻辑直接空转
+    # 还误报「已全部同步」。降级为「自选+持仓定向补K线」模式：快照虽挂，
+    # 腾讯/新浪K线源仍可用，跟进的股票必须追新。
+    if not universe:
+        log("EM 快照不可用 → 降级定向模式（自选+持仓+库内全量代码）")
+        held = {r[0] for r in con.execute(
+            "SELECT DISTINCT code FROM klines WHERE code!='sh000001'")}
+        held = {c for c in held if mktfilter.tradable(c[2:])}
+        try:
+            from .build import _codes_conf, load_holdings
+            _follow = set(_codes_conf("WATCH_CODES", "watch.json"))
+            _follow |= {h.get("code") for h in load_holdings()
+                        if h.get("code")}
+            held |= {c for c in _follow
+                     if mktfilter.tradable(c[2:] if c[:2] in ("sh", "sz")
+                                           else c)}
+        except Exception as e:  # noqa: BLE001
+            log(f"自选/持仓清单读取失败（不影响已有库）: {e}")
+        codes = sorted(held)
+        universe = {}
+    else:
+        guard_snapshot(universe, today, con, partial=True)
+        codes = [c for c in sorted(universe.keys()) if mktfilter.tradable(c)]
     import datetime as _dt
     _d = _dt.date.fromisoformat(today)
     while not hol.is_trade_day(_d.isoformat()):
