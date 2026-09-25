@@ -472,6 +472,16 @@ def _card(inner, border="#2b313d", accent=None):
             f'padding:11px 12px;margin:10px 0;background:#1d222b">{inner}</div>')
 
 
+def _confirm_badge(count):
+    """确认标签：0-1=首推🆕，2=双确认●，3+=三确认✅（最强）。"""
+    if not count or count < 2:
+        return '<span style="color:#5cc8e2">🆕 首推</span>'
+    if count >= 3:
+        return ('<span style="color:#3fae6b;font-weight:700">'
+                '✅ 三确认（连续3天推荐，最强）</span>')
+    return '<span style="color:#e0a93b;font-weight:700">● 双确认（连续2天推荐）</span>'
+
+
 def render_card(d, first=False, head=None, accent=None):
     """N10 统一标的卡片（表格化）。顺序：状态 → 名称 → 价格矩阵 → 失效 → 理由。
 
@@ -536,11 +546,8 @@ def render_card(d, first=False, head=None, accent=None):
                    f'{_esc(d.get("sector_state_note"))}</span>'
                    if d.get("sector_state_note") else ""))
           if d.get("sector_state") else "")
-        + ((_row("确认次数", f'<span style="font-weight:700;'
-                 f'color:{"#3fae6b" if d.get("confirms") >= 3 else "#e0a93b"}">'
-                 f'{"✅ 三确认（连续3天推荐，最强）" if d.get("confirms") >= 3 else "● 双确认（连续2天推荐）"}'
-                 f'</span>'))
-          if d.get("confirms") and d.get("confirms") >= 2 else "")
+        + ((_row("推荐次数", _confirm_badge(d.get("confirms", 0))))
+          if d.get("confirms") is not None else "")
         # 决断力证据（2026-09-19「要么上要么下」）：让读者看见它为什么
         # 不属于磨叽票——20 日净位移与方向效率，绿=达标。
         + (_row("决断力(20日)",
