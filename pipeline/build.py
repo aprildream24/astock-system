@@ -1179,6 +1179,8 @@ def build(task="close", date=None, period_days=30):
                 cands = [{"code": r[0], "name": r[1], "action": r[2],
                          "buy_low": r[3], "buy_high": r[4], "stop": r[5],
                          "score": r[6]} for r in cur]
+                _held_set = {h["code"] for h in _hold}
+                cands = [c for c in cands if c["code"] not in _held_set]
                 for c in cands:
                     ind = con.execute(
                         "SELECT sector FROM stock_industry WHERE code=?",

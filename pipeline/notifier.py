@@ -554,13 +554,12 @@ def render_card(d, first=False, head=None, accent=None):
                 f'<span style="color:#4ecf8e;font-weight:700">'
                 f'净移{d["decisive"]["net"]:+.1f}% · 效率{d["decisive"]["eff"]:.2f}'
                 f'</span>') if d.get("decisive") else "")
-        + (_row("高位/中位/低位",
+        + (_row("20日位置",
                 f'<span style="font-weight:700">'
                 f'{_esc(d.get("pos_label") or "—")}'
                 f'（区间 {_esc(str(d.get("pos_pct") or ""))}%）'
                 f'</span>') if d.get("pos_label") else "")
-        + (_row("推荐次数", _confirm_badge(d.get("confirms", 0)))
-           if d.get("confirms") is not None else "")
+        + _row("推荐次数", _confirm_badge(d.get("confirms") or 1))
         + (_row("等待兑现", f'<span style="color:#e6a700;font-weight:700">'
                 f'已挂榜 {d["wait_days"]} 日，再不动自动移出'
                 f'</span>') if (d.get("wait_days") or 0) >= 2 else "")
