@@ -530,7 +530,7 @@
  },
  "8752242156899eb9": {
   "mode": "rehearsal_build_auction",
-  "ts": "2026-09-24 09:38:09",
+  "ts": "2026-09-24 10:16:50",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -538,7 +538,7 @@
  },
  "10c3437e8672158c": {
   "mode": "rehearsal_build_close",
-  "ts": "2026-09-24 09:38:15",
+  "ts": "2026-09-24 10:17:00",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -563,6 +563,30 @@
  "058d4b5d82ec8f96": {
   "mode": "rehearsal_holding_check",
   "ts": "2026-09-24 09:38:11",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "75016b7cfa013bf5": {
+  "mode": "rehearsal_build_pre",
+  "ts": "2026-09-24 10:16:38",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "14d359fcf9e48cda": {
+  "mode": "rehearsal_holding_check",
+  "ts": "2026-09-24 10:16:52",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "a1cbb2007d55355f": {
+  "mode": "rehearsal_review",
+  "ts": "2026-09-24 10:17:09",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
