@@ -910,6 +910,11 @@ def build(task="close", date=None, period_days=30):
         d["valid_until"] = valid_until
         d["score"] = c.get("eff_score") or c.get("score")
         decisions.persist_decision(con, d)
+    # 卡片显示字段透传（confirms/板块阶段/主线/位置/池别/alpha/周期）
+    _CARD_KEYS = ("confirms", "confirm_note", "mainline", "sector_state",
+                  "sector_state_note", "pos_label", "pool", "alpha",
+                  "donchian", "wait_days", "hold_days", "hold_limit",
+                  "phase", "cycle_hint", "yizi_note")
     def close_of(code):
         row = con.execute(
             "SELECT c, l, h FROM klines WHERE code=? AND date=?",
@@ -950,14 +955,15 @@ def build(task="close", date=None, period_days=30):
         pending = []
         for c in picks:
             d = decisions.make_decision(c, date, missing_fields=())
-            d.update({"valid_until": valid_until, "score": c.get("score"),
+            d.update({"valid_until": valid_until,
+                      "score": c.get("eff_score") or c.get("score"),
                       "close": c.get("close"), "dist_pct": c.get("dist_pct"),
                       "sell_low": c.get("sell_low"),
                       "sell_high": c.get("sell_high"),
-                      "pool": c.get("pool"),
                       "status": "条件满足" if c.get("buyable_now")
                       else "等待确认"})
             d.update(_sector_fields(c))
+            d.update({k: c.get(k) for k in _CARD_KEYS if c.get(k) is not None})
             if c.get("buyable_now"):
                 if first is None:
                     first = d
@@ -1007,13 +1013,15 @@ def build(task="close", date=None, period_days=30):
         ladder_cards = []
         for c in ladder_next:
             d = decisions.make_decision(c, date, missing_fields=())
-            d.update({"valid_until": valid_until, "score": c.get("score"),
+            d.update({"valid_until": valid_until,
+                      "score": c.get("eff_score") or c.get("score"),
                       "close": c.get("close"), "dist_pct": c.get("dist_pct"),
                       "sell_low": c.get("sell_low"),
                       "sell_high": c.get("sell_high"),
-                      "pool": c.get("pool"), "status": "等待确认",
+                      "status": "等待确认",
                       "gate_evidence": c.get("gate_evidence", "")})
             d.update(_sector_fields(c))
+            d.update({k: c.get(k) for k in _CARD_KEYS if c.get(k) is not None})
             ladder_cards.append(d)
         brief = notifier.render_brief(date, first, backups, changes, meta,
                                       ladder_next=ladder_cards,

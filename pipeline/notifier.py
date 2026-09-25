@@ -896,11 +896,16 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
             badge = _badge(verdict, "#e0a93b")
         else:
             badge = _badge(verdict, "#5cc8e2")
+        tgt = h.get("target")
+        tgt_txt = f"{tgt[0]}~{tgt[1]}" if tgt else "—"
         rows = [_row("现价", f'{_esc(h.get("close") or "—")}（'
                      f'<span style="color:{pnl_col};font-weight:700">'
                      f'{pnl_txt}</span>）', v_bold=True),
                 _row("成本", _esc(h.get("buy_price") or "—")),
-                _row("止损", _esc(h.get("stop") or "—")),
+                _row("止损", f'<span style="color:#ff6b5e">'
+                     f'{_esc(h.get("stop") or "—")}</span>（无条件离场）'),
+                _row("止盈/减仓区", f'<span style="color:#3fae6b">'
+                     f'{tgt_txt}</span>（反弹至此分批减）'),
                 _row("板块", _esc((h.get("sector") or "—")
                                   + (" 🔥热" if h.get("sector_hot") else "")
                                   + (" ❄️冷" if h.get("sector")
@@ -923,6 +928,11 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
                       f'▶ 操作：{_esc(operate)}</div>')
         inner += "".join(rows)
         notes = []
+        if h.get("operate"):
+            notes.append(f'<span style="background:#7a2226;color:#fff;'
+                         f'border-radius:4px;padding:2px 9px;font-weight:700;'
+                         f'font-size:13px">▶ 操作：{_esc(h["operate"])}'
+                         f'</span>')
         if h.get("swap_hint"):
             notes.append(f'<span style="color:#ff6b5e;font-weight:700">'
                          f'{_esc(h["swap_hint"])}</span>')

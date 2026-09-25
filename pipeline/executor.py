@@ -380,6 +380,7 @@ def evaluate_real_holdings(con, date, holdings):
             item["stop"] = round(plan["stop"], 2)
             item["zone"] = [round(plan["pull_zone"][0], 2),
                             round(plan["pull_zone"][1], 2)]
+            item["target"] = [round(v, 2) for v in plan["target_zone"]]
             item["state"] = plan["state"]
         # ★ 去弱留强·持续弱量化（用户 2026-09-21：「如果一直持续弱，我拿着
         # 也没什么意义」）：近 10 个交易日里收盘低于 MA20 的天数 + 近 10 日
@@ -481,7 +482,8 @@ def evaluate_real_holdings(con, date, holdings):
         if item.get("swap_hint"):
             item["operate"] = "卖出换股：反弹至买区上沿附近减仓，破止损无条件走"
         elif item.get("exit_action") == "SELL":
-            item["operate"] = (f"减仓/离场：反弹至 {zhi} 附近分批减，"
+            _bp = f"{item['buy_price']:.2f}" if item.get("buy_price") else zhi
+            item["operate"] = (f"减仓/离场：现价或反弹至成本 {_bp} 附近分批减，"
                                f"破 {stp} 无条件走")
         elif item.get("phase") == "已到期":
             item["operate"] = ("持有周期已到：明日按开盘情况了结，不恋战"
