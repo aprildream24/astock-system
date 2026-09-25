@@ -197,6 +197,27 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     plans = con.execute(
         "SELECT code, name, action, buy_low, buy_high, stop FROM rec_picks "
         "WHERE date=?", (date,)).fetchall()
+    # ★ 历史候选并入（用户 2026-09-25「到达买点的票随时推，不要永远只是
+    # 那几只」）：近 5 个交易日出现过的全部候选（含当日未入选的）都纳入
+    # 到买点监控；同票以当日推荐优先，历史候选标注 src=hist。
+    try:
+        _seen = {p[0] for p in plans}
+        _hist = con.execute(
+            "SELECT code, MAX(date), MAX(action), "
+            "MAX(CASE WHEN json_extract(extra,'$.buy_low') IS NOT NULL "
+            "     THEN json_extract(extra,'$.buy_low') END), "
+            "MAX(CASE WHEN json_extract(extra,'$.buy_high') IS NOT NULL "
+            "     THEN json_extract(extra,'$.buy_high') END), "
+            "MAX(CASE WHEN json_extract(extra,'$.stop') IS NOT NULL "
+            "     THEN json_extract(extra,'$.stop') END) "
+            "FROM candidate_snapshots WHERE date>=date(?, '-6 day') AND date<? "
+            "GROUP BY code", (date, date)).fetchall()
+        _extra_plans = [(c, n, (a or "等回踩") + "·候选", lo, hi, st)
+                        for c, _md, a, lo, hi, st in _hist
+                        if c not in _seen and lo and hi]
+        plans = list(plans) + _extra_plans
+    except Exception as e:  # noqa: BLE001 — 历史候选缺失不影响当日计划
+        print(f"[intraday] 历史候选并入失败（不影响当日计划）: {e}")
     held = {}
     try:
         from .build import load_holdings        # 函数内延迟导入，避免循环

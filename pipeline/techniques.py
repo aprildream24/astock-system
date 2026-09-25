@@ -48,6 +48,13 @@ register("veto", "特色", "败因否决器", "active", recveto.veto,
          note="标注式否决（V1 WARN/VETO），低开-0.1% 灾难区口径；480条回测实证")
 register("xcheck", "特色", "三源交叉验证", "active", multi_source.cross_check,
          note="东财/新浪/腾讯中位数为权威价，价差>0.5%标存疑（M01）")
+register("alpha_extras", "特色", "Alpha因子组(量价相关/振幅收缩/5日动量)",
+         "active", engines.alpha_extras,
+         note="qlib Alpha158 蒸馏版；收缩+量价同向加分，背离扣分")
+register("donchian", "特色", "唐奇安20日突破", "active", engines.donchian_breakout,
+         note="海龟经典入场点；突破日 +3 分")
+register("factor_ic", "特色", "alphalens式因子IC验证", "embedded",
+         note="tools/factor_ic.py 独立工具：因子-未来收益秩相关，负IC立即降权")
 register("reopen", "特色", "断板反包", "planned")
 register("dtd", "特色", "地天板", "planned")
 register("long_leg", "特色", "大长腿", "planned")

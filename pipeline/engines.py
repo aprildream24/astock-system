@@ -483,3 +483,45 @@ def kronos_lite(rows):
              + (1.0 - min(vr, 2.0) / 2.0) * 10
              + (self_sim - 0.5) * 10)
     return max(0.0, min(100.0, score))
+
+
+# ── Alpha 因子组（2026-09-25 融入 GitHub 量化仓库经典技巧）──────────
+# 来源谱系：qlib Alpha158 动量/量价族（microsoft/qlib）、唐奇安通道
+# （海龟/Donchian，多数量化仓库的入门标配）、alphalens 的 IC 验证思路
+# （quantopian/alphalens）。全部零依赖蒸馏实现，参数即经典默认。
+
+def alpha_extras(rows, n=20):
+    """三个零依赖因子（qlib Alpha158 蒸馏版），供评分加成与解释：
+      corr_pv     —— 近 n 日量价相关系数（价涨量增=健康上涨；背离=虚涨）
+      vol_squeeze —— 振幅收缩比：近5日振幅 / 近20日振幅，<0.8=变盘临近
+      mom5        —— 5 日动量（%）
+    数据不足返回 {}。"""
+    if len(rows) < n + 1:
+        return {}
+    closes = [r[2] for r in rows]
+    vols = [r[5] for r in rows]
+    highs = [r[3] for r in rows]
+    lows = [r[4] for r in rows]
+    # 量价相关（皮尔逊，stdlib 手算）
+    cs, vs = closes[-n:], vols[-n:]
+    mc, mv = sum(cs) / n, sum(vs) / n
+    cov = sum((a - mc) * (b - mv) for a, b in zip(cs, vs))
+    dc = (sum((a - mc) ** 2 for a in cs)) ** 0.5
+    dv = (sum((b - mv) ** 2 for b in vs)) ** 0.5
+    corr_pv = round(cov / (dc * dv), 3) if dc and dv else 0.0
+    # 振幅收缩：近5日平均振幅 / 近20日平均振幅
+    amp = [(h - l) / c0 for h, l, c0 in zip(highs, lows, closes) if c0]
+    squeeze = round(sum(amp[-5:]) / 5 / (sum(amp[-n:]) / n), 3) if n else 1.0
+    mom5 = pct(closes[-1] - closes[-6], closes[-6])
+    return {"corr_pv": corr_pv, "vol_squeeze": squeeze,
+            "mom5": round(mom5, 2)}
+
+
+def donchian_breakout(rows, n=20):
+    """唐奇安 20 日通道突破（海龟经典）：收盘创 n 日新高 → True。
+    突破日买入是跨市场验证最多的入门信号之一；配合止损效果最佳。"""
+    if len(rows) < n + 1:
+        return False
+    close = rows[-1][2]
+    prior_high = max(r[3] for r in rows[-(n + 1):-1])
+    return close > prior_high

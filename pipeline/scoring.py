@@ -76,6 +76,18 @@ def score_candidate(c, env_w):
     else:  # 波段
         base = c.get("worth", 50)
     score = base * env_w.get(pool, 1.0)
+    # ── Alpha 因子加成（2026-09-25 融入，engines.alpha_extras 供数）──
+    # 全部有小幅上限，方向错了同样扣分——因子是修正项不是主引擎。
+    alpha = c.get("alpha") or {}
+    if alpha.get("vol_squeeze") and alpha["vol_squeeze"] < 0.8             and c.get("trend_state") != "增速放缓":
+        score += 3        # 振幅收缩 + 趋势未坏 = 变盘向上预备（BOLL 收口族）
+    if alpha.get("corr_pv") is not None and alpha["corr_pv"] >= 0.3:
+        score += 2        # 量价同向 = 健康上涨；背离票不加
+    if alpha.get("corr_pv") is not None and alpha["corr_pv"] <= -0.3:
+        score -= 3        # 量价背离 = 虚涨，压分
+    if c.get("donchian"):
+        score += 3        # 20 日通道突破日（海龟经典入场点）
+    score = max(0.0, score)
     return round(score, 2)
 
 
