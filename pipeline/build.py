@@ -915,6 +915,19 @@ def build(task="close", date=None, period_days=30):
                   "sector_state_note", "pos_label", "pool", "alpha",
                   "donchian", "wait_days", "hold_days", "hold_limit",
                   "phase", "cycle_hint", "yizi_note")
+    # ★ 卡片标签回读（2026-09-25）：从 candidate_snapshots.extra 恢复
+    # 板块阶段/主线/位置/一字/alpha/donchian —— 确保任何路径构建卡片都
+    # 有完整标签，不依赖内存中的候选 dict 生命周期。
+    def _extra_of(code):
+        r = con.execute(
+            "SELECT extra FROM candidate_snapshots WHERE code=? AND date=?",
+            (code, date)).fetchone()
+        if r and r[0]:
+            try:
+                return json.loads(r[0])
+            except Exception:  # noqa: BLE001
+                return {}
+        return {}
     def close_of(code):
         row = con.execute(
             "SELECT c, l, h FROM klines WHERE code=? AND date=?",
@@ -964,6 +977,9 @@ def build(task="close", date=None, period_days=30):
                       else "等待确认"})
             d.update(_sector_fields(c))
             d.update({k: c.get(k) for k in _CARD_KEYS if c.get(k) is not None})
+            _ex = _extra_of(c["code"])
+            d.update({k: _ex[k] for k in _CARD_KEYS
+                      if k in _ex and d.get(k) is None})
             if c.get("buyable_now"):
                 if first is None:
                     first = d
