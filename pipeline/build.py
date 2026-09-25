@@ -1092,6 +1092,10 @@ def build(task="close", date=None, period_days=30):
                         (_c["code"],)).fetchone()
                     if _ind:
                         _c["sector"] = _ind[0]
+                    # 排除持仓股（换出福莱蒽特不应再推荐福莱蒽特）
+                    if _c["code"] in {h["code"] for h in load_holdings()}:
+                        _cands.remove(_c)
+                        continue
                     _ex_row = con.execute(
                         "SELECT pool, extra FROM candidate_snapshots "
                         "WHERE code=? AND date=?", (_c["code"], date)).fetchone()
