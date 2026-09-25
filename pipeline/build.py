@@ -1001,7 +1001,7 @@ def build(task="close", date=None, period_days=30):
         ut = cov.get("untradable", 0)
         _cc = _confirm_counts(con, date)
         for c in picks + ladder_next:
-            n_conf = _cc.get(c["code"], 0) + 1     # +1 = 本身收盘时点
+            n_conf = _cc.get(c["code"], 0)
             c["confirms"] = n_conf
             c["confirm_note"] = ({3: "三确认（强）",
                                   2: "双确认"}.get(n_conf)
@@ -1068,7 +1068,7 @@ def build(task="close", date=None, period_days=30):
         r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
                           force=_force_push())
         print(f"[build] push={r}")
-        if r.get("sent") and task in ("pre", "auction"):
+        if r.get("sent") and task in ("pre", "auction", "close"):
             _record_confirms(con, date, task, picks)
     # ★ 用户需求（2026-09-21「盘前、竞价、盘中都可以对我的自选、购买股票
     # 提出操作建议」）：pre/auction 时点对持仓（去弱留强·换股建议）与自选
@@ -1272,12 +1272,18 @@ def _record_confirms(con, date, task, picks):
     con.commit()
 
 
-def _confirm_counts(con, date, tasks=("pre", "auction")):
-    ph = ",".join("?" * len(tasks))
+def _confirm_counts(con, date, window=10):
+    """近 window 个自然日内，每只股票被推送推荐的次数（跨天累计）。
+
+    用户模型：收盘首推 = 第 1 次；次日盘前仍在列 = 第 2 次（双确认）；
+    竞价后仍在列 = 第 3 次（三确认）。次数 = confirm_log 里该 code 出现的
+    (date, task) 对数（去重），近 window 天内的。"""
+    cutoff = (datetime.fromisoformat(date)
+              - __import__("datetime").timedelta(days=window)).isoformat()
     rows = con.execute(
-        f"SELECT code, COUNT(DISTINCT task) FROM confirm_log "
-        f"WHERE date=? AND task IN ({ph}) GROUP BY code",
-        (date, *tasks)).fetchall()
+        "SELECT code, COUNT(DISTINCT date || task) FROM confirm_log "
+        "WHERE date>=? AND date<=? GROUP BY code",
+        (cutoff, date)).fetchall()
     return {code: n for code, n in rows}
 
 

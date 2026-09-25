@@ -538,8 +538,8 @@ def render_card(d, first=False, head=None, accent=None):
           if d.get("sector_state") else "")
         + ((_row("确认次数", f'<span style="font-weight:700;'
                  f'color:{"#3fae6b" if d.get("confirms") >= 3 else "#e0a93b"}">'
-                 f'{"✅ 三确认（最强）" if d.get("confirms") >= 3 else "● 双确认"}'
-                 f'</span>（盘前/竞价/收盘均入选）'))
+                 f'{"✅ 三确认（连续3天推荐，最强）" if d.get("confirms") >= 3 else "● 双确认（连续2天推荐）"}'
+                 f'</span>'))
           if d.get("confirms") and d.get("confirms") >= 2 else "")
         # 决断力证据（2026-09-19「要么上要么下」）：让读者看见它为什么
         # 不属于磨叽票——20 日净位移与方向效率，绿=达标。
@@ -978,12 +978,12 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
             conf_html = ('<div style="background:#1d4228;border:1px solid '
                          '#3fae6b;border-radius:6px;padding:5px 10px;'
                          'margin:4px 0;color:#3fae6b;font-weight:700;'
-                         'font-size:14px">✅ 三确认（最强信号）</div>')
+                         'font-size:14px">✅ 三确认（连续3天推荐，最强）</div>')
         elif conf >= 2:
             conf_html = ('<div style="background:#332a10;border:1px solid '
                          '#e0a93b;border-radius:6px;padding:5px 10px;'
                          'margin:4px 0;color:#e0a93b;font-weight:700;'
-                         'font-size:13px">● 双确认</div>')
+                         'font-size:13px">● 双确认（连续2天推荐）</div>')
         # 板块/位置/主线 标签行
         tags = [x for x in (c.get("pool"), c.get("pos_label"),
                             c.get("mainline")) if x]
