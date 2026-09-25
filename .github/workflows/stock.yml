@@ -265,7 +265,9 @@ jobs:
             python -m pipeline.build --task auction
             python -m pipeline.build --task close
             python -m pipeline.build --task review
-            echo "[rehearsal] 四版式推送完成"
+            echo "[rehearsal] 模拟盘演练（时段闸门/打扰纪律自动裁决）"
+            python -m tools.executor --task auto --slot am
+            echo "[rehearsal] 全版式推送完成"
             exit 0
           fi
           if [ "$TASK" = "intraday" ]; then
