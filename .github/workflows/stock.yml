@@ -242,6 +242,13 @@ jobs:
             echo "[site] 站点任务不在本步骤推送"
             exit 0
           fi
+          if [ "$TASK" = "cron-cleanup" ]; then
+            # 一次性清理（2026-09-25）：删除旧系统（另一账户）遗留在
+            # cron-job.org 的 15 个 stock-*/exec-* 定时器——它们仍在向
+            # 用户微信推旧版式消息，是「收到的还是老板式」的真凶。
+            env CRONJOB_API_KEY="${{ secrets.CRONJOB_API_KEY }}"                 python tools/cron_cleanup.py
+            exit 0
+          fi
           if [ "$TASK" = "rehearsal" ]; then
             # 云端全链路演练（2026-09-19 用户：「全部在网络上运行一次，
             # 该推送的信息全部推送一遍」）。锚定最近交易日用真实数据，
