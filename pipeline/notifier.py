@@ -536,6 +536,11 @@ def render_card(d, first=False, head=None, accent=None):
                    f'{_esc(d.get("sector_state_note"))}</span>'
                    if d.get("sector_state_note") else ""))
           if d.get("sector_state") else "")
+        + ((_row("确认次数", f'<span style="font-weight:700;'
+                 f'color:{"#3fae6b" if d.get("confirms") >= 3 else "#e0a93b"}">'
+                 f'{"✅ 三确认（最强）" if d.get("confirms") >= 3 else "● 双确认"}'
+                 f'</span>（盘前/竞价/收盘均入选）'))
+          if d.get("confirms") and d.get("confirms") >= 2 else "")
         # 决断力证据（2026-09-19「要么上要么下」）：让读者看见它为什么
         # 不属于磨叽票——20 日净位移与方向效率，绿=达标。
         + (_row("决断力(20日)",
@@ -950,46 +955,63 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
         body.append('<p style="color:#8a93a3">今日无登记持仓</p>')
 
     # ③ 换股候选
-    body.append('<h4 style="margin:12px 0 4px">🔁 换股候选（今日推荐·'
-                '排序即优先级）</h4>')
+    body.append('<h4 style="margin:12px 0 4px">🔁 换股候选（排序即优先级：'
+                '排第 1 的最值得买）</h4>')
     body.append('<p style="color:#9aa4b2;font-size:12px;margin:0 0 6px">'
-                '排在前面的更值得买。可下单=现在就能买；等回踩=到价再买、'
-                '勿追高。综合分是同策略池内的相对强度（0-100），'
-                '跨动作类型以排序为准——「可买 80 分」优先于「等回踩 96 分」'
-                '，因为 96 分那只要等价格回到买区，机会成本在你这边。</p>')
+                '【综合分】是排序参考。【三确认(强)】= 盘前/竞价/收盘三个时点'
+                '都验证过 = 信号最强。等回踩 = 到价再买，勿追高。</p>')
     _ACT_ORDER = {"现在买": 0, "可买": 0, "小仓试": 1, "等回踩": 2,
                   "次日竞价达标买": 3}
     cands_sorted = sorted(candidates or [],
                           key=lambda c: (_ACT_ORDER.get(c.get("action"), 9),
                                          -(c.get("eff_score")
                                            or c.get("score") or 0)))
-    crows = []
     for rank, c in enumerate(cands_sorted, start=1):
         act = c.get("action") or "—"
-        is_buy = act in ("现在买", "可买", "小仓试", "次日竞价达标买")
+        is_buy = act in ("现在买", "可买", "小仓试")
         badge = _badge(act, "#3fae6b" if is_buy else "#e0a93b")
         eff = c.get("eff_score") or c.get("score") or "—"
-        _tag = " · ".join(x for x in (
-            c.get("pool") or "—", c.get("pos_label") or "",
-            c.get("mainline") or "") if x)
-        crows.append(
-            "<tr>"
-            f'<td><b>{rank}</b></td>'
-            f'<td><b>{_esc(c.get("name") or c.get("code", ""))}</b><br>'
-            f'<span style="color:#8a93a3;font-size:12px">'
-            f'{_esc(c.get("code", ""))}　{_esc(_tag)}</span></td>'
-            f"<td>{badge}</td>"
-            f'<td>{_esc(eff)}</td>'
-            f'<td>{_fmt2(c.get("buy_low"))}~{_fmt2(c.get("buy_high"))}</td>'
-            f'<td>{_fmt2(c.get("stop"))}</td>'
-            "</tr>")
-    if crows:
-        cand_tbl = _table(
-            "<tr><th>#</th><th>候选（池别·位置·主线）</th><th>动作</th>"
-            "<th>综合分</th><th>买区</th><th>止损</th></tr>"
-            + "".join(crows))
-        body.append(_card(cand_tbl, border="#2b313d"))
-    else:
+        # 确认标签（大字行）
+        conf = c.get("confirms") or 0
+        conf_html = ""
+        if conf >= 3:
+            conf_html = ('<div style="background:#1d4228;border:1px solid '
+                         '#3fae6b;border-radius:6px;padding:5px 10px;'
+                         'margin:4px 0;color:#3fae6b;font-weight:700;'
+                         'font-size:14px">✅ 三确认（最强信号）</div>')
+        elif conf >= 2:
+            conf_html = ('<div style="background:#332a10;border:1px solid '
+                         '#e0a93b;border-radius:6px;padding:5px 10px;'
+                         'margin:4px 0;color:#e0a93b;font-weight:700;'
+                         'font-size:13px">● 双确认</div>')
+        # 板块/位置/主线 标签行
+        tags = [x for x in (c.get("pool"), c.get("pos_label"),
+                            c.get("mainline")) if x]
+        tag_s = " · ".join(tags) if tags else "—"
+        sector_s = c.get("sector") or ""
+        if c.get("sector_temp"):
+            sector_s += f" {c['sector_temp']}"
+        _lo, _hi = c.get("buy_low"), c.get("buy_high")
+        _st = c.get("stop")
+        _row_line = (f'<div style="margin:2px 0;font-size:13.5px">'
+                     f'<span style="color:#8a93a3">买区</span> '
+                     f'<span style="color:#3fae6b;font-weight:700">'
+                     f'{_fmt2(_lo)}~{_fmt2(_hi)}</span>'
+                     f'　<span style="color:#8a93a3">止损</span> '
+                     f'{_fmt2(_st)}</div>')
+        inner = (_table(
+            f"<tr><td><span style='font-size:15px;font-weight:700;"
+            f"color:#e8eaed'>{_esc(c.get('name') or c.get('code',''))}</span>"
+            f"<span style='color:#8a93a3;font-size:12px;margin-left:6px'>"
+            f"{_esc(c.get('code',''))}</span></td>"
+            f'<td align="right" valign="top">{badge}</td></tr>'))
+        inner += conf_html
+        inner += _row_line
+        inner += ('<div style="font-size:12.5px;color:#9aa0a6;margin:2px 0">'
+                  f'第 {rank} 名 ｜ 综合分 {eff} ｜ {_esc(tag_s)} ｜ '
+                  f'{_esc(sector_s)}</div>')
+        body.append(_card(inner, border="#2b313d"))
+    if not cands_sorted:
         body.append('<p style="color:#8a93a3">今日无换股候选</p>')
 
     html = ('<div style="' + _STY["doc"] + '">' + "".join(body) + "</div>")

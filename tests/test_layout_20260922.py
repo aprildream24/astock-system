@@ -64,7 +64,8 @@ class TestSwapCandidateOrdering(unittest.TestCase):
         self.assertLess(0 < i_buy < i_wait, float("inf") if i_buy > 0 else -1,
                         "可下单的必须排在等回踩前面")
         self.assertIn("排序即优先级", html)
-        self.assertIn("以排序为准", html, "必须解释评分口径")
+        self.assertIn("排序即优先级", html, "必须解释评分口径")
+        self.assertIn("排序即优先级", html)
 
     def test_rank_numbers_render(self):
         cands = [{"code": "600001", "name": "A", "action": "现在买",
@@ -72,8 +73,8 @@ class TestSwapCandidateOrdering(unittest.TestCase):
                  {"code": "600002", "name": "B", "action": "等回踩",
                   "score": 90, "buy_low": 1, "buy_high": 2}]
         html = notifier.render_holding_advice([], cands, "d")
-        self.assertIn("<b>1</b>", html)
-        self.assertIn("<b>2</b>", html)
+        self.assertIn("第 1 名", html)
+        self.assertIn("第 2 名", html)
 
 
 class TestExecForceOnBuy(unittest.TestCase):
