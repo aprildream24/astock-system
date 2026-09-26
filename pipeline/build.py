@@ -764,6 +764,12 @@ def build(task="close", date=None, period_days=30):
             c["sector_state_note"] = dt_
             if sec in _rank_map:
                 c["mainline"] = "主线" if _rank_map[sec] == 0 else "副线"
+        # 兜底：板块标注未覆盖的候选设为"未知"——保证 板块热度/板块阶段
+        # 行在每张卡上都渲染（用户 09-25：「什么板块都不告诉我」）
+        for c in cands:
+            if not c.get("sector"):
+                c["sector"] = "未知"
+                c["sector_temp"] = ""
         print(f"[build] 板块热度 {len(sector_board)} 个行业，候选标注 {_n_marked}"
               f"/{len(cands)} 只；前三 {' '.join(s['sector'] for s in hot_sectors[:3])}")
     except Exception as e:  # noqa: BLE001 — 板块标注失败不得阻断主链

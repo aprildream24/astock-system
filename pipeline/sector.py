@@ -304,17 +304,24 @@ def sector_state(con, date, sector, temp=None, pct=None):
     ret = retreat_signal(con, date, sector)
     if ret and ret.get("retreat"):
         return "退潮", ret["detail"]
-    if temp is None:
+    # 退回最近 3 日内可用的板块数据（不只精确匹配当天）
+    row = con.execute(
+        "SELECT pct FROM sector_heat WHERE sector=? AND date<=? "
+        "ORDER BY date DESC LIMIT 1", (sector, date)).fetchone()
+    pct = row[0] if row else None
+    if pct is None:
+        # 尝试模糊匹配（部分行业名）
         row = con.execute(
-            "SELECT pct FROM sector_heat WHERE sector=? AND date=?",
-            (sector, date)).fetchone()
+            "SELECT pct FROM sector_heat WHERE sector LIKE ? AND date<=? "
+            "ORDER BY date DESC LIMIT 1",
+            (f"%{sector[:2]}%", date)).fetchone()
         pct = row[0] if row else None
     if pct is None:
         return "未知", ""
-    if pct >= 2.0 and (temp or "") == "🔥强":
-        return "高潮", f"当日 {pct:+.1f}%，情绪顶部特征——只减不加，严禁高位接力"
-    if (temp or "") == "🔥强":
-        return "强势", f"当日 {pct:+.1f}%，主升/接力可参与"
+    if pct >= 2.0:
+        return "高潮", f"板块 {pct:+.1f}%，情绪顶部特征——只减不加，严禁高位接力"
     if pct >= 1.0:
-        return "启动", f"当日 {pct:+.1f}%，低位启动——高低位切换的受益方向"
-    return "低温", f"当日 {pct:+.1f}%，回避"
+        return "强势", f"板块 {pct:+.1f}%，主升/接力可参与"
+    if pct >= 0.3:
+        return "启动", f"板块 {pct:+.1f}%，低位启动——高低位切换的受益方向"
+    return "低温", f"板块 {pct:+.1f}%，回避"
