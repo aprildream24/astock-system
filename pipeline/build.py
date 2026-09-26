@@ -1092,16 +1092,17 @@ def build(task="close", date=None, period_days=30):
                 _cands = [{"code": x[0], "name": x[1], "action": x[2],
                            "buy_low": x[3], "buy_high": x[4], "stop": x[5],
                            "score": x[6]} for x in _cur]
+                # 排除持仓股（换出福莱蒽特不应再推荐福莱蒽特）——
+                # ⚠️ 必须在 for 循环**之前**过滤：循环体内 remove 会跳过
+                # 下一个候选（迭代器已前进），连续两只持仓股会漏排一只。
+                _held_codes = {h["code"] for h in _hold2}
+                _cands = [c for c in _cands if c["code"] not in _held_codes]
                 for _c in _cands:
                     _ind = con.execute(
                         "SELECT sector FROM stock_industry WHERE code=?",
                         (_c["code"],)).fetchone()
                     if _ind:
                         _c["sector"] = _ind[0]
-                    # 排除持仓股（换出福莱蒽特不应再推荐福莱蒽特）
-                    if _c["code"] in {h["code"] for h in load_holdings()}:
-                        _cands.remove(_c)
-                        continue
                     _ex_row = con.execute(
                         "SELECT pool, extra FROM candidate_snapshots "
                         "WHERE code=? AND date=?", (_c["code"], date)).fetchone()
@@ -1587,8 +1588,9 @@ def main():
                     choices=["pre", "auction", "close", "review", "site",
                              "intraday"])
     ap.add_argument("--date", default=None)
-    # M41 盘中任务：--slot am|pm 决定早盘校验/尾盘机会；--dry 只算不推（本地验收）
-    ap.add_argument("--slot", default="pm", choices=["am", "pm"])
+    # M41 盘中任务：--slot am|pm 决定早盘校验/尾盘机会；live=高频买点巡检
+    # （每 10 分钟一轮，事件级去重，见 intraday.py 模块注释）；--dry 只算不推
+    ap.add_argument("--slot", default="pm", choices=["am", "pm", "live"])
     # 用户需求①：半月/月度周期复盘窗口（天）；调度器在 1 日传 30、16 日传 15
     ap.add_argument("--period-days", type=int, default=30)
     ap.add_argument("--dry", action="store_true")

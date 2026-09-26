@@ -27,7 +27,22 @@
   · pm（尾盘）时点出现「现价进入买区」的票 → 推（唯一"看到还能当天操作"的窗口）
   · am（早盘）时点盘前计划 ≥50% 跌破买区下沿 → 推计划转差警示
   · 其余情况 → 写库 + 日志，**不发消息**
-每日最多 2 条盘中消息，且经常为 0 条。
+am/pm 各自日熔丝一天一条；live（见下）改用**事件级**账本去重。
+
+live 高频巡检（用户 2026-09-24「为什么又要等到看盘？我要尽可能快速地
+告诉我可以买入的股票」）
+------------------
+astock-intraday-live 定时器每 10 分钟触发一次（09:30-11:35 / 13:00-15:00）。
+一天最多 ~22 轮，靠 am/pm 那套「日熔丝一天一条」去重会把后续所有新事件
+全部吞掉，所以 live 的推送单位是**事件**而不是**轮次**：
+
+  · 同票同事件同一天只报一次（live_alerts 账本：(date, kind, code) 主键）
+  · 首次进买区 / 首次触发止损 / 首次出现卖出信号 → **即刻 force 推送**
+  · 已报过的票不再重复（哪怕仍停在买区里）；后续轮次全部静默
+  · 事件的"发生"由轮询判定，最坏延迟 = 一个触发间隔（≤10 分钟）
+
+am/pm 的摘要推送语义不变（日熔丝一天一条）；sell/止损类在**所有** slot
+都过事件账本——同一持仓 09:45 报过卖出信号，14:40 不再重复报同一只。
 
 时点选择依据
 -----------
@@ -44,6 +59,14 @@ import os
 # 盘中时段（北京时间，含端点、放宽缓冲）
 _AM_WINDOW = (9 * 60 + 30, 11 * 60 + 35)
 _PM_WINDOW = (13 * 60, 15 * 60)
+# live 高频巡检覆盖整个连续交易时段（am+pm 两窗）
+_LIVE_WINDOWS = (_AM_WINDOW, _PM_WINDOW)
+# 事件账本的 kind 取值（live_alerts.kind）
+KIND_ZONE = "zone"        # 推荐计划现价进入买区
+KIND_WZONE = "wzone"      # 自选进入买区
+KIND_STOP = "stop"        # 持仓触及手填止损
+KIND_SELL = "sell"        # 持仓系统判定卖出
+KIND_WSTOP = "wstop"      # 自选跌破止损
 # 抓取异常的兜底：正常盘中应有 4500+ 只快照，低于此值说明源异常
 _MIN_UNIVERSE = 500
 
@@ -69,8 +92,42 @@ def prefixed(code):
 def in_window(slot, now):
     """时段守门：防误触发（定时器故障 / 手工 dispatch 到非盘中）。"""
     t = now.hour * 60 + now.minute
+    if slot == "live":
+        return any(lo <= t <= hi for lo, hi in _LIVE_WINDOWS)
     lo, hi = _AM_WINDOW if slot == "am" else _PM_WINDOW
     return lo <= t <= hi
+
+
+# ---------------------------------------------------------------------------
+# 事件级告警账本（live_alerts）：live 巡检的"同票同事件当天只报一次"
+# ---------------------------------------------------------------------------
+def _ensure_ledger(con):
+    """防御性建表：CI 缓存里的库可能还是旧 schema（无 live_alerts）。"""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS live_alerts("
+        "date TEXT, kind TEXT, code TEXT, ts TEXT, detail TEXT,"
+        "PRIMARY KEY(date, kind, code))")
+    con.commit()
+
+
+def _alerted_set(con, date):
+    """当天已告警过的 (kind, code) 集合。"""
+    return {(k, c) for k, c in con.execute(
+        "SELECT kind, code FROM live_alerts WHERE date=?", (date,)).fetchall()}
+
+
+def _mark_alerted(con, date, kind, items, ts):
+    """推送成功后记账；items 元素需含 code。"""
+    for x in items:
+        con.execute("INSERT OR REPLACE INTO live_alerts VALUES(?,?,?,?,?)",
+                    (date, kind, x["code"], ts,
+                     f'{x.get("name", "")}@{x.get("price", "")}'))
+    con.commit()
+
+
+def _fresh(kind, items, alerted):
+    """过滤掉当天已报过的事件。"""
+    return [x for x in items if (kind, x["code"]) not in alerted]
 
 
 def classify(price, pct, lo, hi, stop):
@@ -129,7 +186,7 @@ def _section(title, rows, hint=""):
 
 def render_html(date, slot, now, groups, plan_n, coverage_note=""):
     """groups: [{"title","hint","rows":[(cells, colors)]}, ...]"""
-    head = "早盘校验" if slot == "am" else "尾盘机会"
+    head = {"am": "早盘校验", "pm": "尾盘机会"}.get(slot, "买点巡检")
     body = "".join(
         _section(g["title"], "".join(_row(c, col) for c, col in g["rows"]),
                  g.get("hint", ""))
@@ -202,18 +259,32 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     # 到买点监控；同票以当日推荐优先，历史候选标注 src=hist。
     try:
         _seen = {p[0] for p in plans}
+        # 2026-09-26 两处修复：
+        # ① 原 SELECT 第二列写成未定义的 `n`，NameError 被 except 吞掉
+        #    ⇒ 历史候选从未真正并入过（修复后近一周 ~1000 只带买区）；
+        # ② 原 MAX(buy_low)/MAX(buy_high)/MAX(stop) 按**列独立**聚合，
+        #    同票多池时会拼出"A 方案下沿 + B 方案上沿"的不存在买区 →
+        #    改为每票选一条规范方案（最新日期 → 可执行动作优先 → 高分）。
         _hist = con.execute(
-            "SELECT code, MAX(date), MAX(action), "
-            "MAX(CASE WHEN json_extract(extra,'$.buy_low') IS NOT NULL "
-            "     THEN json_extract(extra,'$.buy_low') END), "
-            "MAX(CASE WHEN json_extract(extra,'$.buy_high') IS NOT NULL "
-            "     THEN json_extract(extra,'$.buy_high') END), "
-            "MAX(CASE WHEN json_extract(extra,'$.stop') IS NOT NULL "
-            "     THEN json_extract(extra,'$.stop') END) "
-            "FROM candidate_snapshots WHERE date>=date(?, '-6 day') AND date<? "
-            "GROUP BY code", (date, date)).fetchall()
-        _extra_plans = [(c, n, (a or "等回踩") + "·候选", lo, hi, st)
-                        for c, _md, a, lo, hi, st in _hist
+            "SELECT code, name, action, buy_low, buy_high, stop FROM ("
+            "  SELECT code, name, action,"
+            "         json_extract(extra,'$.buy_low')  AS buy_low,"
+            "         json_extract(extra,'$.buy_high') AS buy_high,"
+            "         json_extract(extra,'$.stop')     AS stop,"
+            "         ROW_NUMBER() OVER ("
+            "           PARTITION BY code"
+            "           ORDER BY date DESC,"
+            "             CASE WHEN action IN ('现在买','等回踩','小仓试',"
+            "                                  '次日竞价达标买')"
+            "                  THEN 0 ELSE 1 END,"
+            "             COALESCE(score,0) DESC) AS rn"
+            "  FROM candidate_snapshots"
+            "  WHERE date>=date(?, '-6 day') AND date<?"
+            "    AND json_extract(extra,'$.buy_low') IS NOT NULL"
+            "    AND json_extract(extra,'$.buy_high') IS NOT NULL"
+            ") WHERE rn=1", (date, date)).fetchall()
+        _extra_plans = [(c, nm, (a or "等回踩") + "·候选", lo, hi, st)
+                        for c, nm, a, lo, hi, st in _hist
                         if c not in _seen and lo and hi]
         plans = list(plans) + _extra_plans
     except Exception as e:  # noqa: BLE001 — 历史候选缺失不影响当日计划
@@ -329,6 +400,30 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
           f"在买区{len(in_zone)} 涨出{len(above)} 跌破{len(below)} "
           f"涨停{len(limit)} 持仓止损{len(hold_hits)}")
 
+    # ---- 事件级告警账本（live_alerts）----
+    # live 巡检每 10 分钟一轮，去重单位必须是"事件"而不是"轮次"：
+    # 同票同事件当天只报一次（报过就不再重复，哪怕仍停在买区里）。
+    # 卖出/止损类是事故级信号，账本过滤在**所有** slot 生效——
+    # 早盘报过的卖出信号，尾盘不再对同一只重复报。
+    _live = (slot == "live")
+    _ensure_ledger(con)
+    _prev = _alerted_set(con, date)
+    sell_hits = _fresh(KIND_SELL, sell_hits, _prev)
+    watch_stop_hits = _fresh(KIND_WSTOP, watch_stop_hits, _prev)
+    hold_hits = _fresh(KIND_STOP, hold_hits, _prev)
+    if _live:
+        _n0 = (len(in_zone), len(watch_zone_hits))
+        in_zone = _fresh(KIND_ZONE, in_zone, _prev)
+        watch_zone_hits = _fresh(KIND_WZONE, watch_zone_hits, _prev)
+        _new = len(in_zone) + len(watch_zone_hits)
+        if _new == 0 and not sell_hits and not watch_stop_hits \
+                and not hold_hits:
+            out["reason"] = "live：无新事件（已报过的不再重复）"
+            print(f"[intraday] {out['reason']} → 静默")
+            return out
+        print(f"[intraday] live 新事件：买区{len(in_zone)}"
+              f"+自选{len(watch_zone_hits)}（原 {_n0[0]}+{_n0[1]}）")
+
     # ---- 打扰纪律：只有下列情形才推 ----
     groups = []
     if watch_zone_hits:
@@ -347,11 +442,14 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                        f'止损 {h["stop"]:.2f}'), [_TXT, _TXT, _UP, _UP, _UP])
                      for h in hold_hits]})
     if in_zone:
-        _zh = "尾盘" if slot == "pm" else "早盘"
+        _zh = {"am": "早盘", "pm": "尾盘"}.get(slot, "现价")
         groups.append({
             "title": f"● {_zh}进入买区（可当日下单）",
             "hint": "现价已在计划买区内；收盘前有效，次日可卖",
-            "rows": [((p["code"], p["name"], f'{p["price"]:.2f}',
+            "rows": [((p["code"],
+                       p["name"] + (f'（{p["action"]}）' if _live
+                                    and p.get("action") else ""),
+                       f'{p["price"]:.2f}',
                        f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
                        f'{p["lo"]:.2f}~{p["hi"]:.2f}'),
                       [_TXT, _TXT, _HL, _HL, _HL]) for p in in_zone]})
@@ -382,8 +480,11 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         return out
 
     from . import notifier
+    _ts = f"{now:%H:%M:%S}"
     # 真实持仓卖出信号：独立紧急推送（force + 单独日熔丝），确保一定送达，
     # 不与计划组互相吃掉额度；用户需求③「尤其要卖出的时候」优先保障。
+    # 2026-09-26 起 force 之上叠加事件账本：同一只当天只报一次，
+    # 否则 live 高频轮询会把同一信号连发 20 遍。
     if sell_hits:
         sgroup = [{
             "title": "🚨 持仓建议卖出（盘中）",
@@ -398,6 +499,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         sr = notifier.push("holding_intraday", f"持仓卖出信号 {date[5:]}",
                            shtml, date=date, con=con, force=True)
         out["sell_pushed"] = bool(sr.get("sent"))
+        if out["sell_pushed"]:
+            _mark_alerted(con, date, KIND_SELL, sell_hits, _ts)
         print(f"[intraday] holding sell push={sr}")
     # 自选破止损：同为确定性事故级信号，独立 force 推送（不被日熔丝吞掉）
     if watch_stop_hits:
@@ -412,11 +515,31 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         wr = notifier.push("watch_intraday", f"自选破止损 {date[5:]}",
                            whtml, date=date, con=con, force=True)
         out["watch_stop_pushed"] = bool(wr.get("sent"))
+        if out["watch_stop_pushed"]:
+            _mark_alerted(con, date, KIND_WSTOP, watch_stop_hits, _ts)
         print(f"[intraday] watch stop push={wr}")
-    head = "早盘校验" if slot == "am" else "尾盘机会"
-    title = f"盘中{head} {date[5:]}"
+    if _live and not groups:
+        out["reason"] = "live：新事件均已单独推送（买区无变化）"
+        print(f"[intraday] {out['reason']}")
+        return out
+    head = {"am": "早盘校验", "pm": "尾盘机会"}.get(slot, "买点巡检")
+    title = (f"⚡ 买点触发 {date[5:]} {now:%H:%M}" if _live
+             else f"盘中{head} {date[5:]}")
     html = render_html(date, slot, now, groups, len(plans))
-    r = notifier.push(f"intraday_{slot}", title, html, date=date, con=con)
+    # live 的去重已经由事件账本完成（同票同事件一天一次）⇒ 必须 force
+    # 绕过"每 mode 一天一条"的日熔丝，否则当天第二个新事件永远发不出。
+    # am/pm 维持日熔丝语义（一天一条摘要）不变。
+    r = notifier.push(f"intraday_{slot}", title, html, date=date, con=con,
+                      force=_live)
+    if r.get("sent"):
+        # 主推送送达后记账（所有 slot）：早盘/尾盘摘要报过的买区票也要登记，
+        # 否则 5 分钟后的 live 轮次会把同一只再报一遍。
+        if hold_hits:
+            _mark_alerted(con, date, KIND_STOP, hold_hits, _ts)
+        if in_zone:
+            _mark_alerted(con, date, KIND_ZONE, in_zone, _ts)
+        if watch_zone_hits:
+            _mark_alerted(con, date, KIND_WZONE, watch_zone_hits, _ts)
     out["pushed"] = bool(r.get("sent"))
     out["push"] = r
     out["reason"] = ("已推送" if r.get("sent")
@@ -428,7 +551,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
 def run_cli():
     import argparse
     ap = argparse.ArgumentParser(description="盘中计划校验（M41）")
-    ap.add_argument("--slot", default="pm", choices=["am", "pm"])
+    ap.add_argument("--slot", default="pm", choices=["am", "pm", "live"])
     ap.add_argument("--date", default=None)
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()

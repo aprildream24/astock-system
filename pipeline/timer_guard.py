@@ -62,6 +62,8 @@ REQUIRED = (
     "astock-review",        # 20:02 复盘 + AI 叙事
     "astock-intraday-am",   # 09:45 盘中校验（早盘）
     "astock-intraday-pm",   # 14:40 盘中校验（尾盘机会）
+    # 2026-09-26 新增：盘中买点高频巡检（每 10 分钟，事件级去重推送）
+    "astock-intraday-live",
     "astock-audit-am",      # 10:00 云端验收（盘前+竞价）
     "astock-audit-close",   # 15:45 云端验收（收盘）
     "astock-audit-review",  # 20:20 云端验收（连带复核收盘）

@@ -834,6 +834,21 @@ def holdings_rows(con, today, slot=None):
     return out
 
 
+def _reject_once(con, code, today, why):
+    """REJECT 的**当天一次性**进推送：live 巡检（2026-09-26 起）每 10 分钟
+    一轮，同一只票的"到价未成交"若每轮都报就是 20+ 条噪音。全量留痕在
+    orders（place_order 已落账）；exec_log 只放打扰标记。"""
+    dup = con.execute(
+        "SELECT 1 FROM exec_log WHERE code=? AND action='reject_seen' "
+        "AND ts LIKE ? LIMIT 1", (code, today + "%")).fetchone()
+    if dup:
+        return (code, "SKIP", f"当日已报过未成交，不再重复：{why}")
+    con.execute("INSERT INTO exec_log VALUES(?,?,?,?,?)",
+                (_now(), code, "reject_seen", None, why))
+    con.commit()
+    return (code, "REJECT", why)
+
+
 def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
     """按当日推荐自动建仓——模拟盘「自动运行」的核心（2026-09-18 新增）。
 
@@ -910,9 +925,10 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
         if qty < 100:
             # 资金不足 1 手 = 到价买不进 → REJECT（进「到价未成交」组，
             # 用户必须被告知；用户需求：「到价了却买不进，必须说清楚原因」）
-            log.append((code, "REJECT",
-                        f"资金不足 1 手（价{price:.2f}，"
-                        f"档位目标 {budget:,.0f} 元）"))
+            # live 高频轮询（09-26 起）：当天只报第一次。
+            log.append(_reject_once(
+                con, code, today,
+                f"资金不足 1 手（价{price:.2f}，档位目标 {budget:,.0f} 元）"))
             continue
         prev = con.execute(
             "SELECT c FROM klines WHERE code=? AND date<? "
@@ -932,7 +948,9 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
             # ★ 用户需求：**到价了却买不进，必须说清楚原因**（资金不足/
             # 满仓/涨停/单日额度…）。原实现也记 REJECT，但推送里混在流水里
             # 没人看得见，等于没告诉。
-            log.append((code, "REJECT", why))
+            # live 高频轮询（09-26 起）：orders 已有全量留痕，
+            # 推送层当天只报第一次，其余降级为 SKIP（不占推送）。
+            log.append(_reject_once(con, code, today, why))
     # 建成即封板（见 docstring：下午再偷偷买会让成交无人知晓）
     if filled:
         con.execute("INSERT INTO exec_log VALUES(?,?,?,?,?)",

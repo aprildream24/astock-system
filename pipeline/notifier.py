@@ -53,6 +53,8 @@ MODE_LABEL = {
     # 2026-09-18 新增：真实持仓体检（含换股建议），只在该动的时候才发
     "holding_check": "持仓",
     "intraday_am": "盘中", "intraday_pm": "尾盘",
+    # 2026-09-26 新增：live 高频巡检（每 10 分钟触发，事件级去重）
+    "intraday_live": "买点",
     "exec_auto": "模拟", "exec_open": "模拟", "exec_scan": "模拟",
     "exec_tail": "模拟", "exec_now": "模拟", "exec_review": "模拟",
     "period": "周期", "data_holiday": "休市",

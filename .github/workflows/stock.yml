@@ -27,10 +27,10 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "build 任务: pre | auction | close | review | site | intraday | rehearsal | watch-sync"
+        description: "build 任务: pre | auction | close | review | site | intraday | rehearsal | watch-sync | timer-live"
         default: close
       slot:
-        description: "intraday 专用: am=早盘校验(09:45) | pm=尾盘机会(14:40)"
+        description: "intraday 专用: am=早盘校验(09:45) | pm=尾盘机会(14:40) | live=买点巡检(每10分钟·事件级去重)"
         default: ""
       codes:
         description: "watch-sync 专用：自选代码，逗号分隔（如 sh600519,sz000001）"
@@ -242,6 +242,14 @@ jobs:
             echo "[site] 站点任务不在本步骤推送"
             exit 0
           fi
+          if [ "$TASK" = "timer-live" ]; then
+            # 一次性安装（2026-09-26）：在 cron-job.org 上克隆
+            # astock-intraday-am 新建 astock-intraday-live（每 10 分钟触发
+            # 盘中买点巡检，事件级去重推送）。幂等：已存在则核对修正。
+            # 只动 astock-* 前缀；旧系统 stock-*/exec-* 一律不碰。
+            env CRONJOB_API_KEY="${{ secrets.CRONJOB_API_KEY }}"                 python tools/timer_live.py
+            exit 0
+          fi
           if [ "$TASK" = "cron-cleanup" ]; then
             # 一次性清理（2026-09-25）：删除旧系统（另一账户）遗留在
             # cron-job.org 的 15 个 stock-*/exec-* 定时器——它们仍在向
@@ -355,11 +363,13 @@ jobs:
           ASTOCK_BACKFILL: ${{ github.event.inputs.force }}
         run: python -m pipeline.build --task review
       - name: 构建加密站点
-        # intraday（盘中校验）/ period（周期复盘）不改任何站点数据 → 跳过重建
+        # intraday（盘中校验）/ period（周期复盘）/ timer-live（装定时器）
+        # 不改任何站点数据 → 跳过重建
         if: >-
           github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           github.event.inputs.task != 'intraday' &&
-          github.event.inputs.task != 'period'
+          github.event.inputs.task != 'period' &&
+          github.event.inputs.task != 'timer-live'
         env:
           SITE_USERS: ${{ secrets.SITE_USERS }}
           SITE_EDIT_TOKEN: ${{ secrets.SITE_EDIT_TOKEN }}
@@ -391,6 +401,7 @@ jobs:
       - name: 推送验收（自检）
         if: >-
           github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
+          github.event.inputs.task != 'timer-live' &&
           (success() || failure())
         continue-on-error: true
 
@@ -405,7 +416,8 @@ jobs:
         if: >-
           github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           github.event.inputs.task != 'intraday' &&
-          github.event.inputs.task != 'period'
+          github.event.inputs.task != 'period' &&
+          github.event.inputs.task != 'timer-live'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site

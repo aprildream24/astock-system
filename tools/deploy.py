@@ -306,7 +306,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--token", required=True)
     ap.add_argument("--dispatch", default=None,
-                    choices=["pre", "auction", "close", "review", "site"])
+                    choices=["pre", "auction", "close", "review", "site",
+                       "timer-live", "cron-cleanup"])
     ap.add_argument("--wait", action="store_true")
     ap.add_argument("--secrets-from", default=None,
                     help="从该目录读取 notify.json/users.json 并写入 Secrets")

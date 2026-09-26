@@ -168,6 +168,13 @@ CREATE TABLE IF NOT EXISTS snapshot_live(
     date TEXT, slot TEXT, code TEXT, name TEXT,
     price REAL, pct REAL, amt REAL,
     PRIMARY KEY(date, slot, code));
+-- 2026-09-26 新增：盘中买点巡检的**事件级告警账本**。live 巡检每 10 分钟
+-- 跑一次，同一票同一天只报一次（新进买区/触发止损/卖出信号），靠本表
+-- 去重；push_ledger 的日级保险丝是"每 mode 一天一条"，粒度太粗会吞掉
+-- 后续新事件的推送，两者互补。
+CREATE TABLE IF NOT EXISTS live_alerts(
+    date TEXT, kind TEXT, code TEXT, ts TEXT, detail TEXT,
+    PRIMARY KEY(date, kind, code));
 CREATE TABLE IF NOT EXISTS exec_log(
     ts TEXT, code TEXT, action TEXT, price REAL, reason TEXT);
 -- 2026-09-18 新增：板块热度（M43）。行业板块当日涨幅/主力净额，供推荐标注
