@@ -1,0 +1,60 @@
+# 盘中买点巡检·长驻循环（2026-09-26 新增，替代触发器）。
+#
+# 背景：盘中买点告警需要「每 10 分钟」的触发源。权威设计是 cron-job.org 的
+# astock-intraday-live 定时器（tools/timer_live.py），但仓库 Secret
+# CRONJOB_API_KEY 已实证无效（GET /jobs 404），定时器建不出来。
+# 本 workflow 用 **单 job 常驻整个交易时段**的方式顶班：
+#
+#   auction(09:25) 主链末尾（stock.yml）dispatch 本 workflow
+#     → runner 常驻至 15:00 → 每 10 分钟一轮：
+#         · pipeline.build --task intraday --slot live 的事件级去重推送
+#         · 模拟盘按区间同步建仓（executor 内部 session_gate 把守）
+#     → 退出后由 cache/save 把模拟盘状态交还主链（15:22 close 恢复）。
+#
+# 安全性：
+#   · 事件去重在 live_alerts 账本层——将来 cron-job 定时器恢复后与本循环
+#     短暂并存，同一事件也只推一次；
+#   · 非交易日/午休/盘后由 trade_calendar + in_window 守门，空转不推送；
+#   · 与 am/pm 摘要（09:45/14:40）语义互不影响。
+# 时长账：09:28→15:00 ≈ 5.5h < GH 单 job 6h 上限（timeout 350 分钟）。
+name: intraday-live
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 与 stock.yml 共用同一前缀（market-db-）的缓存：auction 抓完存一份，
+      # 本循环恢复后在其上累积 snapshot_live / live_alerts / 模拟盘状态。
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-live-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 盘中买点巡检循环
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+          WATCH_CODES: ${{ secrets.WATCH_CODES }}
+          HOLDINGS_CONF: ${{ secrets.HOLDINGS_CONF }}
+        run: python -m tools.live_loop
+      # 收盘退出后存档：15:22 close 主链 restore-keys 取到本份。
+      # 常驻期间状态在 runner 文件系统上自然延续，无需中途存档。
+      - name: 保存行情库缓存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: market-db-live-${{ github.run_id }}

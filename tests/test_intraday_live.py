@@ -280,9 +280,47 @@ class TestTimerLive(_LedgerIsolated):
         self.tl = importlib.import_module("tools.timer_live")
         self.tg = importlib.import_module("pipeline.timer_guard")
 
-    def test_required_contains_live(self):
-        self.assertIn("astock-intraday-live", self.tg.REQUIRED)
-        self.assertIn("astock-intraday-am", self.tg.REQUIRED)
+    def test_required_excludes_live_until_key_valid(self):
+        """cron-job Secret key 无效（GET /jobs 404）期间 live 定时器建不出；
+        REQUIRED 若含它会让守门每个 audit 时点都误报。盘中高频巡检由
+        intraday-live.yml 长驻循环顶班。用户补 key 建成定时器后，
+        把 "astock-intraday-live" 加回 REQUIRED（tools/timer_live.py 已备好）。"""
+        self.assertNotIn("astock-intraday-live", self.tg.REQUIRED)
+        # 创建脚本必须常备：key 一到即可建成（克隆 am、每 10 分钟、slot=live）
+        self.assertEqual(self.tl.LIVE_TITLE, "astock-intraday-live")
+        self.assertEqual(self.tl.CLONE_FROM, "astock-intraday-am")
+
+    def test_live_loop_module_wired(self):
+        """长驻循环模块存在且触发间隔/收盘退出常量正确（防误改）。"""
+        ll = importlib.import_module("tools.live_loop")
+        self.assertEqual(ll.STEP, 10)
+        self.assertEqual(ll.CLOSE_MIN, 15 * 60)
+        self.assertEqual(ll.MORNING_START, 9 * 60 + 28)
+
+    def test_live_loop_mark_alignment(self):
+        """刻度对齐到 :00/:10/:20…（STEP=10）：09:31:07 → 等 533s 到 09:40；
+        正点刻度 09:30:00 → 等 600s；差 1s 到刻度 → 等 1s。"""
+        ll = importlib.import_module("tools.live_loop")
+        bjt = _dt.timezone(_dt.timedelta(hours=8))
+        s = ll._sleep_to_next_mark(
+            _dt.datetime(2026, 9, 24, 9, 31, 7, tzinfo=bjt))
+        self.assertEqual(s, 533)
+        s2 = ll._sleep_to_next_mark(
+            _dt.datetime(2026, 9, 24, 9, 30, 0, 0, tzinfo=bjt))
+        self.assertEqual(s2, 600)
+        s3 = ll._sleep_to_next_mark(
+            _dt.datetime(2026, 9, 24, 9, 39, 59, tzinfo=bjt))
+        self.assertEqual(s3, 5.0, "间隔下限 5s：防时钟漂移导致的 0 间隔死转")
+
+    def test_live_loop_once_cycle_gated_by_window(self):
+        """非交易时段 _one_cycle 不触发巡检（守门在窗口判断，不在异常处理）。"""
+        ll = importlib.import_module("tools.live_loop")
+        intra = importlib.import_module("pipeline.intraday")
+        bjt = _dt.timezone(_dt.timedelta(hours=8))
+        noon = _dt.datetime(2026, 9, 24, 12, 10, tzinfo=bjt)   # 午休
+        with mock.patch.object(intra, "run") as run_mock:
+            self.assertFalse(ll._one_cycle("2026-09-24", noon))
+            run_mock.assert_not_called()
 
     def test_sched_from_beijing_base(self):
         """am 存的是 hours=[9]/minutes=[45] ⇒ 存储口径=北京时间。"""

@@ -344,6 +344,25 @@ jobs:
           SLOT="${{ github.event.inputs.slot }}"
           echo "[executor] slot=$SLOT（空=非盘中任务；建仓时段闸门在 executor 内部）"
           python -m tools.executor --task auto --slot "$SLOT"
+      # ★ 2026-09-26 新增：盘中买点巡检长循环（auction 顺链）。
+      # cron-job.org 的 astock-intraday-live 定时器因 Secret key 无效
+      # （GET /jobs 404）暂建不出，由本步骤在每个交易日竞价后 dispatch
+      # intraday-live.yml——单 runner 常驻交易时段，每 10 分钟一轮
+      # 买点巡检（事件级去重）+ 模拟盘同步建仓。用户补有效 key 并建成
+      # 定时器后，删除本步骤即可（两条触发路径并存也不会重复推送）。
+      - name: 触发盘中买点巡检长循环（auction 顺链）
+        if: github.event.inputs.task == 'auction'
+        continue-on-error: true
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ST=$(curl -s -o /tmp/disp_live.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $GH_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GH_REPO/actions/workflows/intraday-live.yml/dispatches" \
+            -d '{"ref":"main"}')
+          echo "[live-loop] dispatch=$ST（204=成功；非 204 时下一交易日无高频巡检）"
       - name: 收盘复盘（自选股建议+AI叙事）
         if: >-
           github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&

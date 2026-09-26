@@ -62,8 +62,11 @@ REQUIRED = (
     "astock-review",        # 20:02 复盘 + AI 叙事
     "astock-intraday-am",   # 09:45 盘中校验（早盘）
     "astock-intraday-pm",   # 14:40 盘中校验（尾盘机会）
-    # 2026-09-26 新增：盘中买点高频巡检（每 10 分钟，事件级去重推送）
-    "astock-intraday-live",
+    # 2026-09-26：astock-intraday-live（每 10 分钟买点巡检）暂不列入——
+    # 仓库 Secret CRONJOB_API_KEY 无效（GET /jobs 404）建不出来，列入会让
+    # 守门每个 audit 时点都误报。盘中高频巡检现由 intraday-live.yml 长驻
+    # 循环顶班（auction 顺链触发）。用户补有效 key 建成定时器后，把
+    # "astock-intraday-live" 加回本元组（tools/timer_live.py 已备好）。
     "astock-audit-am",      # 10:00 云端验收（盘前+竞价）
     "astock-audit-close",   # 15:45 云端验收（收盘）
     "astock-audit-review",  # 20:20 云端验收（连带复核收盘）
