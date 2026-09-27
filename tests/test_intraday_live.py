@@ -218,6 +218,18 @@ class TestEventDedup(_LedgerIsolated):
         self.assertEqual(
             con.execute("SELECT COUNT(*) FROM live_alerts").fetchone()[0], 0)
 
+    def test_zone_rows_capped_at_15(self):
+        """首轮巡检可能上百只同时进买区——消息截前 15 行 + 总数提示，
+        但账本仍按全量标记（不重复轰炸）。"""
+        intra = importlib.import_module("pipeline.intraday")
+        rows = [("code%d" % i, "n", "1.0", "+1%", "1~2") for i in range(102)]
+        out, hint = intra._cap_rows(rows, "基线提示")
+        self.assertEqual(len(out), 15)
+        self.assertIn("共 102 只", hint)
+        same, h2 = intra._cap_rows(rows[:15], "基线提示")
+        self.assertEqual(len(same), 15)
+        self.assertEqual(h2, "基线提示", "不超限不追加提示")
+
 
 class TestLegacySlotsUnchanged(_LedgerIsolated):
     """B. am/pm 摘要仍是「日熔丝一天一条」，不受 live 影响。"""

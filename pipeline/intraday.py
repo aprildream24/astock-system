@@ -112,6 +112,16 @@ def _purge_old(con, date):
         print(f"[intraday] 保留期清理失败（不阻断）: {e}")
 
 
+def _cap_rows(rows, hint, cap=15):
+    """live 首轮可能一次性出现几十上百只进买区（账本全新，全是"新事件"），
+    推送不是阅读器——截前 cap 行 + 总数提示，全量走网页版。
+    标记仍按**全量**记（用户已通过总数被告知，不重复轰炸）。"""
+    if len(rows) <= cap:
+        return rows, hint
+    return rows[:cap], (hint + f"（仅列前 {cap} 只 / 共 {len(rows)} 只，"
+                        "全量见网页版）")
+
+
 def in_window(slot, now):
     """时段守门：防误触发（定时器故障 / 手工 dispatch 到非盘中）。"""
     t = now.hour * 60 + now.minute
@@ -452,13 +462,14 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     # ---- 打扰纪律：只有下列情形才推 ----
     groups = []
     if watch_zone_hits:
+        _rows = [((w["code"], w["name"], f'{w["price"]:.2f}',
+                   f'{w["pct"]:+.1f}%' if w["pct"] is not None else "—",
+                   f'{w["lo"]:.2f}~{w["hi"]:.2f}'),
+                  [_TXT, _TXT, _HL, _HL, _HL]) for w in watch_zone_hits]
+        _rows, _hint = _cap_rows(
+            _rows, "自选票回落到关注区间；按各自止损纪律执行")
         groups.append({
-            "title": "★ 自选进入买区（可下单）",
-            "hint": "自选票回落到关注区间；按各自止损纪律执行",
-            "rows": [((w["code"], w["name"], f'{w["price"]:.2f}',
-                       f'{w["pct"]:+.1f}%' if w["pct"] is not None else "—",
-                       f'{w["lo"]:.2f}~{w["hi"]:.2f}'),
-                      [_TXT, _TXT, _HL, _HL, _HL]) for w in watch_zone_hits]})
+            "title": "★ 自选进入买区（可下单）", "hint": _hint, "rows": _rows})
     if hold_hits:
         groups.append({
             "title": "⚠ 持仓触及止损", "hint": "按纪律处置，勿临场改判",
@@ -468,16 +479,18 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                      for h in hold_hits]})
     if in_zone:
         _zh = {"am": "早盘", "pm": "尾盘"}.get(slot, "现价")
+        _rows = [((p["code"],
+                   p["name"] + (f'（{p["action"]}）' if _live
+                                and p.get("action") else ""),
+                   f'{p["price"]:.2f}',
+                   f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
+                   f'{p["lo"]:.2f}~{p["hi"]:.2f}'),
+                  [_TXT, _TXT, _HL, _HL, _HL]) for p in in_zone]
+        _rows, _hint = _cap_rows(
+            _rows, "现价已在计划买区内；收盘前有效，次日可卖")
         groups.append({
-            "title": f"● {_zh}进入买区（可当日下单）",
-            "hint": "现价已在计划买区内；收盘前有效，次日可卖",
-            "rows": [((p["code"],
-                       p["name"] + (f'（{p["action"]}）' if _live
-                                    and p.get("action") else ""),
-                       f'{p["price"]:.2f}',
-                       f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
-                       f'{p["lo"]:.2f}~{p["hi"]:.2f}'),
-                      [_TXT, _TXT, _HL, _HL, _HL]) for p in in_zone]})
+            "title": f"● {_zh}进入买区（可当日下单）", "hint": _hint,
+            "rows": _rows})
     if slot == "am" and plans and len(below) * 2 >= len(plans):
         groups.append({
             "title": "○ 盘前计划转差", "hint": "多数标的已跌破买区下沿，当日不宜按计划挂单",
