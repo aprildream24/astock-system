@@ -1103,6 +1103,21 @@ def build(task="close", date=None, period_days=30):
                         (_c["code"],)).fetchone()
                     if _ind:
                         _c["sector"] = _ind[0]
+                    # 09-27 换股备选清单：现价 + 溢价（现价高于买区上沿 %），
+                    # render_holding_advice 按它过滤 >10% 的天上票并排序
+                    _k = con.execute(
+                        "SELECT c FROM klines WHERE code=? AND date=?",
+                        (_c["code"], date)).fetchone()
+                    if _k and _k[0] and _c["buy_low"] and _c["buy_high"]:
+                        _c["close"] = _k[0]
+                        if _c["buy_low"] <= _k[0] <= _c["buy_high"]:
+                            _c["dist_pct"] = 0.0
+                        elif _k[0] > _c["buy_high"]:
+                            _c["dist_pct"] = round(
+                                (_k[0] / _c["buy_high"] - 1) * 100, 1)
+                        else:
+                            _c["dist_pct"] = round(
+                                (_k[0] / _c["buy_low"] - 1) * 100, 1)
                     _ex_row = con.execute(
                         "SELECT pool, extra FROM candidate_snapshots "
                         "WHERE code=? AND date=?", (_c["code"], date)).fetchone()

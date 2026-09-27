@@ -901,15 +901,41 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
     三段式（与主推送同 <table> 风格、同三色纪律）：
       ① 概要条：持仓 N 只 · 需处理 M 只 + 弱市提示
       ② 持仓体检：每只 成本/现价/浮盈 · 裁决徽章 · 触发原因 · 止损/买区 · 板块(热/冷)
-      ③ 换股候选：今日推荐中可下单优先，其次高分等回踩
+      ③ 换股备选：溢价≤10% 内的可挑选清单（09-27 用户口径），一行一票
     颜色：浮亏红(#e25c5c)/浮盈蓝(#5cc8e2)；SELL 红徽章、警惕黄、持有蓝；
     候选可买绿徽章、等回踩黄徽章。"""
+    # ⓪ 换股备选预计算（溢价 = 现价高于买区上沿；>10% 不入列——
+    #    概要条/换股提示/③共用这一份）
+    def _dist_of(c):
+        d = c.get("dist_pct")
+        if d is None:
+            close, lo, hi = c.get("close"), c.get("buy_low"), c.get("buy_high")
+            if close and lo and hi:
+                d = (0.0 if lo <= close <= hi
+                     else round((close / hi - 1) * 100, 1) if close > hi
+                     else round((close / lo - 1) * 100, 1))
+        return d
+
+    opts = []
+    for c in (candidates or []):
+        d = _dist_of(c)
+        if d is not None and d > 10:
+            continue                          # 天上票：列出来没有意义
+        opts.append((d, c))
+    _ACT_NOW = ("现在买", "可买", "小仓试")
+    opts.sort(key=lambda t: (
+        0 if (t[1].get("action") in _ACT_NOW and (t[0] or 0) <= 0) else 1,
+        t[0] if t[0] is not None else 99,
+        -(t[1].get("eff_score") or t[1].get("score") or 0)))
+
     # ① 概要
     he = list(holdings_eval or [])
     need = sum(1 for h in he if h.get("exit_action") == "SELL"
                or h.get("swap_hint"))
     summary = (f"持仓 {len(he)} 只 · 需处理 {need} 只　｜ "
-               f"磨叽/震荡市里：弱者优先减、强势热板块优先换（去弱留强）")
+               f"磨叽/震荡市里：弱者优先减、强势热板块优先换（去弱留强）"
+               + (f"　｜ 换股备选 {len(opts)} 只（溢价≤10% 内自行挑选）"
+                  if opts else ""))
     body = [f'<h3 style="margin:6px 0 2px">📋 持仓体检 {_esc(date)}</h3>',
             f'<p style="color:#9aa4b2;font-size:13px;margin:0 0 8px">'
             f'{_esc(summary)}</p>']
@@ -968,7 +994,10 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
                          f'</span>')
         if h.get("swap_hint"):
             notes.append(f'<span style="color:#ff6b5e;font-weight:700">'
-                         f'{_esc(h["swap_hint"])}</span>')
+                         f'{_esc(h["swap_hint"])}'
+                         + (f'（下方备选 {len(opts)} 只，溢价≤10% 内可自行挑选）'
+                            if opts else "")
+                         + '</span>')
         for r in h.get("exit_reasons") or []:
             notes.append(_esc(str(r)))
         if notes:
@@ -982,65 +1011,62 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
     else:
         body.append('<p style="color:#8a93a3">今日无登记持仓</p>')
 
-    # ③ 换股候选
-    body.append('<h4 style="margin:12px 0 4px">🔁 换股候选（排序即优先级：'
-                '排第 1 的最值得买）</h4>')
+    # ③ 换股备选（2026-09-27 用户口径：「到底是换成博通集成还是其他股票？
+    # 其他股票在10%以内溢价我都可以接受，可以提供给我自己挑选」）
+    # —— 从"排好队的推荐卡"改为**可挑选清单**：
+    #   · 溢价（现价高于买区上沿）>10% 的天上票直接不入列；
+    #   · 排序 = 区内可买优先 → 溢价从低到高 → 综合分从高到低；
+    #   · 一行一票：序号/动作/名称/买区/溢价/综合分/板块，够挑选就够。
+    # —— 清单本体（opts 已在函数开头预计算，供概要条/换股提示共用）：
+    body.append('<h4 style="margin:12px 0 4px">🔁 换股备选（自行挑选 · '
+                '溢价≤10% 内均可接）</h4>')
     body.append('<p style="color:#9aa4b2;font-size:12px;margin:0 0 6px">'
-                '【综合分】是排序参考。【三确认(强)】= 盘前/竞价/收盘三个时点'
-                '都验证过 = 信号最强。等回踩 = 到价再买，勿追高。</p>')
-    _ACT_ORDER = {"现在买": 0, "可买": 0, "小仓试": 1, "等回踩": 2,
-                  "次日竞价达标买": 3}
-    cands_sorted = sorted(candidates or [],
-                          key=lambda c: (_ACT_ORDER.get(c.get("action"), 9),
-                                         -(c.get("eff_score")
-                                           or c.get("score") or 0)))
-    for rank, c in enumerate(cands_sorted, start=1):
-        act = c.get("action") or "—"
-        is_buy = act in ("现在买", "可买", "小仓试")
-        badge = _badge(act, "#3fae6b" if is_buy else "#e0a93b")
-        eff = c.get("eff_score") or c.get("score") or "—"
-        # 确认标签（大字行）
-        conf = c.get("confirms") or 0
-        conf_html = ""
-        if conf >= 3:
-            conf_html = ('<div style="background:#1d4228;border:1px solid '
-                         '#3fae6b;border-radius:6px;padding:5px 10px;'
-                         'margin:4px 0;color:#3fae6b;font-weight:700;'
-                         'font-size:14px">✅ 三确认（连续3天推荐，最强）</div>')
-        elif conf >= 2:
-            conf_html = ('<div style="background:#332a10;border:1px solid '
-                         '#e0a93b;border-radius:6px;padding:5px 10px;'
-                         'margin:4px 0;color:#e0a93b;font-weight:700;'
-                         'font-size:13px">● 双确认（连续2天推荐）</div>')
-        # 板块/位置/主线 标签行
-        tags = [x for x in (c.get("pool"), c.get("pos_label"),
-                            c.get("mainline")) if x]
-        tag_s = " · ".join(tags) if tags else "—"
-        sector_s = c.get("sector") or ""
-        if c.get("sector_temp"):
-            sector_s += f" {c['sector_temp']}"
-        _lo, _hi = c.get("buy_low"), c.get("buy_high")
-        _st = c.get("stop")
-        _row_line = (f'<div style="margin:2px 0;font-size:13.5px">'
-                     f'<span style="color:#8a93a3">买区</span> '
-                     f'<span style="color:#3fae6b;font-weight:700">'
-                     f'{_fmt2(_lo)}~{_fmt2(_hi)}</span>'
-                     f'　<span style="color:#8a93a3">止损</span> '
-                     f'{_fmt2(_st)}</div>')
-        inner = (_table(
-            f"<tr><td><span style='font-size:15px;font-weight:700;"
-            f"color:#e8eaed'>{_esc(c.get('name') or c.get('code',''))}</span>"
-            f"<span style='color:#8a93a3;font-size:12px;margin-left:6px'>"
-            f"{_esc(c.get('code',''))}</span></td>"
-            f'<td align="right" valign="top">{badge}</td></tr>'))
-        inner += conf_html
-        inner += _row_line
-        inner += ('<div style="font-size:12.5px;color:#9aa0a6;margin:2px 0">'
-                  f'第 {rank} 名 ｜ 综合分 {eff} ｜ {_esc(tag_s)} ｜ '
-                  f'{_esc(sector_s)}</div>')
-        body.append(_card(inner, border="#2b313d"))
-    if not cands_sorted:
-        body.append('<p style="color:#8a93a3">今日无换股候选</p>')
+                '排序即推荐优先级，第 1 名最值得换入。溢价 = 现价高于买区'
+                '上沿的幅度（负数 = 低于下沿，等回升到区内再买）。</p>')
+    if opts:
+        rows = ""
+        for rank, (d, c) in enumerate(opts[:8], start=1):
+            act = c.get("action") or "—"
+            is_buy = act in _ACT_NOW
+            badge = _badge(act, "#3fae6b" if is_buy else "#e0a93b")
+            if d is None:
+                d_s, d_c = "—", "#9aa0a6"
+            elif d == 0:
+                d_s, d_c = "区内", "#3fae6b"
+            elif d < 0:
+                d_s, d_c = f"{d:+.1f}%", "#6ab0ff"
+            else:
+                d_s, d_c = f"溢价{d:+.1f}%", ("#e0a93b" if d <= 5
+                                              else "#ff8a4a")
+            eff = c.get("eff_score") or c.get("score") or "—"
+            sector_s = (c.get("sector") or "")
+            if c.get("sector_temp"):
+                sector_s += f" {c['sector_temp']}"
+            rows += (
+                '<tr><td style="padding:5px 2px;border-bottom:1px solid '
+                f'#2b313d;font-size:13.5px;color:#e8eaed;white-space:nowrap">'
+                f'{rank}. {badge} {_esc(c.get("name") or c.get("code",""))}'
+                f' <span style="color:#8a93a3;font-size:12px">'
+                f'{_esc(c.get("code",""))}</span></td>'
+                '<td style="padding:5px 4px;border-bottom:1px solid #2b313d;'
+                'font-size:13px;white-space:nowrap">'
+                f'<span style="color:#8a93a3">买</span> '
+                f'<span style="color:#3fae6b;font-weight:700">'
+                f'{_fmt2(c.get("buy_low"))}~{_fmt2(c.get("buy_high"))}'
+                f'</span></td>'
+                f'<td style="padding:5px 4px;border-bottom:1px solid #2b313d;'
+                f'font-size:13px;font-weight:700;color:{d_c};'
+                f'white-space:nowrap">{_esc(d_s)}</td>'
+                '<td style="padding:5px 4px;border-bottom:1px solid #2b313d;'
+                'font-size:12.5px;color:#9aa0a6;white-space:nowrap">'
+                f'分{_esc(eff)} {_esc(sector_s)}</td></tr>')
+        body.append(_card(_table(rows), border="#2b313d"))
+        if len(opts) > 8:
+            body.append(f'<p style="color:#9aa4b2;font-size:12px">'
+                        f'另有 {len(opts) - 8} 只备选见网页版完整详情。</p>')
+    else:
+        body.append('<p style="color:#8a93a3">今日无溢价≤10% 的换股备选'
+                    '（其余候选均已涨离买区过远，不列）。</p>')
 
     html = ('<div style="' + _STY["doc"] + '">' + "".join(body) + "</div>")
     if len(html) > PP_HTML_CAP:

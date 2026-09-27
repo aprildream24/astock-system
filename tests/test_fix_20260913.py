@@ -284,5 +284,76 @@ class TestPushLayout(unittest.TestCase):
         self.assertIn("目前市场无合适股票", html)
 
 
+class TestSwapOptions(unittest.TestCase):
+    """09-27 用户口径：换股备选 = 溢价≤10% 内的可挑选清单。
+
+    「到底是换成博通集成还是其他股票？其他股票在10%以内溢价我都可以
+    接受，可以提供给我自己挑选」——锁排序、锁溢价标注、锁天上票剔除。
+    """
+
+    CANDS = [
+        {"code": "sh603068", "name": "博通集成", "action": "现在买",
+         "buy_low": 48.02, "buy_high": 49.48, "close": 48.51, "score": 52,
+         "sector": "半导体"},
+        {"code": "sh601579", "name": "会稽山", "action": "小仓试",
+         "buy_low": 36.90, "buy_high": 38.23, "close": 38.04, "score": 61,
+         "sector": "黄酒"},
+        {"code": "sz300829", "name": "金丹科技", "action": "等回踩",
+         "buy_low": 26.73, "buy_high": 27.70, "close": 29.5, "score": 65,
+         "sector": "乳酸"},
+        {"code": "sz002005", "name": "德豪润达", "action": "现在买",
+         "buy_low": 2.77, "buy_high": 2.86, "close": 3.25, "score": 40,
+         "sector": "LED"},
+        {"code": "sz000910", "name": "大亚圣象", "action": "等回踩",
+         "buy_low": 6.74, "buy_high": 7.01, "close": 6.60, "score": 67,
+         "sector": "地板"},
+    ]
+    HOLDINGS = [{"code": "sh605566", "name": "福莱蒽特", "close": 32.82,
+                 "buy_price": 34.2, "pnl_pct": -4.04, "stop": 30.20,
+                 "verdict": "建议换股", "exit_action": "SELL",
+                 "swap_hint": "持续走弱：建议换股（去弱留强）",
+                 "sector": "化纤"}]
+
+    def setUp(self):
+        self.html = notifier.render_holding_advice(
+            self.HOLDINGS, self.CANDS, "2026-09-28")
+
+    def test_summary_counts_options(self):
+        self.assertIn("换股备选 4 只（溢价≤10% 内自行挑选）", self.html)
+
+    def test_swap_hint_points_to_list(self):
+        self.assertIn("下方备选 4 只", self.html)
+
+    def test_sky_high_excluded(self):
+        """溢价 +13.6% 的德豪润达不入列（>10% 没有意义）。"""
+        self.assertNotIn("德豪润达", self.html)
+
+    def test_premium_annotated(self):
+        self.assertIn("区内", self.html)
+        self.assertIn("溢价+6.5%", self.html)      # 金丹 (29.5/27.70-1)
+        self.assertIn("-2.1%", self.html)          # 大亚 (6.60/6.74-1)
+
+    def test_order_buyable_first_then_premium(self):
+        """区内可买（按综合分）在前，等回踩按溢价从低到高。"""
+        i_kj, i_bt = self.html.find("会稽山"), self.html.find("博通集成")
+        i_jd, i_dy = self.html.find("金丹科技"), self.html.find("大亚圣象")
+        self.assertLess(i_kj, i_bt, "区内并列按综合分：会稽山(61)>博通(52)")
+        self.assertLess(i_bt, i_jd)
+        self.assertLess(i_dy, i_jd, "等回踩溢价升序：大亚(-2.1)<金丹(+6.5)")
+
+    def test_numbered_menu(self):
+        self.assertIn("1. ", self.html)
+        self.assertIn("自行挑选", self.html)
+
+    def test_all_sky_high_honest_empty(self):
+        """全部候选溢价>10% → 直说无备选，不硬凑。"""
+        sky = [{"code": "sz002005", "name": "德豪润达", "action": "现在买",
+                "buy_low": 2.77, "buy_high": 2.86, "close": 3.25,
+                "score": 40}]
+        html = notifier.render_holding_advice(self.HOLDINGS, sky,
+                                              "2026-09-28")
+        self.assertIn("今日无溢价≤10% 的换股备选", html)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

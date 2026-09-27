@@ -152,14 +152,14 @@ class TestRenderHoldingAdvice(_Base):
         html = N.render_holding_advice(he, cands, "2026-09-18")
         self.assertIn("持仓体检", html)
         self.assertIn("荣盛石化", html)
-        self.assertIn("换股候选", html)
+        self.assertIn("换股备选", html)
         self.assertIn("航天动力", html)
         self.assertIn("-1.61%", html)
 
     def test_empty_candidates(self):
         html = N.render_holding_advice([], [], "2026-09-18")
         self.assertIn("持仓体检", html)
-        self.assertIn("今日无换股候选", html)
+        self.assertIn("今日无溢价≤10% 的换股备选", html)
 
 
 # ---------------------------------------------------------------------------
