@@ -650,7 +650,7 @@
  },
  "e2df8a2fcb05718c": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-09-24 09:23:09",
+  "ts": "2026-09-24 10:03:43",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -690,7 +690,7 @@
  },
  "046dd1b2eb93417f": {
   "mode": "rehearsal_review",
-  "ts": "2026-09-24 09:23:25",
+  "ts": "2026-09-24 10:03:59",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -698,7 +698,31 @@
  },
  "44c642ff2cf3325d": {
   "mode": "rehearsal_rehearsal_exec",
-  "ts": "2026-09-27 09:23:26",
+  "ts": "2026-09-27 10:04:00",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "1335322e70c8532e": {
+  "mode": "rehearsal_build_pre",
+  "ts": "2026-09-24 10:03:30",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "add18dd68312f7eb": {
+  "mode": "rehearsal_build_auction",
+  "ts": "2026-09-24 10:03:42",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "e9cb6b8a76ecb42a": {
+  "mode": "rehearsal_build_close",
+  "ts": "2026-09-24 10:03:51",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
