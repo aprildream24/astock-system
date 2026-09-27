@@ -166,7 +166,9 @@ def wait_until(hhmm, now=None):
 
 
 def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
-    """执行一个 part 的完整时点序列。返回 dispatch 成功数。"""
+    """执行一个 part 的完整时点序列。返回 (成功数, 应发数)。
+
+    非交易日/幂等退出 → (0, 0)（语义 = 无事可做，**不是失败**）。"""
     token = token or os.environ.get("GH_PAT", "").strip()
     repo = repo or os.environ.get("GH_REPO", "aprildream24/astock-system")
     n = now or bj_now()
@@ -176,7 +178,7 @@ def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
     if not trade_calendar.is_trade_day(date):
         print(f"[driver] {date} 非交易日"
               f"（{trade_calendar.why_closed(date)}）→ 退出，零消耗", flush=True)
-        return 0
+        return 0, 0
     if os.environ.get("DRY_RUN") == "1":
         dry = True
 
@@ -185,7 +187,7 @@ def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
         if rid and another_alive(token, repo, wf_file, int(rid)):
             print("[driver] 今日已有实例在跑/已成功 → 本次点火退出（幂等）",
                   flush=True)
-            return 0
+            return 0, 0
     else:
         print("[driver] ⚠ 无 GH_PAT → 跳过幂等检查（仍会尝试 dispatch）",
               flush=True)
@@ -204,9 +206,9 @@ def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
         else:
             print(f"[driver] ✗ dispatch {task} {extra or ''} 三次均失败"
                   f"——本时点丢失，验收/守门会兜底", flush=True)
-    print(f"[driver] {part} 完成：{ok}/{len(PLAN[part])} 个时点已触发",
-          flush=True)
-    return ok
+    total = len(PLAN[part])
+    print(f"[driver] {part} 完成：{ok}/{total} 个时点已触发", flush=True)
+    return ok, total
 
 
 def main(argv=None):
@@ -221,7 +223,8 @@ def main(argv=None):
         ref = os.environ.get("GITHUB_WORKFLOW_REF", "")
         wf = ref.split("/.github/workflows/")[-1].split("@")[0] \
             if "/.github/workflows/" in ref else "unknown.yml"
-    return 0 if run_part(a.part, wf) == len(PLAN[a.part]) else 1
+    ok, total = run_part(a.part, wf)
+    return 0 if total == 0 or ok == total else 1
 
 
 if __name__ == "__main__":

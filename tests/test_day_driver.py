@@ -93,7 +93,7 @@ class TestDriverBehavior(unittest.TestCase):
                                  repo="x/y",
                                  now=_dt.datetime(2026, 9, 26, 8, 0,
                                                   tzinfo=BJT))
-        self.assertEqual(n, 0)
+        self.assertEqual(n, (0, 0), "非交易日 = 无事可做，不是失败")
         disp.assert_not_called()
 
     def test_run_part_dispatches_in_order(self):
@@ -108,7 +108,7 @@ class TestDriverBehavior(unittest.TestCase):
             n = self.dd.run_part(
                 "morning", "day-morning.yml", token="", repo="x/y",
                 now=_dt.datetime(2026, 9, 24, 8, 0, tzinfo=BJT))
-        self.assertEqual(n, 4)
+        self.assertEqual(n, (4, 4))
         self.assertEqual([c[0] for c in calls],
                          ["pre", "auction", "intraday", "pre"])
         self.assertEqual(calls[2][1], {"slot": "am"})
