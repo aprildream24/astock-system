@@ -1,0 +1,37 @@
+# 午后日驱动（纯 GitHub 触发，2026-09-27）。
+#
+#   14:40 intraday pm（尾盘机会摘要）→ 15:22 close（收盘构建 + Pages）
+#   → 15:45 audit-close（重发 close dispatch，日熔丝拦 build、自检核对送达）。
+#
+# 双点火：'50 5 * * 1-5'（13:50 北京）为主，'20 6 * * 1-5'（14:20 北京）
+# 为备份——主点火延迟 ≤30 分钟时备份准时接管。
+name: day-afternoon
+
+on:
+  schedule:
+    - cron: "50 5 * * 1-5"    # 周一~周五 13:50 北京（主点火）
+    - cron: "20 6 * * 1-5"    # 周一~周五 14:20 北京（备份点火）
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: day-afternoon
+  cancel-in-progress: false
+
+jobs:
+  drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 午后时点队列（pm/close/audit）
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: python -m tools.day_driver --part afternoon

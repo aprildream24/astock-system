@@ -30,6 +30,7 @@ CRONJOB_API_KEY 已实证无效（GET /jobs 404，同样卡住旧定时器清理
 """
 import argparse
 import datetime as _dt
+import os
 import sys
 import time
 
@@ -75,6 +76,42 @@ def _one_cycle(date, now):
     return True
 
 
+def _already_running(token, repo, my_run_id):
+    """今天（北京日）是否已有**别的** live 循环实例在跑。
+
+    触发路径有三条（auction 顺链 / intraday am 顺链备份 / 手动 dispatch），
+    并发两份循环会双份抓快照、双份 cache 存档互相覆盖。GH API 查本
+    workflow 当日非失败 run 即可判重；查不到（无 token/网络抖动）放行
+    ——宁可信其无：事件级推送去重兜底，最坏是多抓几份快照。"""
+    if not token:
+        return False
+    import json
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/actions/workflows/"
+            f"intraday-live.yml/runs?per_page=10",
+            headers={"Authorization": "Bearer " + token,
+                     "Accept": "application/vnd.github+json",
+                     "User-Agent": "astra-live-loop"})
+        runs = json.loads(urllib.request.urlopen(req, timeout=25).read()) \
+            .get("workflow_runs", [])
+        today = _bj_now().strftime("%Y-%m-%d")
+        for r in runs:
+            if r.get("id") == my_run_id:
+                continue
+            created = _dt.datetime.fromisoformat(
+                r["created_at"].replace("Z", "+00:00")).astimezone(_CST)
+            if created.strftime("%Y-%m-%d") != today:
+                continue
+            if r.get("status") != "completed" or r.get("conclusion") == "success":
+                return True
+    except Exception as e:                      # noqa: BLE001
+        print(f"[live-loop] 并发检查失败（放行）: {type(e).__name__} {e}",
+              flush=True)
+    return False
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="盘中买点巡检长循环")
     ap.add_argument("--once", action="store_true", help="只跑一轮（测试用）")
@@ -86,6 +123,12 @@ def main(argv=None):
     if not trade_calendar.is_trade_day(date):
         print(f"[live-loop] {date} 非交易日"
               f"（{trade_calendar.why_closed(date)}）→ 退出")
+        return 0
+    _tok = (os.environ.get("GH_PAT") or "").strip()
+    _repo = os.environ.get("GH_REPO", "aprildream24/astock-system")
+    _rid = os.environ.get("RUN_ID", "")
+    if _tok and _rid and _already_running(_tok, _repo, int(_rid)):
+        print("[live-loop] 今日已有实例在跑/已成功 → 本次触发退出（并发守门）")
         return 0
     if _minutes(now) < MORNING_START:
         wait = (MORNING_START - _minutes(now)) * 60 - now.second

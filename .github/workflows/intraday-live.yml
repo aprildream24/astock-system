@@ -49,6 +49,9 @@ jobs:
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
           WATCH_CODES: ${{ secrets.WATCH_CODES }}
           HOLDINGS_CONF: ${{ secrets.HOLDINGS_CONF }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: python -m tools.live_loop
       # 收盘退出后存档：15:22 close 主链 restore-keys 取到本份。
       # 常驻期间状态在 runner 文件系统上自然延续，无需中途存档。

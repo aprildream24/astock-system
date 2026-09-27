@@ -89,6 +89,29 @@ def prefixed(code):
     return ("sh" if code.startswith("6") else "sz") + code
 
 
+def _purge_old(con, date):
+    """保留期清理（2026-09-27）：live 每 10 分钟写一版全市场快照（~4500
+    行/轮、22 轮/交易日），不清理则 market.db 每天膨胀 ~10 万行——
+    GH cache 10GB 仓库上限会被无声吃穿，然后所有任务的缓存互相驱逐。
+    snapshot_live 只留今昨两天（盘中 _last_price 只查当天；昨天留作排查），
+    live_alerts 留 7 天（事件回溯用）。清理失败不阻断巡检。"""
+    try:
+        cur = con.execute(
+            "DELETE FROM snapshot_live WHERE date < date(?, '-1 day') "
+            "OR date > ?", (date, date))
+        a = cur.rowcount
+        cur = con.execute(
+            "DELETE FROM live_alerts WHERE date < date(?, '-6 day')",
+            (date,))
+        b = cur.rowcount
+        con.commit()
+        if a or b:
+            print(f"[intraday] 保留期清理：snapshot_live -{a} 行，"
+                  f"live_alerts -{b} 行")
+    except Exception as e:                      # noqa: BLE001
+        print(f"[intraday] 保留期清理失败（不阻断）: {e}")
+
+
 def in_window(slot, now):
     """时段守门：防误触发（定时器故障 / 手工 dispatch 到非盘中）。"""
     t = now.hour * 60 + now.minute
@@ -234,6 +257,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         out["reason"] = f"非{slot}时段（现在 {now:%H:%M}）"
         print(f"[intraday] {out['reason']} → 跳过（防误触发）")
         return out
+    _purge_old(con, date)
 
     snap = fetch_daily.fetch_universe()
     out["universe"] = len(snap)

@@ -1,0 +1,34 @@
+# 晚间日驱动（纯 GitHub 触发，2026-09-27）。
+#
+#   20:02 review（复盘 + AI 叙事）→ 20:20 audit-review（重发 review
+#   dispatch，连带复核收盘送达；review 本身不分钟级敏感，单点火够用——
+#   原 09-14 血案里它拖到 22:10 是重复推送问题，本 driver 幂等去重后无此虞）。
+name: day-evening
+
+on:
+  schedule:
+    - cron: "30 11 * * 1-5"   # 周一~周五 19:30 北京（点火）
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: day-evening
+  cancel-in-progress: false
+
+jobs:
+  drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 晚间时点队列（review/audit）
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: python -m tools.day_driver --part evening

@@ -345,13 +345,13 @@ jobs:
           echo "[executor] slot=$SLOT（空=非盘中任务；建仓时段闸门在 executor 内部）"
           python -m tools.executor --task auto --slot "$SLOT"
       # ★ 2026-09-26 新增：盘中买点巡检长循环（auction 顺链）。
-      # cron-job.org 的 astock-intraday-live 定时器因 Secret key 无效
-      # （GET /jobs 404）暂建不出，由本步骤在每个交易日竞价后 dispatch
-      # intraday-live.yml——单 runner 常驻交易时段，每 10 分钟一轮
-      # 买点巡检（事件级去重）+ 模拟盘同步建仓。用户补有效 key 并建成
-      # 定时器后，删除本步骤即可（两条触发路径并存也不会重复推送）。
-      - name: 触发盘中买点巡检长循环（auction 顺链）
-        if: github.event.inputs.task == 'auction'
+      # 2026-09-27 加 am 备份点火：auction run 万一失败，早盘校验(09:45)
+      # 顺链再试一次（live_loop 有并发守门：已有实例在跑 → 后到的退出）。
+      # cron-job 定时器不可用期间的触发路径；事件级去重保证不重复推送。
+      - name: 触发盘中买点巡检长循环（auction/am 顺链）
+        if: >-
+          github.event.inputs.task == 'auction' ||
+          (github.event.inputs.task == 'intraday' && github.event.inputs.slot == 'am')
         continue-on-error: true
         env:
           GH_PAT: ${{ secrets.GH_PAT }}

@@ -1,0 +1,42 @@
+# 早间日驱动（纯 GitHub 触发，2026-09-27）。
+#
+# cron-job.org 从本日起弃用（用户要求不再混用两套系统）。主链时点全部由
+# 本 driver 按**北京时间**精确 dispatch（tools/day_driver.py）：
+#   08:50 pre → 09:25 auction（其顺链步骤自动启动 live 巡检长循环）
+#   → 09:45 intraday am → 10:00 audit-am（重发 pre dispatch，build 被
+#   日熔丝拦掉，run 末尾的「推送验收」独立核对送达并按需补发）。
+#
+# 双点火 + 幂等：'50 23 * * 0-4'（周一 07:50 北京）为主点火，
+# '25 0 * * 1-5'（08:25 北京）为备份——GH schedule 延迟 ≤35 分钟时由
+# 备份准时接管；同日已有实例在跑/已成功 → 后到的点火自动退出。
+# ⚠️ GitHub 的 schedule 一律按 UTC 写：23:50 UTC(周日) = 07:50 北京(周一)。
+name: day-morning
+
+on:
+  schedule:
+    - cron: "50 23 * * 0-4"   # 周一~周五 07:50 北京（主点火）
+    - cron: "25 0 * * 1-5"    # 周一~周五 08:25 北京（备份点火）
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: day-morning
+  cancel-in-progress: false   # 幂等检查负责去重，硬取消会误杀首发
+
+jobs:
+  drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 早间时点队列（pre/auction/am/audit）
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: python -m tools.day_driver --part morning
