@@ -63,6 +63,7 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           "test_timer_guard.py",
           # 2026-09-26/27 新增：live 高频巡检 + 纯 GitHub 日驱动
           "test_intraday_live.py", "test_day_driver.py",
+          "test_fallback_verify.py",
           # 2026-09-18 新增：板块热度标注 + 行情好放开限量（用户需求：
           # "行情好时针对评分高的个股全部推荐、标注板块热度、不再限制 3 个"）。
           # 同时锁住两处**静默失效**：sector_temp 冷热因子与同板块去重

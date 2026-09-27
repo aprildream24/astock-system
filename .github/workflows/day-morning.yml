@@ -39,4 +39,8 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          # 前序核验告警要走真实推送通道（缺了只会静默打印）
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
         run: python -m tools.day_driver --part morning

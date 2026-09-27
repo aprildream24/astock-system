@@ -165,6 +165,110 @@ def wait_until(hhmm, now=None):
     return tgt, slept
 
 
+# ---------------------------------------------------------------------------
+# 前序推送核验（2026-09-27 升级：守门盯「日驱动没跑/推送没到」）
+#
+# 判据 = dist/push_ledger.json（云端唯一权威账本——"步骤 success"≠"送达"），
+# 而不是"run 存在"。intraday_am/pm/live 时常**合法静默**（无事件不推），
+# 永不列入必达项；只核验 build_* 主链推送。
+#   · morning 结束后（~10:01）：pre/auction 已送达？
+#   · afternoon 开始（13:50）：pre/auction 已送达？（morning 静默 → 告警）
+#   · afternoon 结束（~15:47）：close 已送达？缺失 → **自动补发 close**
+#   · evening 开始（19:30）：close 已送达？缺失 → 自动补发（双保险）
+#   · evening 结束（~20:21）：review 已送达？+ 主链连续失败检查
+# 补发的 close 是真推送（当日额度未占用，日熔丝不拦）；若 15:22 那次只是
+# 慢、补发 run 后到，日熔丝会拦掉后者，绝不重复推。
+# ---------------------------------------------------------------------------
+VERIFY_START = {"morning": (), "afternoon": ("build_pre", "build_auction"),
+                "evening": ("build_close",)}
+VERIFY_END = {"morning": ("build_pre", "build_auction"),
+              "afternoon": ("build_close",), "evening": ("build_review",)}
+CATCHUP = {"build_close": "close"}
+
+
+def ledger_modes_today(token, repo, date):
+    """→ (今日已 sent 的 mode 集合, 账本是否可读)。
+
+    账本读不到 → (set(), False)：宁可漏报不可误报（账本读不到≠没推送）。"""
+    try:
+        st, d = _req("GET", f"{GH_API}/repos/{repo}/contents/"
+                     "dist/push_ledger.json?ref=main", token)
+        if st != 200:
+            return set(), False
+        import base64
+        raw = base64.b64decode(d.get("content", "")).decode("utf-8", "replace")
+        ledger = json.loads(raw) or {}
+    except Exception as e:                          # noqa: BLE001
+        print(f"[driver] 账本读取失败（跳过核验，不告警）: "
+              f"{type(e).__name__} {e}", flush=True)
+        return set(), False
+    sent = set()
+    for item in ledger.values():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("ts", "")).startswith(date) \
+                and item.get("status") == "sent":
+            sent.add(item.get("mode"))
+    return sent, True
+
+
+def _alert(text, dry=False):
+    """守门告警走真实推送通道（force 绕过去重——守门告警必须到达）。"""
+    print("[driver] ⚠ 告警内容：\n" + text, flush=True)
+    if dry:
+        return
+    try:
+        from pipeline import notifier
+        r = notifier.push("watchdog_alert", "日驱动守门告警",
+                          notifier.md2html(text), force=True)
+        print(f"[driver] 告警推送: {r}", flush=True)
+    except Exception as e:                          # noqa: BLE001
+        print(f"[driver] 告警推送失败（忽略）: {type(e).__name__} {e}",
+              flush=True)
+
+
+def verify_prior(part, token, repo, date, when, dry=False):
+    """核验必达推送；缺失 → 告警 + 尽力补发（见 CATCHUP）。返回告警条数。"""
+    need = (VERIFY_START if when == "start" else VERIFY_END).get(part, ())
+    if not need:
+        return 0
+    sent, ok = ledger_modes_today(token, repo, date)
+    if not ok:
+        return 0
+    missing = [m for m in need if m not in sent]
+    if not missing:
+        print(f"[driver] 前序核验 ✓ {part}/{when}：{len(need)} 项均已送达",
+              flush=True)
+        return 0
+    for m in list(missing):
+        task = CATCHUP.get(m)
+        if task:
+            print(f"[driver] ⚠ {m} 今日未送达 → 自动补发 {task}", flush=True)
+            if dry or dispatch(token, repo, task):
+                missing.remove(m)
+    lines = [f"- {m} 今日未送达（{bj_now():%H:%M} 核验）" for m in missing]
+    if any(m in CATCHUP for m in missing):
+        lines.append("- 补发 dispatch 已触发/失败，详见 Actions 运行记录")
+    else:
+        lines.append("- 时效性推送无法补发，请到 Actions 页查看对应时点运行")
+    _alert(f"日驱动守门告警 · {part}/{when}\n\n" + "\n".join(lines), dry=dry)
+    return len(missing)
+
+
+def chain_check(token, repo, dry=False):
+    """主链连续失败检查（复用 timer_guard.chain_status，只在晚间跑一次）。"""
+    try:
+        from pipeline import timer_guard
+        state, detail = timer_guard.chain_status(repo, token)
+    except Exception as e:                          # noqa: BLE001
+        print(f"[driver] 主链检查异常（忽略）: {type(e).__name__} {e}")
+        return
+    if state == "blocked":
+        _alert(f"日驱动守门告警 · 主链卡死\n\n- {detail}", dry=dry)
+    elif state == "ok":
+        print("[driver] 主链近期有成功 run ✓", flush=True)
+
+
 def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
     """执行一个 part 的完整时点序列。返回 (成功数, 应发数)。
 
@@ -193,6 +297,8 @@ def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
               flush=True)
 
     ok = 0
+    if token:
+        verify_prior(part, token, repo, date, "start", dry=dry)
     for hhmm, task, extra in PLAN[part]:
         wait_until(hhmm, now=now)
         if dry:
@@ -208,6 +314,10 @@ def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
                   f"——本时点丢失，验收/守门会兜底", flush=True)
     total = len(PLAN[part])
     print(f"[driver] {part} 完成：{ok}/{total} 个时点已触发", flush=True)
+    if token:
+        verify_prior(part, token, repo, date, "end", dry=dry)
+        if part == "evening":
+            chain_check(token, repo, dry=dry)
     return ok, total
 
 

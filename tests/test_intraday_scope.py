@@ -147,7 +147,7 @@ class TestZeroPollution(_LedgerIsolated):
 
     def test_never_calls_full_fetch(self):
         """只能调 fetch_universe()（纯 HTTP），不得调 fetch_daily() 写库版。"""
-        self.assertIn("fetch_universe()", self.src)
+        self.assertIn("fetch_universe(", self.src)   # 09-27 起带 fallback 参数
         self.assertNotIn("fetch_daily.fetch_daily", self.src)
         self.assertNotRegex(self.src, r"fetch_daily\s*\.\s*fetch_daily\s*\(")
         # 更严：任何 fetch_daily( 调用形式都不许出现（那是写主表的入口）

@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import time
 import urllib.request
 
 from . import core, gapfill, quality
@@ -54,8 +55,33 @@ def _num(v):
         return None
 
 
-def fetch_universe(max_stocks=None):
-    """全市场清单+收盘快照。EM clist 单页上限约 100 条 → 按 pn 分页拉全。"""
+def fetch_universe(max_stocks=None, fallback=False):
+    """全市场清单+收盘快照。EM clist 单页上限约 100 条 → 按 pn 分页拉全。
+
+    fallback=True（2026-09-27，盘中巡检专用）：EM 不可用/残缺（<500 只）
+    时按 腾讯→新浪 整市场接口兜底。兜底数据的 vol/amt/turn/fmv 口径与
+    EM 不同（部分为空），**只服务盘中价校验**（classify 只用 price/pct），
+    绝不进主链抓取/质量闸/引擎计算——主链调用不带本参数，行为零变化。"""
+    out = _universe_em(max_stocks)
+    # 兜底链：EM 失败（0 只）或明显残缺（<500 只）时才触发；
+    # max_stocks（受限拉取/测试上下文）不兜底，语义保持原样。
+    if fallback and not max_stocks and len(out) < 500:
+        for src, fn in (("tx", _universe_tx), ("sina", _universe_sina)):
+            try:
+                alt = fn()
+            except Exception as e:                  # noqa: BLE001
+                print(f"[fetch] {src} 兜底失败: {type(e).__name__} {e}")
+                alt = {}
+            if len(alt) >= 500:
+                print(f"[fetch] EM 不可用（{len(out)} 只）→ {src} 兜底 "
+                      f"{len(alt)} 只（仅盘中价校验口径）", flush=True)
+                return alt
+        print(f"[fetch] 全部来源失败：EM {len(out)} 只，兜底亦不可用")
+    return out
+
+
+def _universe_em(max_stocks=None):
+    """EM 主源：push2delay clist 分页（主链唯一口径，质量闸按它校准）。"""
     out = {}
     page = 1
     total = None
@@ -90,6 +116,88 @@ def fetch_universe(max_stocks=None):
         page += 1
         if page > 80:   # 安全阀：80 页 = 8000 只
             break
+    return out
+
+
+def _universe_tx():
+    """腾讯整市场快照（proxy.finance.qq.com 排行接口，200 只/页）。
+
+    只保证 price/pct/name（盘中 classify 的全部所需）；其余字段留空。"""
+    out = {}
+    offset, total = 0, None
+    while True:
+        url = ("https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank?"
+               "board=aStock&sort_type=price&direct=down&"
+               f"offset={offset}&count=200")
+        js = json.loads(fetch_text(url, timeout=15))
+        d = js.get("data") or {}
+        total = d.get("total") or total
+        rows = d.get("rank_stocks") or []
+        if not rows:
+            break
+        for r in rows:
+            code = (r.get("code") or "")
+            num = code[2:] if re.match(r"^(sh|sz)\d{6}$", code) else ""
+            if not num:
+                continue
+            out[num] = {"name": r.get("name", ""), "price": _num(r.get("zxj")),
+                        "pct": _num(r.get("zdf")), "vol": None, "amt": None,
+                        "turn": None, "fmv": None}
+        offset += 200
+        if total and offset >= int(total):
+            break
+        if offset > 12000:                          # 安全阀
+            break
+        time.sleep(0.25)
+    return out
+
+
+_SINA_ROW = re.compile(r"(\w+):(?:" + r'"([^"]*)"|(-?[\d.]+))')
+
+
+def _parse_sina_page(text, out):
+    """新浪返回的是**键名不带引号**的 JS 对象字面量，json.loads 会炸；
+    用正则逐记录抽字段（容错：残缺行直接跳过）。"""
+    for blk in re.findall(r"\{[^{}]*\}", text):
+        kv = {}
+        for m in _SINA_ROW.finditer(blk):
+            kv[m.group(1)] = m.group(2) if m.group(2) is not None \
+                else m.group(3)
+        sym = kv.get("symbol", "")
+        num = sym[2:] if re.match(r"^(sh|sz)\d{6}$", sym) else ""
+        if not num:
+            continue
+        out[num] = {"name": kv.get("name", ""), "price": _num(kv.get("trade")),
+                    "pct": _num(kv.get("changepercent")),
+                    "vol": _num(kv.get("volume")), "amt": _num(kv.get("amount")),
+                    "turn": _num(kv.get("turnoverratio")), "fmv": None}
+
+
+def _universe_sina():
+    """新浪整市场快照（hs_a 节点，100 只/页）。字段口径：amount=元、
+    turnoverratio=%，vol 单位与 EM 不同——同样只服务盘中价校验。"""
+    out = {}
+    page = 1
+    while True:
+        url = ("https://vip.stock.finance.sina.com.cn/quotes_service/api/"
+               "json_v2.php/Market_Center.getHQNodeData?page="
+               f"{page}&num=100&sort=symbol&asc=1&node=hs_a&symbol=&_s_r_a=page")
+        try:
+            text = urllib.request.urlopen(
+                urllib.request.Request(
+                    url, headers={"User-Agent": BROWSER_UA,
+                                  "Referer": "https://finance.sina.com.cn"}),
+                timeout=15).read().decode("gbk", "replace")
+        except Exception:                           # noqa: BLE001
+            break
+        before = len(out)
+        _parse_sina_page(text, out)
+        if len(out) == before:                      # 空页/限流 → 结束
+            break
+        if page > 80:                               # 安全阀：8000 只
+            break
+        page += 1
+        time.sleep(0.25)
     return out
 
 

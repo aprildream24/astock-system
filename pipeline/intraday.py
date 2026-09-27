@@ -259,7 +259,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         return out
     _purge_old(con, date)
 
-    snap = fetch_daily.fetch_universe()
+    # 2026-09-27：EM 不可用时自动走 腾讯→新浪 整市场兜底（仅盘中价校验口径）
+    snap = fetch_daily.fetch_universe(fallback=True)
     out["universe"] = len(snap)
     if len(snap) < _MIN_UNIVERSE:
         # 源异常（限流/改版）时**不推**——宁可不推，也不推一份基于残缺数据的
