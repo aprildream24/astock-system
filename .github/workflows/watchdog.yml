@@ -73,6 +73,10 @@ jobs:
       # 只有"缺定时器/被停用/key 失效"这类确定性故障才推送告警。
       - name: 定时器守门（cron-job.org 健康）
         env:
+          # 2026-09-27：触发已迁移到纯 GitHub 日驱动（tools/day_driver.py），
+          # cron-job.org 定时器退役 ⇒ 置位本开关，跳过定时器检查，
+          # 守门只剩「主链连续失败」这一项（依旧由本步骤执行）。
+          ASTOCK_CRONJOB_RETIRED: "1"
           CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
           # 告警要走真实通道 ⇒ 必须注入推送凭据（缺了只会静默 dry-run）
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}

@@ -202,6 +202,14 @@ def main(argv=None):
 
 
 def _check_timers(problems):
+    # 2026-09-27：触发已全面迁移到纯 GitHub 日驱动（tools/day_driver.py），
+    # cron-job.org 定时器退役（用户要求不再混用两套系统）。置
+    # ASTOCK_CRONJOB_RETIRED=1 后本检查整体跳过——用户删光定时器后
+    # 绝不能再造"缺失定时器"的误报。链路健康仍由 _check_chain 把守。
+    if os.environ.get("ASTOCK_CRONJOB_RETIRED", "").strip() == "1":
+        print("[guard] cron-job.org 定时器已退役（纯 GitHub 触发），"
+              "跳过定时器检查")
+        return
     key = (os.environ.get("CRONJOB_API_KEY") or "").strip()
     if not key:
         print("[guard] 未配置 CRONJOB_API_KEY，跳过定时器检查（不改行为）")

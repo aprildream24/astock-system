@@ -255,5 +255,21 @@ class TestLiveLoopGuard(unittest.TestCase):
         self.assertIn("slot == 'am'", seg, "am 备份点火必须接线")
 
 
+class TestCronjobRetired(unittest.TestCase):
+    """cron-job 定时器退役闸：置位后守门绝不再报"缺失定时器"。"""
+
+    def test_retired_gate_silences_timer_check(self):
+        tg = importlib.import_module("pipeline.timer_guard")
+        problems = []
+        with mock.patch.dict(os.environ, {"ASTOCK_CRONJOB_RETIRED": "1"}):
+            tg._check_timers(problems)
+        self.assertEqual(problems, [])
+
+    def test_watchdog_sets_retired_flag(self):
+        src = open(os.path.join(ROOT, ".github", "workflows", "watchdog.yml"),
+                   encoding="utf-8").read()
+        self.assertIn("ASTOCK_CRONJOB_RETIRED", src)
+
+
 if __name__ == "__main__":
     unittest.main()
