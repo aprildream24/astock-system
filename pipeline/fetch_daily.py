@@ -66,7 +66,9 @@ def fetch_universe(max_stocks=None, fallback=False):
     # 兜底链：EM 失败（0 只）或明显残缺（<500 只）时才触发；
     # max_stocks（受限拉取/测试上下文）不兜底，语义保持原样。
     if fallback and not max_stocks and len(out) < 500:
-        for src, fn in (("tx", _universe_tx), ("sina", _universe_sina)):
+        # 2026-09-27：腾讯排行接口返回 400（疑似改版），新浪实测 5221 只/43s
+        # 可用 → 新浪为主兜底，腾讯留作其后（接口恢复即自动生效）。
+        for src, fn in (("sina", _universe_sina), ("tx", _universe_tx)):
             try:
                 alt = fn()
             except Exception as e:                  # noqa: BLE001
@@ -152,30 +154,47 @@ def _universe_tx():
     return out
 
 
-_SINA_ROW = re.compile(r"(\w+):(?:" + r'"([^"]*)"|(-?[\d.]+))')
+# 键名带不带引号都要能吃：接口不同时期返回过两种形态（09-27 实测为带引号）
+_SINA_ROW = re.compile(r'"?(\w+)"?\s*:(?:"([^"]*)"|(-?[\d.]+))')
 
 
 def _parse_sina_page(text, out):
-    """新浪返回的是**键名不带引号**的 JS 对象字面量，json.loads 会炸；
-    用正则逐记录抽字段（容错：残缺行直接跳过）。"""
-    for blk in re.findall(r"\{[^{}]*\}", text):
-        kv = {}
-        for m in _SINA_ROW.finditer(blk):
-            kv[m.group(1)] = m.group(2) if m.group(2) is not None \
-                else m.group(3)
-        sym = kv.get("symbol", "")
+    """新浪分页解析。优先 json.loads（块是合法 JSON，正确解 \u 转义）；
+    键名不带引号的历史形态再退正则（正则会把 \uXXXX 留成字面量，
+    所以它只是兜底不是主路）。返回原始块数（空页判定用——bj 等被过滤
+    代码占满的页 ≠ 空页）。"""
+    blocks = re.findall(r"\{[^{}]*\}", text)
+    for blk in blocks:
+        kv = None
+        try:
+            got = json.loads(blk)
+            if isinstance(got, dict):
+                kv = got
+        except Exception:                           # noqa: BLE001
+            kv = None
+        if kv is None:
+            kv = {}
+            for m in _SINA_ROW.finditer(blk):
+                kv[m.group(1)] = m.group(2) if m.group(2) is not None \
+                    else m.group(3)
+        sym = str(kv.get("symbol", ""))
         num = sym[2:] if re.match(r"^(sh|sz)\d{6}$", sym) else ""
         if not num:
             continue
-        out[num] = {"name": kv.get("name", ""), "price": _num(kv.get("trade")),
+        out[num] = {"name": str(kv.get("name", "")),
+                    "price": _num(kv.get("trade")),
                     "pct": _num(kv.get("changepercent")),
-                    "vol": _num(kv.get("volume")), "amt": _num(kv.get("amount")),
+                    "vol": _num(kv.get("volume")),
+                    "amt": _num(kv.get("amount")),
                     "turn": _num(kv.get("turnoverratio")), "fmv": None}
+    return len(blocks)
 
 
 def _universe_sina():
     """新浪整市场快照（hs_a 节点，100 只/页）。字段口径：amount=元、
-    turnoverratio=%，vol 单位与 EM 不同——同样只服务盘中价校验。"""
+    turnoverratio=%，vol 单位与 EM 不同——同样只服务盘中价校验。
+    ⚠️ symbol 升序时第 1 页全是北交所(bj)代码，会被 sh/sz 过滤清零——
+    空页判定必须看**原始块数**，不能看过滤后新增数（09-27 实测踩坑）。"""
     out = {}
     page = 1
     while True:
@@ -190,11 +209,10 @@ def _universe_sina():
                 timeout=15).read().decode("gbk", "replace")
         except Exception:                           # noqa: BLE001
             break
-        before = len(out)
-        _parse_sina_page(text, out)
-        if len(out) == before:                      # 空页/限流 → 结束
+        raw_n = _parse_sina_page(text, out)         # 真空页（0 块）才算完
+        if raw_n == 0:
             break
-        if page > 80:                               # 安全阀：8000 只
+        if len(out) >= 6000:                        # 安全阀：全市场 ≈5400
             break
         page += 1
         time.sleep(0.25)

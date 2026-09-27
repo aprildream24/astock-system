@@ -91,17 +91,25 @@ class TestSinaParser(unittest.TestCase):
         self.fd = importlib.import_module("pipeline.fetch_daily")
 
     def test_parse_unquoted_keys(self):
-        raw = ('[{symbol:"sh600000",name:"浦发银行",trade:"10.20",'
-               'changepercent:"0.99",volume:"123456",amount:"1260000.0",'
-               'turnoverratio:"0.51"},'
-               '{symbol:"sz000001",name:"平安银行",trade:"9.90",'
-               'changepercent:"-1.20"}]')
+        """键名带引号（09-27 实测线上形态）与不带引号（历史形态）都要能解析。"""
+        raw_quoted = ('[{"symbol":"sh600000","name":"浦发银行",'
+                      '"trade":"10.20","changepercent":"0.99",'
+                      '"volume":"123456","amount":"1260000.0",'
+                      '"turnoverratio":"0.51"},'
+                      '{"symbol":"sz000001","name":"平安银行",'
+                      '"trade":"9.90","changepercent":-1.20}]')
         out = {}
-        self.fd._parse_sina_page(raw, out)
+        self.fd._parse_sina_page(raw_quoted, out)
         self.assertEqual(set(out), {"600000", "000001"})
         self.assertAlmostEqual(out["600000"]["price"], 10.20)
         self.assertAlmostEqual(out["000001"]["pct"], -1.20)
         self.assertEqual(out["600000"]["name"], "浦发银行")
+        # 历史无引号形态
+        out2 = {}
+        self.fd._parse_sina_page(
+            '[{symbol:"sh600000",name:"浦发银行",trade:"10.20",'
+            'changepercent:"0.99"}]', out2)
+        self.assertAlmostEqual(out2["600000"]["price"], 10.20)
 
     def test_parse_skips_broken_rows(self):
         raw = ('[{symbol:"sh600000",name:"浦发银行",trade:"10.20",'
