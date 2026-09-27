@@ -49,32 +49,33 @@ class TestUniverseFallback(unittest.TestCase):
         sina.assert_not_called()
 
     def test_fallback_triggers_only_below_threshold(self):
-        """EM ≥500 只 → 不兜底；<500 只 → 按 tx → sina 顺序兜底。"""
+        """EM ≥500 只 → 不兜底；<500 只 → 按 sina → tx 顺序兜底（09-27 实测
+        新浪可用、腾讯 400，故新浪为主）。"""
         with mock.patch.object(self.fd, "_universe_em",
                                return_value=self._mk(600)), \
-                mock.patch.object(self.fd, "_universe_tx") as tx:
-            self.fd.fetch_universe(fallback=True)
-        tx.assert_not_called()
-
-        with mock.patch.object(self.fd, "_universe_em",
-                               return_value=self._mk(100)), \
-                mock.patch.object(self.fd, "_universe_tx",
-                                  return_value=self._mk(600, "1")) as tx2, \
                 mock.patch.object(self.fd, "_universe_sina") as sina:
-            got = self.fd.fetch_universe(fallback=True)
-        tx2.assert_called_once()
-        sina.assert_not_called()                     # tx 成功就不再走 sina
-        self.assertIn("000001", got)
+            self.fd.fetch_universe(fallback=True)
+        sina.assert_not_called()
 
-    def test_fallback_falls_through_to_sina(self):
         with mock.patch.object(self.fd, "_universe_em",
                                return_value=self._mk(100)), \
-                mock.patch.object(self.fd, "_universe_tx", return_value={}), \
                 mock.patch.object(self.fd, "_universe_sina",
-                                  return_value=self._mk(600, "2")) as sina:
+                                  return_value=self._mk(600, "2")) as sina2, \
+                mock.patch.object(self.fd, "_universe_tx") as tx:
             got = self.fd.fetch_universe(fallback=True)
-        sina.assert_called_once()
+        sina2.assert_called_once()
+        tx.assert_not_called()                       # sina 成功就不再走 tx
         self.assertIn("000002", got)
+
+    def test_fallback_falls_through_to_tx(self):
+        with mock.patch.object(self.fd, "_universe_em",
+                               return_value=self._mk(100)), \
+                mock.patch.object(self.fd, "_universe_sina", return_value={}), \
+                mock.patch.object(self.fd, "_universe_tx",
+                                  return_value=self._mk(600, "1")) as tx:
+            got = self.fd.fetch_universe(fallback=True)
+        tx.assert_called_once()
+        self.assertIn("000001", got)
 
     def test_max_stocks_never_falls_back(self):
         with mock.patch.object(self.fd, "_universe_em", return_value={}), \

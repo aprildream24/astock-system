@@ -159,8 +159,8 @@ _SINA_ROW = re.compile(r'"?(\w+)"?\s*:(?:"([^"]*)"|(-?[\d.]+))')
 
 
 def _parse_sina_page(text, out):
-    """新浪分页解析。优先 json.loads（块是合法 JSON，正确解 \u 转义）；
-    键名不带引号的历史形态再退正则（正则会把 \uXXXX 留成字面量，
+    """新浪分页解析。优先 json.loads（块是合法 JSON，正确解 unicode 转义）；
+    键名不带引号的历史形态再退正则（正则会把转义序列留成字面量，
     所以它只是兜底不是主路）。返回原始块数（空页判定用——bj 等被过滤
     代码占满的页 ≠ 空页）。"""
     blocks = re.findall(r"\{[^{}]*\}", text)
