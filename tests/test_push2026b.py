@@ -238,7 +238,7 @@ class TestPushLayoutV2(unittest.TestCase):
     def test_empty_day_still_honest(self):
         html = notifier.render_brief(TODAY, None, [], [],
                                      {"reviewed": 0, "coverage": 100.0})
-        self.assertIn("无当下可买入", html)
+        self.assertIn("目前市场无合适股票", html)
         self.assertIn("今日可下单", html)
 
 

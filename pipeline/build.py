@@ -1031,7 +1031,7 @@ def build(task="close", date=None, period_days=30):
                         f"数据新鲜{cov.get('coverage', 0)}%"
                         + (f"（另有{ut}只退市/未上市/停牌已剔除）" if ut else "")
                         + "；评分不是上涨概率。仅含当下可下单买入的标的；"
-                          "次日竞价确认通道单独列出。"}
+                          "待回踩票只列价差不入推荐位，连板次日通道不再推送展示。"}
         ladder_cards = []
         for c in ladder_next:
             d = decisions.make_decision(c, date, missing_fields=())

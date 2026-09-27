@@ -384,13 +384,20 @@ def _pick_line(d):
     用途（2026-09-18）：行情好放开限量后可能一次推 10+ 只，每只一张大卡
     会让推送长到没法在手机上读。前几只出完整卡（有买区条形图），其余走
     这一行的紧凑表格——"推全"与"能读"两个目标同时成立。
+    2026-09-27：待回踩票不再出卡、只走本行 ⇒ 必须带**距买区**标注
+    （负=低于下沿等回升，正=高于上沿等回踩，0=区内），否则"回踩到哪"
+    全靠读者自己心算。
     """
     badge = ACTION_BADGE.get(d.get("action"), "👀观望")
     zone = d.get("zone") or [None, None]
     zs = f"{zone[0]:.2f}-{zone[1]:.2f}" if zone[0] and zone[1] else "—"
+    dist = d.get("dist_pct")
+    dist_s = (f"距买区{dist:+.1f}%" if dist is not None and dist != 0
+              else ("区内" if dist == 0 else ""))
     parts = [f"{badge} {d.get('name','')} {d.get('code','')}",
              f"买{zs}",
              f"停{d['stop']:.2f}" if d.get("stop") else "",
+             dist_s,
              _sector_label(d),
              f"分{d.get('score')}" if d.get("score") is not None else ""]
     return " ".join(p for p in parts if p)[:CAND_LINE_CAP]
@@ -586,11 +593,18 @@ def render_card(d, first=False, head=None, accent=None):
 def render_brief(today, first, backups, changes, meta, ladder_next=(),
                  pending=(), prev_review=()):
     """M35 主报告（表格化版式）：今日速览 / 今日结论 / 首选 / 备选≤2 /
-    等待更好买点 / 次日通道 / 昨日推荐复核 / 计划变化 / 数据说明。
+    待回踩确认（紧凑行）/ 昨日推荐复核 / 计划变化 / 数据说明。
 
-    pending = 现价**不在**买区的票（等回踩等），独立分组并强制标注距买区——
-    历史 bug：它们被混进"备选观察"，用户以为能照价下单。
-    prev_review = 昨日推荐今日结局（#601-B 闭环），让读者知道推荐的票后来怎样。
+    2026-09-27 用户口径重构（「我要的是现在就可以买的股票……有就有，
+    没有就没有不强推；一堆一和一堆在天上的股票没有任何意义」）：
+      · pending（等回踩/小仓试未到价）**只出紧凑行**，不再出完整卡片，
+        且偏离上沿 >10% 的"天上票"不列；
+      · ladder_next（次日竞价确认/连板通道）**整节撤出主推送**（数据保留
+        在 rec_picks/详情页/站点，模拟盘通道照常）；
+      · 无可买票时明说"目前市场无合适买点/股票"，不拿待回踩凑推荐位。
+
+    pending = 现价**不在**买区的票（等回踩等）；ladder_next = 次日竞价
+    通道计数来源；prev_review = 昨日推荐今日结局（#601-B 闭环）。
     """
     cov = meta.get("coverage")
     cov_s = (f' · 扫描 {_esc(meta.get("universe"))} 只（覆盖 {cov}%）'
@@ -645,10 +659,21 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
 
     if first:
         out.append(render_card(first, first=True))
+    elif pending:
+        # 2026-09-27 用户口径：「我要的是现在就可以买的股票……有就有，
+        # 没有就没有不强推」——没有可买票时直说，不拿待回踩凑推荐位。
+        out.append(_card(
+            f'<span style="color:#e8eaed;font-weight:700">'
+            f'目前市场无合适买点</span>'
+            f'<span style="color:#9aa0a6;font-size:12px;margin-left:8px">'
+            f'下方 {len(pending)} 只待回踩确认后可入，现价不要追。</span>',
+            border="#2b313d", accent="#3a4150"))
     else:
-        out.append(_card('<span style="color:#9aa0a6">今日无当下可买入的机会'
-                         '——没有机会就不凑数。</span>',
-                         border="#2b313d", accent="#3a4150"))
+        out.append(_card(
+            '<span style="color:#e8eaed;font-weight:700">目前市场无合适股票'
+            '</span><span style="color:#9aa0a6;font-size:12px;'
+            'margin-left:8px">没有任何标的到达买点，宁缺毋滥。</span>',
+            border="#2b313d", accent="#3a4150"))
     # 前 2 只出完整卡（含买区条形图），其余走紧凑行——行情好放开限量后
     # 「全推」与「手机可读」必须同时成立。
     FULL_CARDS = 2
@@ -659,35 +684,23 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
                    f'行情{_esc(meta.get("heat_level") or "")}已放开限量</div>')
         out.append(_compact_block(backups[FULL_CARDS:], budget=_cbulk))
     if pending:
-        out.append(f'<div style="{_STY["h2"]}">等待更好买点 · 现价不在买区</div>')
+        # 2026-09-27 重构：待回踩票**只出紧凑行**（一行一票：名称/买区/
+        # 距买区），不再出完整卡片——它们不是推荐，是"等到位再买"的备忘。
+        # 偏离上沿 >10% 的"天上票"不列（回踩概率低，列出来没有意义）。
+        _near = [d for d in pending
+                 if (d.get("dist_pct") or 0) <= 10]
+        _sky = len(pending) - len(_near)
+        out.append(f'<div style="{_STY["h2"]}">待回踩确认 · 共 {len(_near)} 只'
+                   f'（现价不可买）</div>')
         out.append('<div style="color:#9aa0a6;font-size:12px;margin:0 0 6px">'
-                   '以下标的现价已跳出买入区间，需回踩到位再买，'
-                   '<b>不要按现价追</b>。</div>')
-        for d in pending[:FULL_CARDS]:
-            out.append(render_card(d, head="【待回踩 · 勿按现价追】",
-                                   accent="#f5b83d"))
-        if len(pending) > FULL_CARDS:
-            out.append(_compact_block(pending[FULL_CARDS:], budget=_cbulk))
-    if ladder_next:
-        out.append(f'<div style="{_STY["h2"]}">次日竞价确认 · 非即时可买</div>')
-        for d in ladder_next[:4]:
-            zone = d.get("zone") or [None, None]
-            zs = f"{zone[0]:.2f} ~ {zone[1]:.2f}" if zone[0] and zone[1] else "—"
-            out.append(_card(_table(
-                '<tr><td style="padding:0 0 6px">'
-                f'<span style="font-size:15px;font-weight:700;color:#e8eaed">'
-                f'{_esc(d.get("name"))}</span>'
-                f'<span style="color:#9aa0a6;font-size:12px;margin-left:6px">'
-                f'{_esc(d.get("code"))}</span></td></tr>'
-                + _row("达标条件", "高开≥2%~5%（按板数）")
-                + _row("低开处理", "放弃（历史胜率仅24%）")
-                + _row("关注区间", zs))
-                + (f'<div style="color:#9aa0a6;font-size:12px;margin-top:6px">'
-                   f'{_esc(d.get("gate_evidence") or "")}</div>'
-                   if d.get("gate_evidence") else ""),
-                border="#2b313d", accent="#f5b83d"))
-        if len(ladder_next) > 4:
-            out.append(_compact_block(ladder_next[4:], budget=_cbulk))
+                   '回踩到各自买区再买，<b>不要按现价追</b>'
+                   + (f'；另有 {_sky} 只已涨离买区过远（&gt;10%），不列。'
+                      if _sky else "。") + '</div>')
+        out.append(_compact_block(_near, budget=_cbulk))
+    # 2026-09-27 用户口径：「一堆一（一字/连板）和一堆在天上的股票给我
+    # 也没有任何意义」⇒ 次日竞价确认（连板通道）**整节撤出主推送**。
+    # 数据不删：rec_picks/详情页/站点照常保留，模拟盘次日竞价通道照常执行，
+    # 只是不再占据"可买清单"的版面。速览条保留次日竞价计数供知情。
     if prev_review:
         # #601-B 闭环：昨日推的票今天怎么样了——推荐不是一锤子买卖
         out.append(f'<div style="{_STY["h2"]}">昨日推荐 · 今日复核</div>')

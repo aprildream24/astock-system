@@ -206,12 +206,51 @@ class TestPushLayout(unittest.TestCase):
             self.assertIn(need, html)
 
     def test_pending_group_separated(self):
-        """现价不在买区的票必须进独立分组，且标注距买区。"""
+        """待回踩票必须进独立分组且标注距买区（09-27 起只出紧凑行不出卡）。"""
         html = self._brief(pending=[_decision(11.0, 10.0, 10.3, dist=6.8,
                                               status="等待确认")])
-        self.assertIn("等待更好买点", html)
+        self.assertIn("待回踩确认", html)
         self.assertIn("距买区", html)
-        self.assertIn("待回踩", html)
+        self.assertIn("现价不可买", html)
+        # 待回踩不再出完整卡片（卡片头已废除），只走紧凑行
+        self.assertNotIn("勿按现价追】", html)
+
+    def test_sky_high_excluded_from_pending(self):
+        """偏离上沿 >10% 的"天上票"不进待回踩清单（列出来没有意义）。"""
+        html = self._brief(pending=[
+            _decision(11.0, 10.0, 10.3, dist=6.8, status="等待确认"),
+            _decision(12.8, 10.0, 10.3, dist=24.2, status="等待确认")])
+        self.assertIn("共 1 只", html)
+        self.assertIn("已涨离买区过远", html)
+        self.assertNotIn("24.2%", html)
+
+    def test_no_ladder_cards_in_push(self):
+        """09-27 用户口径：次日竞价（连板）通道撤出主推送——「一堆在天上的
+        股票没有任何意义」。速览计数保留，卡片不再出现。"""
+        html = self._brief(ladder_next=[_decision(9.9, 9.0, 9.3,
+                                                  status="等待确认")])
+        self.assertNotIn("次日竞价确认 · 非即时可买", html)
+        self.assertNotIn("达标条件", html)
+
+    def test_empty_state_honest(self):
+        """没有可买票时直说，不拿待回踩凑推荐位。"""
+        brief = notifier.render_brief(
+            "2026-09-11", None,
+            [{"code": "sh600000", "new": "超价取消", "reason": "超上限"}],
+            [], {"reviewed": 120, "data_date": "2026-09-11",
+                 "valid_until": "2026-09-18", "universe": 4936,
+                 "coverage": 93.0, "note": ""},
+            pending=[_decision(11.0, 10.0, 10.3, dist=6.8,
+                               status="等待确认")])
+        self.assertIn("目前市场无合适买点", brief)
+        self.assertIn("1 只待回踩确认后可入", brief)
+        empty = notifier.render_brief(
+            "2026-09-11", None, [], [],
+            {"reviewed": 120, "data_date": "2026-09-11",
+             "valid_until": "2026-09-18", "universe": 4936,
+             "coverage": 93.0, "note": ""})
+        self.assertIn("目前市场无合适股票", empty)
+        self.assertIn("没有任何标的到达买点", empty)
 
     def test_coverage_shown(self):
         self.assertIn("覆盖", self._brief())
@@ -242,7 +281,7 @@ class TestPushLayout(unittest.TestCase):
     def test_empty_day_message(self):
         html = notifier.render_brief(
             "2026-09-11", None, [], [], {"reviewed": 0})
-        self.assertIn("无当下可买入", html)
+        self.assertIn("目前市场无合适股票", html)
 
 
 if __name__ == "__main__":
