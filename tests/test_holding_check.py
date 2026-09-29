@@ -146,15 +146,19 @@ class TestRenderHoldingAdvice(_Base):
                "exit_action": "SELL", "exit_reasons": ["ATR保护线"],
                "stop": 12.08, "zone": [12.65, 13.08], "state": "可买",
                "sector": "炼化及贸易", "sector_hot": False}]
-        cands = [{"code": "sh600343", "name": "航天动力", "action": "次日竞价达标买",
+        cands = [{"code": "sh600343", "name": "航天动力", "action": "现在买",
                   "score": 70.3, "buy_low": 21.56, "buy_high": 22.32,
-                  "stop": 19.94, "sector": "通用设备"}]
+                  "close": 22.10, "stop": 19.94, "sector": "通用设备"}]
         html = N.render_holding_advice(he, cands, "2026-09-18")
         self.assertIn("持仓体检", html)
         self.assertIn("荣盛石化", html)
         self.assertIn("换股备选", html)
         self.assertIn("航天动力", html)
         self.assertIn("-1.61%", html)
+        # 09-27：连板通道（次日竞价达标买）不进换股备选——非当日市价计划
+        html2 = N.render_holding_advice(
+            he, [dict(cands[0], action="次日竞价达标买")], "2026-09-18")
+        self.assertNotIn("航天动力", html2)
 
     def test_empty_candidates(self):
         html = N.render_holding_advice([], [], "2026-09-18")

@@ -87,6 +87,9 @@ def make_decision(cand, date, data_version=RULE_VERSION,
          "data_date": date, "status": status,
          "reason": cand.get("entry_hint") or cand.get("cycle_hint", ""),
          "zone": [zone_low, zone_high], "stop": stop,
+         # 09-27：action 透传给渲染层——state_label 需要计划类型区分
+         # 次日竞价达标买（连板通道的买区是竞价条件带，区内≠当日可买）
+         "action": cand.get("action", ""),
          "invalid_if": "；".join(invalid_if) or "条件破坏即失效",
          "valid_until": valid_until,
          "research_grade": grade, "exec_status": status,

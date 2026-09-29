@@ -43,7 +43,16 @@ STATE_GREEN, STATE_YELLOW, STATE_BLUE, STATE_GRAY = \
 
 
 def state_label(d):
-    """→ (短标签, 颜色)。判据只用 dist_pct（现价 vs 买区），不看计划类型。"""
+    """→ (短标签, 颜色)。判据 = dist_pct（现价 vs 买区）+ 计划类型。
+
+    ⚠️ 09-27 二次修：次日竞价达标买（连板通道）的买区是**竞价条件带**，
+    现价落在里面 ≠ 当日可买——徽章若只看 dist 会再次出现「徽章说可买、
+    名单说不可买」的矛盾（09-27 一致性扫描在真实数据上实测抓到）。"""
+    act = d.get("action")
+    if act == "次日竞价达标买":
+        return "次日竞价", STATE_BLUE
+    if act in ("观望", "禁买"):
+        return act, STATE_GRAY
     dist = d.get("dist_pct")
     if dist is None:
         return "待核价", STATE_GRAY
@@ -945,6 +954,8 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
 
     opts = []
     for c in (candidates or []):
+        if c.get("action") == "次日竞价达标买":
+            continue                          # 连板通道非当日市价计划，不进换股清单
         d = _dist_of(c)
         if d is not None and d > 10:
             continue                          # 天上票：列出来没有意义
