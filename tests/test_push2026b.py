@@ -66,8 +66,12 @@ class TestBuyableGate(unittest.TestCase):
                          "现价低于买区下沿（已破位区），必须判不可买")
 
     def test_action_not_now_is_not_buyable(self):
-        """等回踩/小仓试/观望 都不是「当下可下单」。"""
-        for act in ("等回踩", "小仓试", "观望", "禁买", "次日竞价达标买"):
+        """09-27 修：等回踩/小仓试**区内即兑现=可买**（计划类型≠价格状态，
+        "到了买点还让我等回踩"的矛盾已根除）；观望/禁买/次日竞价仍排除。"""
+        for act in ("等回踩", "小仓试", "现在买"):
+            self.assertTrue(scoring.is_buyable_now(_cand(action=act)),
+                            f"{act} 的票价格在买区内 = 计划兑现 = 可买")
+        for act in ("观望", "禁买", "次日竞价达标买"):
             self.assertFalse(scoring.is_buyable_now(_cand(action=act)),
                              f"{act} 不得进可执行名单")
 
@@ -189,7 +193,7 @@ class TestPushLayoutV2(unittest.TestCase):
 
     def test_summary_strip(self):
         html = self._brief()
-        for need in ("今日可下单", "待回踩", "次日竞价", "扫描覆盖"):
+        for need in ("今日可下单", "未到买点", "次日竞价", "扫描覆盖"):
             self.assertIn(need, html, "顶部速览条必须有结论性数字")
 
     def test_zone_bar_rendered(self):

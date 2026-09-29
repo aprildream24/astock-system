@@ -209,7 +209,7 @@ class TestPushLayout(unittest.TestCase):
         """待回踩票必须进独立分组且标注距买区（09-27 起只出紧凑行不出卡）。"""
         html = self._brief(pending=[_decision(11.0, 10.0, 10.3, dist=6.8,
                                               status="等待确认")])
-        self.assertIn("待回踩确认", html)
+        self.assertIn("未到买点 · 共 1 只", html)
         self.assertIn("距买区", html)
         self.assertIn("现价不可买", html)
         # 待回踩不再出完整卡片（卡片头已废除），只走紧凑行
@@ -243,7 +243,7 @@ class TestPushLayout(unittest.TestCase):
             pending=[_decision(11.0, 10.0, 10.3, dist=6.8,
                                status="等待确认")])
         self.assertIn("目前市场无合适买点", brief)
-        self.assertIn("1 只待回踩确认后可入", brief)
+        self.assertIn("1 只未到买点，到价后可入", brief)
         empty = notifier.render_brief(
             "2026-09-11", None, [], [],
             {"reviewed": 120, "data_date": "2026-09-11",

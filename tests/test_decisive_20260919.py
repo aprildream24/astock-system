@@ -176,14 +176,14 @@ class TestCardEvidence(unittest.TestCase):
         self.assertIn("决断力(20日)", html)
         self.assertIn("净移+12.3%", html)
         self.assertIn("效率0.62", html)
-        self.assertIn("已挂榜 3 日", html)
+        self.assertIn("已连续 3 日未到买点", html)
         # 无字段时不渲染（老数据兼容）
         html2 = notifier.render_card(
             {"code": "600100", "name": "示例", "pool": "趋势", "close": 10.0,
              "zone": [9.9, 10.05], "stop": 9.4, "status": "条件满足",
              "valid_until": "x"})
         self.assertNotIn("决断力", html2)
-        self.assertNotIn("已挂榜", html2)
+        self.assertNotIn("未到价观察", html2)
 
 
 if __name__ == "__main__":

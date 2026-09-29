@@ -1011,7 +1011,8 @@ def build(task="close", date=None, period_days=30):
             c["confirms"] = n_conf
             c["confirm_note"] = ({3: "三确认（强）",
                                   2: "双确认"}.get(n_conf)
-                                 or f"{n_conf} 时点在列")
+                                 or ("首次推荐" if n_conf <= 1
+                                     else f"已确认 {n_conf} 次"))
         _vd_level, _vd_text = today_verdict(emo, mood)
         meta = {"reviewed": len(cands), "data_date": date,
                 "verdict": _vd_level, "verdict_text": _vd_text,

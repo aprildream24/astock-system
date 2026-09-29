@@ -32,6 +32,33 @@ _CST = timezone(timedelta(hours=8))
 ACTION_BADGE = {"现在买": "✅买入", "等回踩": "⏳等回踩", "小仓试": "🔸小仓试",
                 "次日竞价达标买": "🎯竞价达标买", "观望": "👀观望", "禁买": "⛔禁买"}
 
+# ---------------------------------------------------------------------------
+# 价格状态徽章（2026-09-27 用户口径：「到达了买点，又要让我等回踩，那么是
+# 买点吗？」）——计划类型（现在买/等回踩/小仓试）描述的是入场**策略**，
+# 读者要的是价格**状态**。所有面向用户的徽章一律用状态，杜绝矛盾：
+#   区内 → ✅ 可买   高于上沿 → ⏳ 等回踩   低于下沿 → ⏳ 等回升
+# ---------------------------------------------------------------------------
+STATE_GREEN, STATE_YELLOW, STATE_BLUE, STATE_GRAY = \
+    "#3fae6b", "#e0a93b", "#6ab0ff", "#9aa0a6"
+
+
+def state_label(d):
+    """→ (短标签, 颜色)。判据只用 dist_pct（现价 vs 买区），不看计划类型。"""
+    dist = d.get("dist_pct")
+    if dist is None:
+        return "待核价", STATE_GRAY
+    if dist == 0:
+        return "可买", STATE_GREEN
+    if dist > 0:
+        return "等回踩", STATE_YELLOW
+    return "等回升", STATE_BLUE
+
+
+def state_badge(d):
+    """面向用户的唯一状态徽章（渲染层禁止改判，判定在 scoring.is_buyable_now）。"""
+    label, color = state_label(d)
+    return _badge(label, color)
+
 RULE_VERSION = "v2-20260912"   # 内容+规则版本：升级后 biz_key 自动换新放行
 
 # ---------------------------------------------------------------------------
@@ -199,7 +226,7 @@ def _summary_strip(meta, n_buy, n_pending, n_ladder):
     """顶部速览条：先给结论（几只能买），再给细节——手机上不必下滑就有答案。"""
     cov = meta.get("coverage")
     items = [("今日可下单", str(n_buy), "#ff6b5e"),
-             ("待回踩", str(n_pending), "#f5b83d"),
+             ("未到买点", str(n_pending), "#f5b83d"),
              ("次日竞价", str(n_ladder), "#6ab0ff"),
              ("扫描覆盖", f"{cov:.0f}%" if cov is not None else "—", "#9aa0a6")]
     # 顺序：先标题后数字 —— ServerChan 纯文本降级按 cell 换行要能读出
@@ -388,7 +415,7 @@ def _pick_line(d):
     （负=低于下沿等回升，正=高于上沿等回踩，0=区内），否则"回踩到哪"
     全靠读者自己心算。
     """
-    badge = ACTION_BADGE.get(d.get("action"), "👀观望")
+    badge = state_label(d)[0]   # 09-27：状态标签（可买/等回踩/等回升）
     zone = d.get("zone") or [None, None]
     zs = f"{zone[0]:.2f}-{zone[1]:.2f}" if zone[0] and zone[1] else "—"
     dist = d.get("dist_pct")
@@ -501,12 +528,10 @@ def render_card(d, first=False, head=None, accent=None):
     zone_s = (f"{zone[0]:.2f} ~ {zone[1]:.2f}"
               if zone[0] and zone[1] else "—")
     cap = f"{zone[1] * 1.03:.2f}" if zone[1] else "—"
-    status = d.get("status", "等待确认")
-    # 双/三确认标注（2026-09-22「三确认基本强」）
-    if d.get("confirms") and d.get("confirms") >= 2:
-        status = (f"{status}·{d.get('confirms')}确认"
-                  f'{"(强)" if d.get("confirms") >= 3 else ""}')
-    badge = _badge(status, STATUS_CLS.get(status, "#6b7280"))
+    # 2026-09-27：徽章一律用**价格状态**（可买/等回踩/等回升），
+    # 不再用内部计划术语（"条件满足/等待确认"）——用户原话「到达了买点，
+    # 又要让我等回踩，那么是买点吗？」的矛盾即由旧徽章引起。
+    badge = state_badge(d)
     if d.get("confirms") and d.get("confirms") >= 2:
         # 双/三确认（用户 2026-09-22「标注好双、三确认，三确认基本强」）
         head = (f'【{d.get("confirms")}确认{"（强）" if d.get("confirms") >= 3 else ""}】'
@@ -568,9 +593,11 @@ def render_card(d, first=False, head=None, accent=None):
                 f'{_esc(d.get("pos_label") or "—")}'
                 f'（区间 {_esc(str(d.get("pos_pct") or ""))}%）'
                 f'</span>') if d.get("pos_label") else "")
-        + _row("推荐次数", _confirm_badge(d.get("confirms") or 1))
-        + (_row("等待兑现", f'<span style="color:#e6a700;font-weight:700">'
-                f'已挂榜 {d["wait_days"]} 日，再不动自动移出'
+        + (_row("推荐次数", _confirm_badge(d.get("confirms") or 1))
+          if d.get("confirms") is not None else "")
+        + (_row("未到价观察", f'<span style="color:#e6a700;font-weight:700">'
+                f'已连续 {d["wait_days"]} 日未到买点'
+                f'（满 5 日自动移出，不再占推荐位）'
                 f'</span>') if (d.get("wait_days") or 0) >= 2 else "")
         + (_row("建议仓位", _esc(d.get("position") or "1成"))
            if d.get("position") or first else "")
@@ -666,7 +693,7 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
             f'<span style="color:#e8eaed;font-weight:700">'
             f'目前市场无合适买点</span>'
             f'<span style="color:#9aa0a6;font-size:12px;margin-left:8px">'
-            f'下方 {len(pending)} 只待回踩确认后可入，现价不要追。</span>',
+            f'下方 {len(pending)} 只未到买点，到价后可入，现价不要追。</span>',
             border="#2b313d", accent="#3a4150"))
     else:
         out.append(_card(
@@ -690,8 +717,8 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
         _near = [d for d in pending
                  if (d.get("dist_pct") or 0) <= 10]
         _sky = len(pending) - len(_near)
-        out.append(f'<div style="{_STY["h2"]}">待回踩确认 · 共 {len(_near)} 只'
-                   f'（现价不可买）</div>')
+        out.append(f'<div style="{_STY["h2"]}">未到买点 · 共 {len(_near)} 只'
+                   f'（现价不可买，到价即买）</div>')
         out.append('<div style="color:#9aa0a6;font-size:12px;margin:0 0 6px">'
                    '回踩到各自买区再买，<b>不要按现价追</b>'
                    + (f'；另有 {_sky} 只已涨离买区过远（&gt;10%），不列。'
@@ -1026,9 +1053,7 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
     if opts:
         rows = ""
         for rank, (d, c) in enumerate(opts[:8], start=1):
-            act = c.get("action") or "—"
-            is_buy = act in _ACT_NOW
-            badge = _badge(act, "#3fae6b" if is_buy else "#e0a93b")
+            badge = state_badge({"dist_pct": d})
             if d is None:
                 d_s, d_c = "—", "#9aa0a6"
             elif d == 0:
