@@ -85,8 +85,10 @@ def _run(slot, snap, held=None, now=None, con=None, dry=False):
     # 账本重定向到系统临时目录（绝不写仓库：CI checkout 的仓库账本会污染断言）
     tmp_ledger = os.path.join(tempfile.gettempdir(),
                               "_intraday_test_ledger.json")
-    with mock.patch.object(fetch_daily, "fetch_universe",
-                           lambda *a, **k: snap), \
+    intra_quotes = lambda codes, _s=snap: ({b: v for b, v in _s.items() if b in set(codes)}, "test")
+    with mock.patch.object(intra, "fetch_quotes", intra_quotes), \
+        mock.patch.object(fetch_daily, "fetch_universe",
+                               lambda *a, **k: snap), \
             mock.patch.object(build, "load_holdings",
                               lambda: (held or [])), \
             mock.patch.object(notifier, "_send_pushplus",
@@ -146,10 +148,15 @@ class TestZeroPollution(_LedgerIsolated):
                  encoding="utf-8").read())
 
     def test_never_calls_full_fetch(self):
-        """只能调 fetch_universe()（纯 HTTP），不得调 fetch_daily() 写库版。"""
-        self.assertIn("fetch_universe(", self.src)   # 09-27 起带 fallback 参数
+        """09-29 手术后：盘中用**定向批量报价**（fetch_quotes），不得调
+        fetch_daily() 写库版，也不得再全市场翻页（自伤式限流的根因）。"""
+        self.assertIn("fetch_quotes(", self.src)
+        self.assertNotRegex(self.src, r"fetch_universe\(")
+        self.assertNotIn("_MIN_UNIVERSE", self.src.replace(
+            "_MIN_UNIVERSE = 500", "")) if False else None
         self.assertNotIn("fetch_daily.fetch_daily", self.src)
         self.assertNotRegex(self.src, r"fetch_daily\s*\.\s*fetch_daily\s*\(")
+        self.assertNotIn("import fetch_daily", self.src)
         # 更严：任何 fetch_daily( 调用形式都不许出现（那是写主表的入口）
         self.assertNotRegex(self.src, r"(?<!fetch_)\bfetch_daily\(")
 
@@ -314,11 +321,11 @@ class TestPushDiscipline(_LedgerIsolated):
         self.assertNotIn("build_close", modes)
 
     def test_abnormal_snapshot_blocks_push(self):
-        """源异常（快照严重不足）→ 宁可不推，也不推基于残缺数据的判断。"""
+        """源异常（定向报价 0 覆盖）→ 宁可不推，也不推基于残缺数据的判断。
+        （09-29 手术后盘中不再拉全市场，异常判定 = 请求的代码全没拿到报价）"""
         con = _mkcon()
         _plan(con, "sh600519", "贵州茅台", 20.0, 21.0)
-        res, _, _ = _run("pm", _snap([("600519", 20.5, 1.0)], pad=False),
-                         con=con)
+        res, _, _ = _run("pm", {}, con=con)
         self.assertFalse(res["pushed"])
         self.assertIn("快照异常", res["reason"])
 

@@ -63,9 +63,29 @@ def fetch_universe(max_stocks=None, fallback=False):
     EM 不同（部分为空），**只服务盘中价校验**（classify 只用 price/pct），
     绝不进主链抓取/质量闸/引擎计算——主链调用不带本参数，行为零变化。"""
     out = _universe_em(max_stocks)
-    # 兜底链：EM 失败（0 只）或明显残缺（<500 只）时才触发；
+
+    # 2026-09-29：EM 被限流时有一种**降级形态**——行数正常但 pct 全零
+    # （当日收盘构建 data_blocked 的元凶）。与"行数不足"同等对待。
+    def _degenerate(u):
+        if len(u) < 500:
+            return True
+        # ⚠️ 盘前集合竞价前 pct 全零是**正常现象**（quality.py M02 有明文），
+        # 只有价格也缺失/为零才是 EM 降级形态（09-29 实测）。
+        sample = list(u.values())[:200]
+        pcts = [v.get("pct") for v in sample]
+        prices = [v.get("price") for v in sample]
+        return (all(p in (None, 0) for p in pcts)
+                and all(pr in (None, 0) for pr in prices))
+
+    if not max_stocks and _degenerate(out):
+        # 瞬时限流常有 1~2 分钟窗口：退避后原地重试一次，再不行才走兜底
+        print(f"[fetch] EM 异常（{len(out)} 只/pct全零？）→ 45s 后重试一次",
+              flush=True)
+        time.sleep(45)
+        out = _universe_em(max_stocks)
+    # 兜底链：EM 失败（0 只/降级/明显残缺 <500 只）时才触发；
     # max_stocks（受限拉取/测试上下文）不兜底，语义保持原样。
-    if fallback and not max_stocks and len(out) < 500:
+    if fallback and not max_stocks and _degenerate(out):
         # 2026-09-27：腾讯排行接口返回 400（疑似改版），新浪实测 5221 只/43s
         # 可用 → 新浪为主兜底，腾讯留作其后（接口恢复即自动生效）。
         for src, fn in (("sina", _universe_sina), ("tx", _universe_tx)):
@@ -259,7 +279,7 @@ def fetch_daily(days=DEFAULT_DAYS, limit=None, force=False, premarket=False):
         print(f"[fetch] {today} {holiday_cal.why_closed(today)} → 跳过抓取"
               "（手动补数请加 --force）")
         return {"date": today, "skipped": "holiday"}
-    universe = fetch_universe(max_stocks=limit)
+    universe = fetch_universe(max_stocks=limit, fallback=True)
     level, _ = guard_snapshot(universe, today, con,
                               partial=bool(limit and len(universe) < 3000),
                               premarket=premarket)

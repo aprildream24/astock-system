@@ -55,6 +55,8 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import time
+import urllib.request
 
 # 盘中时段（北京时间，含端点、放宽缓冲）
 _AM_WINDOW = (9 * 60 + 30, 11 * 60 + 35)
@@ -120,6 +122,114 @@ def _cap_rows(rows, hint, cap=15):
         return rows, hint
     return rows[:cap], (hint + f"（仅列前 {cap} 只 / 共 {len(rows)} 只，"
                         "全量见网页版）")
+
+
+# ---------------------------------------------------------------------------
+# 盘中定向批量报价（2026-09-29 手术）
+# 为什么不再全市场翻页：live 每 10 分钟一轮，全市场 = 50+ 页/轮 × 22 轮/天
+# ≈ 1100 请求/天——09-29 实测把 EM 打到降级（快照 pct 全零）、新浪限流，
+# 连 15:22 收盘主链都被殃及 data_blocked（自伤式限流）。监控对象只有
+# 几百只，批量接口 60 码/请求、7 个请求就够，请求量降 ~99%。
+# ---------------------------------------------------------------------------
+_BATCH = 60          # 每请求代码数（腾讯/新浪批量接口的安全上限）
+_QCOV = 0.9          # 覆盖率闸：要到的报价 < 90% 视为源异常
+
+
+from .core import fetch_text  # noqa: E402
+
+
+def _quotes_tx(codes):
+    """腾讯批量：qt.gtimg.cn/q=sh600000,sz000001,...（GBK）。
+    f[1]=名称 f[3]=现价 f[4]=昨收 → pct 现算（比信任字段更稳）。
+    ⚠️ 必须自管 GBK 解码——fetch_text 按 UTF-8 解会让名称变乱码。"""
+    out = {}
+    for i in range(0, len(codes), _BATCH):
+        batch = [prefixed(c) for c in codes[i:i + _BATCH]]
+        s = urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://qt.gtimg.cn/q={','.join(batch)}",
+                headers={"User-Agent": "Mozilla/5.0"}),
+            timeout=10).read().decode("gbk", "replace")
+        for chunk in s.split(";"):
+            if '"' not in chunk:
+                continue
+            var, inner = chunk.split("=", 1)
+            var = var.strip()
+            p = inner.strip().strip('"').split("~")
+            # 变量形态 v_sh600000：[2:4]=市场前缀，[4:]=六位裸码
+            if not var.startswith("v_") or len(var) < 10:
+                continue
+            num = var[4:]
+            try:
+                price, prev = float(p[3]), float(p[4])
+            except ValueError:
+                continue
+            if price <= 0 or prev <= 0:
+                continue
+            out[num] = {"name": p[1], "price": price,
+                        "pct": round((price / prev - 1) * 100, 2),
+                        "amt": None}
+        time.sleep(0.3)
+    return out
+
+
+def _quotes_sina(codes):
+    """新浪批量：hq.sinajs.cn/list=...（GBK，需 Referer）。
+    f[0]=名称 f[2]=昨收 f[3]=现价 → pct 现算。"""
+    out = {}
+    for i in range(0, len(codes), _BATCH):
+        batch = [prefixed(c) for c in codes[i:i + _BATCH]]
+        s = urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://hq.sinajs.cn/list={','.join(batch)}",
+                headers={"User-Agent": "Mozilla/5.0",
+                         "Referer": "https://finance.sina.com.cn"}),
+            timeout=10).read().decode("gbk", "replace")
+        for line in s.splitlines():
+            if '"' not in line or "=" not in line:
+                continue
+            var, inner = line.split("=", 1)
+            p = inner.strip().strip('"').split(",")
+            if len(p) < 4:
+                continue
+            num = var.strip().replace("var hq_str_", "")
+            try:
+                price, prev = float(p[3]), float(p[2])
+            except ValueError:
+                continue
+            if price <= 0 or prev <= 0:
+                continue
+            out[num] = {"name": p[0], "price": price,
+                        "pct": round((price / prev - 1) * 100, 2),
+                        "amt": None}
+        time.sleep(0.3)
+    return out
+
+
+def fetch_quotes(codes):
+    """监控对象的批量实时价。→ ({裸码: {name,price,pct,amt}}, 来源)。
+    腾讯主源；覆盖率 <90% 视为该源异常，换新浪补齐（合并，新浪只补缺）。"""
+    codes = [bare(c) for c in dict.fromkeys(codes) if c]
+    if not codes:
+        return {}, "none"
+    out = {}
+    srcs = []
+    for fn in (_quotes_tx, _quotes_sina):
+        try:
+            got = fn(codes)
+        except Exception as e:                      # noqa: BLE001
+            print(f"[intraday] 批量报价 {fn.__name__} 失败: "
+                  f"{type(e).__name__} {e}")
+            continue
+        cov = len([c for c in codes if c in got]) / max(len(codes), 1)
+        srcs.append(fn.__name__)
+        for c, v in got.items():
+            out.setdefault(c, v)                    # 首源优先，次源只补缺
+        if cov >= _QCOV:
+            break
+        print(f"[intraday] {fn.__name__} 覆盖率 {cov:.0%} "
+              f"({len([c for c in codes if c in got])}/{len(codes)}) → 补下一源")
+    return out, "+".join(srcs) or "none"
 
 
 def in_window(slot, now):
@@ -252,7 +362,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     dry=True 时只计算不推送（本地验证用）；force_window=True 跳过时段守门
     （手工补发用）。
     """
-    from . import core, fetch_daily, trade_calendar as holiday_cal
+    from . import core, trade_calendar as holiday_cal
     now = now or _bj_now()
     date = date or now.strftime("%Y-%m-%d")
     con = con or core.get_conn()
@@ -268,22 +378,6 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         print(f"[intraday] {out['reason']} → 跳过（防误触发）")
         return out
     _purge_old(con, date)
-
-    # 2026-09-27：EM 不可用时自动走 腾讯→新浪 整市场兜底（仅盘中价校验口径）
-    snap = fetch_daily.fetch_universe(fallback=True)
-    out["universe"] = len(snap)
-    if len(snap) < _MIN_UNIVERSE:
-        # 源异常（限流/改版）时**不推**——宁可不推，也不推一份基于残缺数据的
-        # 判断（09-16 血案的教训：宁可发"数据异常"告警，也不发空壳/错壳）。
-        out["reason"] = f"快照异常（{len(snap)} 只）"
-        print(f"[intraday] {out['reason']} → 不推送")
-        return out
-    # 只落独立表：**不碰** klines / snapshot 主表
-    con.executemany(
-        "INSERT OR REPLACE INTO snapshot_live VALUES(?,?,?,?,?,?,?)",
-        [(date, slot, prefixed(code), v.get("name", ""), v.get("price"),
-          v.get("pct"), v.get("amt")) for code, v in snap.items()])
-    con.commit()
 
     # 计划 = 当日构建写入的推荐（pre/auction/close 都会写 rec_picks）
     plans = con.execute(
@@ -332,6 +426,35 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                 held[prefixed(h["code"])] = h
     except Exception as e:                       # noqa: BLE001
         print(f"[intraday] 持仓配置读取失败（不阻断）：{e}")
+
+    # ---- 自选码提前装载（给定向报价并集用；下方自选检查复用同一份）----
+    _watch_codes = []
+    try:
+        from .build import _codes_conf
+        _watch_codes = _codes_conf("WATCH_CODES", "watch.json")
+    except Exception as e:                       # noqa: BLE001
+        print(f"[intraday] 自选配置读取失败（不阻断）：{e}")
+
+    # ---- 2026-09-29 手术：定向批量报价替代全市场翻页 ----
+    _codes = ({bare(p[0]) for p in plans} | {bare(c) for c in held}
+              | {bare(prefixed(w)) for w in _watch_codes})
+    _codes.discard("")
+    snap, _qsrc = fetch_quotes(list(_codes))
+    out["universe"] = len(snap)
+    out["qsrc"] = _qsrc
+    _need = len(_codes)
+    if _need == 0 or len(snap) < _need * _QCOV:
+        # 源异常（限流/改版）时**不推**——宁可不推，也不推一份基于残缺数据的
+        # 判断（09-16 血案的教训：宁可发"数据异常"告警，也不发空壳/错壳）。
+        out["reason"] = f"快照异常（{_qsrc} {len(snap)}/{_need}）"
+        print(f"[intraday] {out['reason']} → 不推送")
+        return out
+    # 只落独立表：**不碰** klines / snapshot 主表
+    con.executemany(
+        "INSERT OR REPLACE INTO snapshot_live VALUES(?,?,?,?,?,?,?)",
+        [(date, slot, prefixed(code), v.get("name", ""), v.get("price"),
+          v.get("pct"), v.get("amt")) for code, v in snap.items()])
+    con.commit()
 
     def q(code):
         return snap.get(bare(code))
@@ -388,10 +511,9 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     # 与 watchlist.zone_stop_for 同一口径；持仓股已由体检覆盖，不重复。
     watch_zone_hits, watch_stop_hits = [], []
     try:
-        from .build import _codes_conf
         from . import watchlist as _wl
         from .mood import is_limit_up as _lu
-        _wc = _codes_conf("WATCH_CODES", "watch.json")
+        _wc = _watch_codes
         for code in _wc:
             pc = prefixed(code)
             if pc in held:

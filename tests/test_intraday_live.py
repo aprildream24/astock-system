@@ -70,8 +70,10 @@ def _run(slot, snap, held=None, now=None, con=None, dry=False):
     con = con or _mkcon()
     tmp_ledger = os.path.join(tempfile.gettempdir(),
                               "_intraday_live_test_ledger.json")
-    with mock.patch.object(fetch_daily, "fetch_universe",
-                           lambda *a, **k: snap), \
+    intra_quotes = lambda codes, _s=snap: ({b: v for b, v in _s.items() if b in set(codes)}, "test")
+    with mock.patch.object(intra, "fetch_quotes", intra_quotes), \
+        mock.patch.object(fetch_daily, "fetch_universe",
+                               lambda *a, **k: snap), \
             mock.patch.object(build, "load_holdings",
                               lambda: (held or [])), \
             mock.patch.object(notifier, "_send_pushplus",
@@ -170,7 +172,9 @@ class TestEventDedup(_LedgerIsolated):
         con = _mkcon()
         _plan(con, "sh600519", "贵州茅台", 20.0, 21.0)
         _plan(con, "sz000001", "平安银行", 9.0, 9.5)
-        r1, con, _ = _run("live", _snap([("600519", 20.5, 1.0)]), con=con)
+        # 000001 给域外报价：定向报价覆盖率闸要求计划票都要有价（09-29）
+        r1, con, _ = _run("live", _snap([("600519", 20.5, 1.0),
+                                         ("000001", 12.0, 3.0)]), con=con)
         self.assertTrue(r1["pushed"])
         # 10 分钟后平安银行也进买区（茅台仍在区内）
         r2, con, _ = _run("live",

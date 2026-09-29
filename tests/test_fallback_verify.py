@@ -61,7 +61,8 @@ class TestUniverseFallback(unittest.TestCase):
                                return_value=self._mk(100)), \
                 mock.patch.object(self.fd, "_universe_sina",
                                   return_value=self._mk(600, "2")) as sina2, \
-                mock.patch.object(self.fd, "_universe_tx") as tx:
+                mock.patch.object(self.fd, "_universe_tx") as tx, \
+                mock.patch.object(self.fd.time, "sleep"):
             got = self.fd.fetch_universe(fallback=True)
         sina2.assert_called_once()
         tx.assert_not_called()                       # sina 成功就不再走 tx
@@ -72,7 +73,8 @@ class TestUniverseFallback(unittest.TestCase):
                                return_value=self._mk(100)), \
                 mock.patch.object(self.fd, "_universe_sina", return_value={}), \
                 mock.patch.object(self.fd, "_universe_tx",
-                                  return_value=self._mk(600, "1")) as tx:
+                                  return_value=self._mk(600, "1")) as tx, \
+                mock.patch.object(self.fd.time, "sleep"):
             got = self.fd.fetch_universe(fallback=True)
         tx.assert_called_once()
         self.assertIn("000001", got)
