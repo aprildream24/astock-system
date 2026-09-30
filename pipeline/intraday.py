@@ -536,10 +536,16 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     for code, name, action, lo, hi, stop in plans:
         v = q(code) or {}
         state, label = classify(v.get("price"), v.get("pct"), lo, hi, stop)
+        _pd = None
+        if v.get("price") and lo and hi:
+            _pd = (0.0 if lo <= v["price"] <= hi
+                   else round((v["price"] / hi - 1) * 100, 1)
+                   if v["price"] > hi
+                   else round((v["price"] / lo - 1) * 100, 1))
         item = {"code": code, "name": name or v.get("name", ""),
                 "price": v.get("price"), "pct": v.get("pct"),
                 "lo": lo, "hi": hi, "state": state, "label": label,
-                "action": action}
+                "action": action, "pct_dist": _pd}
         {"in_zone": in_zone, "above": above, "below": below,
          "broke_stop": stopped, "limit_up": limit}.get(state, []).append(item)
     # 持仓实时风控（与计划无关，独立成组）
@@ -710,16 +716,27 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                        f'下沿 {p["lo"]:.2f}' if p["lo"] else "—"),
                       [_TXT, _TXT, _DN, _DN, _DN]) for p in below]})
     if slot == "pm" and above:
-        # 09-30 用户口径：未到买点的票不单独推，并入尾盘一起总结
-        groups.append({
-            "title": f"○ 未到买点 · {len(above)} 只（高于买区，等回踩）",
-            "hint": "现价高于买区上沿，回踩到位再买；明日继续监控",
-            "rows": [((p["code"], p["name"],
-                       f'{p["price"]:.2f}' if p["price"] else "—",
-                       f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
-                       f'上沿 {p["hi"]:.2f}' if p["hi"] else "—"),
-                      [_TXT, _TXT, _DN, _DN, _DN]) for p in above[:14]]})
+        # 09-30 用户口径：未到买点的票不单独推，并入尾盘一起总结；
+        # 09-30 晚二次修：只列**偏离买区 ≤10%** 的——6 天前的旧买区，
+        # 股票已涨离 20% 还列"等回踩"就是"没根据实盘"（用户实测指正）。
+        # pct_dist 在分类循环里登记（正=高于上沿 %）。
+        _near_ab = [p for p in above
+                    if 0 < (p.get("pct_dist") or 0) <= 10]
+        if _near_ab:
+            groups.append({
+                "title": f"○ 未到买点 · {len(_near_ab)} 只"
+                         f"（高于买区 ≤10%，等回踩）",
+                "hint": "现价高于买区上沿，回踩到位再买；明日继续监控",
+                "rows": [((p["code"], p["name"],
+                           f'{p["price"]:.2f}' if p["price"] else "—",
+                           f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
+                           f'上沿 {p["hi"]:.2f}' if p["hi"] else "—"),
+                          [_TXT, _TXT, _DN, _DN, _DN])
+                         for p in _near_ab[:14]]})
     if slot == "pm" and not in_zone and below:
+        # 跌破 ≤10% 的才有"等回升"意义；跌穿太远的已是破位票，不列
+        below = [p for p in below if (p.get("pct_dist") is not None
+                                      and -10 <= p["pct_dist"] < 0)]
         groups.append({
             "title": "○ 计划整体走弱", "hint": "尾盘无一进入买区，跌破者已标注",
             "rows": [((p["code"], p["name"],

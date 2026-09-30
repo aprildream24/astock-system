@@ -268,8 +268,9 @@ class TestPushDiscipline(_LedgerIsolated):
         con = _mkcon()
         _plan(con, "sh600519", "贵州茅台", 20.0, 21.0)
         _plan(con, "sz000001", "平安银行", 9.0, 9.5)
+        # 价格高于买区上沿 ≤10%（09-30 晚起距离上限过滤，涨太远不列）
         res, con, notifier = _run(
-            "pm", _snap([("600519", 25.0, 6.0), ("000001", 11.0, 5.0)]),
+            "pm", _snap([("600519", 22.5, 6.0), ("000001", 10.2, 5.0)]),
             con=con)
         self.assertTrue(res["pushed"], "pm 必须总结未到买点")
         self.assertTrue(notifier._daily_sent(con, "intraday_pm", DATE))
