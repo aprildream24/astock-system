@@ -72,8 +72,8 @@ class TestSwapCandidateOrdering(unittest.TestCase):
                  {"code": "600002", "name": "B", "action": "等回踩",
                   "score": 90, "buy_low": 1, "buy_high": 2}]
         html = notifier.render_holding_advice([], cands, "d")
-        self.assertIn("1. ", html)
-        self.assertIn("2. ", html)  # 09-27 起紧凑行序号
+        self.assertIn("排第 1，最值得换入", html)
+        self.assertIn("备选第 2 位", html)
 
 
 class TestExecForceOnBuy(unittest.TestCase):

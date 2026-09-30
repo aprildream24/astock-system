@@ -330,7 +330,7 @@ class TestSwapOptions(unittest.TestCase):
 
     def test_premium_annotated(self):
         self.assertIn("区内", self.html)
-        self.assertIn("溢价+6.5%", self.html)      # 金丹 (29.5/27.70-1)
+        self.assertIn("距买区+6.5%", self.html)     # 金丹 (29.5/27.70-1)
         self.assertIn("-2.1%", self.html)          # 大亚 (6.60/6.74-1)
 
     def test_order_buyable_first_then_premium(self):
@@ -342,7 +342,8 @@ class TestSwapOptions(unittest.TestCase):
         self.assertLess(i_dy, i_jd, "等回踩溢价升序：大亚(-2.1)<金丹(+6.5)")
 
     def test_numbered_menu(self):
-        self.assertIn("1. ", self.html)
+        # 09-30 起换股备选为简略一票一卡：排序提示在第 1 张卡上
+        self.assertIn("排第 1，最值得换入", self.html)
         self.assertIn("自行挑选", self.html)
 
     def test_all_sky_high_honest_empty(self):

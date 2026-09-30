@@ -145,6 +145,9 @@ def _enrich(con, date, items):
                 it["pos_label"] = x.get("pos_label")
                 dec = x.get("decisive") or {}
                 it["dec_net"] = dec.get("net")
+                if dec.get("net") is not None:
+                    it["decisive"] = {"net": dec.get("net"),
+                                      "eff": dec.get("eff") or 0}
             cc = con.execute(
                 "SELECT COUNT(DISTINCT date || task) FROM confirm_log "
                 "WHERE code=? AND date>=date(?, '-10 day')",
@@ -413,14 +416,25 @@ def _section(title, rows, hint=""):
 
 
 def render_html(date, slot, now, groups, plan_n, coverage_note=""):
-    """groups: [{"title","hint","rows":[(cells, colors)]}, ...]"""
+    """groups: [{"title","hint","rows":[(cells, colors)]}, ...]
+    或 {"title","hint","html"}（一票一卡等整块 HTML，不包 table）。"""
+    from .notifier import render_card  # 买点一票一卡（09-30）
     head = {"am": "早盘校验", "pm": "尾盘机会"}.get(slot, "买点巡检")
-    body = "".join(
-        _section(g["title"],
-                 g.get("html") or "".join(
-                     _row(c, col) for c, col in g["rows"]),
-                 g.get("hint", ""))
-        for g in groups)
+    body = ""
+    for g in groups:
+        if "html" in g:
+            # html 组（一票一卡等）直接输出，不塞 _section 的 table——
+            # 嵌套 div/table 是 webview 错乱（"全部都是乱的"）的根因
+            _hint = (f'<div style="color:#9aa0a6;font-size:11px;'
+                     f'margin:0 0 6px">{g["hint"]}</div>' if g.get("hint")
+                     else "")
+            body += (f'<div style="margin:10px 0 4px;color:#6ab0f2;'
+                     f'font-size:13px;font-weight:600">{g["title"]}</div>'
+                     + _hint + g["html"])
+        else:
+            body += _section(g["title"],
+                             "".join(_row(c, col) for c, col in g["rows"]),
+                             g.get("hint", ""))
     if not body:
         body = (f'<div style="color:{_MUT};font-size:12px">'
                 f'本时点无实质变化（静默，不占额度）</div>')
@@ -450,6 +464,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     （手工补发用）。
     """
     from . import core, trade_calendar as holiday_cal
+    from .notifier import render_card  # 买点一票一卡（09-30）
     now = now or _bj_now()
     date = date or now.strftime("%Y-%m-%d")
     con = con or core.get_conn()
@@ -468,8 +483,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
 
     # 计划 = 当日构建写入的推荐（pre/auction/close 都会写 rec_picks）
     plans = con.execute(
-        "SELECT code, name, action, buy_low, buy_high, stop FROM rec_picks "
-        "WHERE date=?", (date,)).fetchall()
+        "SELECT code, name, action, buy_low, buy_high, stop, score "
+        "FROM rec_picks WHERE date=?", (date,)).fetchall()
     # ★ 历史候选并入（用户 2026-09-25「到达买点的票随时推，不要永远只是
     # 那几只」）：近 5 个交易日出现过的全部候选（含当日未入选的）都纳入
     # 到买点监控；同票以当日推荐优先，历史候选标注 src=hist。
@@ -482,8 +497,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         #    同票多池时会拼出"A 方案下沿 + B 方案上沿"的不存在买区 →
         #    改为每票选一条规范方案（最新日期 → 可执行动作优先 → 高分）。
         _hist = con.execute(
-            "SELECT code, name, action, buy_low, buy_high, stop FROM ("
-            "  SELECT code, name, action,"
+            "SELECT code, name, action, buy_low, buy_high, stop, score FROM ("
+            "  SELECT code, name, action, score,"
             "         json_extract(extra,'$.buy_low')  AS buy_low,"
             "         json_extract(extra,'$.buy_high') AS buy_high,"
             "         json_extract(extra,'$.stop')     AS stop,"
@@ -499,8 +514,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
             "    AND json_extract(extra,'$.buy_low') IS NOT NULL"
             "    AND json_extract(extra,'$.buy_high') IS NOT NULL"
             ") WHERE rn=1", (date, date)).fetchall()
-        _extra_plans = [(c, nm, (a or "等回踩") + "·候选", lo, hi, st)
-                        for c, nm, a, lo, hi, st in _hist
+        _extra_plans = [(c, nm, (a or "等回踩") + "·候选", lo, hi, st, sc)
+                        for c, nm, a, lo, hi, st, sc in _hist
                         if c not in _seen and lo and hi]
         plans = list(plans) + _extra_plans
     except Exception as e:  # noqa: BLE001 — 历史候选缺失不影响当日计划
@@ -552,7 +567,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         return snap.get(bare(code))
 
     in_zone, above, below, stopped, limit = [], [], [], [], []
-    for code, name, action, lo, hi, stop in plans:
+    for code, name, action, lo, hi, stop, score in plans:
         v = q(code) or {}
         state, label = classify(v.get("price"), v.get("pct"), lo, hi, stop)
         _pd = None
@@ -568,7 +583,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         item = {"code": code, "name": name or v.get("name", ""),
                 "price": v.get("price"), "pct": v.get("pct"),
                 "lo": lo, "hi": hi, "state": state, "label": label,
-                "action": action, "pct_dist": _pd, "fresh_entry": fresh}
+                "action": action, "pct_dist": _pd, "fresh_entry": fresh,
+                "stop": stop, "score": score}
         {"in_zone": in_zone, "above": above, "below": below,
          "broke_stop": stopped, "limit_up": limit}.get(state, []).append(item)
     # 持仓实时风控（与计划无关，独立成组）
@@ -714,6 +730,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                      for h in hold_hits]})
     in_zone = [p for p in in_zone if p.get("action") in _LIVE_BUYABLE]
     if in_zone:
+        _enrich(con, date, in_zone)
         _zh = {"am": "早盘", "pm": "尾盘"}.get(slot, "现价")
         _rows = [((p["code"],
                    p["name"] + (f'（{p["action"]}）' if _live
@@ -723,16 +740,34 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                    f'{p["lo"]:.2f}~{p["hi"]:.2f}'),
                   [_TXT, _TXT, _HL, _HL, _HL]) for p in in_zone]
         if _live:
-            # 09-30：两行一票（板块热度/强度/位置/确认），上限 12 只
-            _enrich(con, date, in_zone)
-            _html = "".join(_live_stock_block(p) for p in in_zone[:12])
-            if len(in_zone) > 12:
-                _html += (f'<div style="font-size:12px;color:#9aa0a6">'
-                          f'另有 {len(in_zone) - 12} 只见网页版完整详情</div>')
+            # 09-30 用户口径：买点提示参照竞价**一票一卡**（render_card），
+            # 卡内自带板块热度/强度/位置/确认。上限 8 张（卡片较大）。
+            _cards = []
+            for _i, p in enumerate(in_zone[:8]):
+                cd = {"code": p["code"], "name": p.get("name", ""),
+                      "zone": [p.get("lo"), p.get("hi")],
+                      "close": p.get("price"), "dist_pct": p.get("pct_dist"),
+                      "stop": p.get("stop"), "sector": p.get("sector", ""),
+                      "sector_pct": p.get("sector_pct"),
+                      "pos_label": p.get("pos_label"),
+                      "decisive": p.get("decisive"),
+                      "confirms": p.get("confirms") or 0,
+                      "score": p.get("score"),
+                      "action": p.get("action", ""),
+                      "invalid_if": (f"收盘跌破止损 {p['stop']:.2f}"
+                                     if p.get("stop") else "条件破坏即失效"),
+                      "valid_until": date}
+                _cards.append(render_card(
+                    cd, first=(_i == 0),
+                    head=f"【{p.get('action') or '买点触发'}】"))
+            if len(in_zone) > 8:
+                _cards.append(
+                    f'<div style="font-size:12px;color:#9aa0a6">'
+                    f'另有 {len(in_zone) - 8} 只见网页版完整详情</div>')
             groups.append({
                 "title": f"● 现在可以买入（{len(in_zone)} 只在买区内）",
                 "hint": "现价在买区内，照价下单即可；次日可卖",
-                "html": _html})
+                "html": "".join(_cards)})
         else:
             _rows, _hint = _cap_rows(
                 _rows, "现价已在计划买区内；收盘前有效，次日可卖")
@@ -805,13 +840,17 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         # 09-30 用户口径：「不要建议卖出结果后续的什么都没有」——
         # 卖出信号必须同时给出资金去向：现价可换入的票，或明说持币观望。
         if in_zone:
+            _enrich(con, date, in_zone[:5])
             sgroup.append({
                 "title": "🔁 卖出资金去向（现价可换入）",
                 "hint": "以下为当下在买区内、可照价下单的标的，自行挑选",
                 "rows": [((p["code"], p["name"],
                            f'{p["price"]:.2f}' if p["price"] else "—",
-                           f'{p["lo"]:.2f}~{p["hi"]:.2f}'),
-                          [_HL, _HL, _HL, _HL]) for p in in_zone[:5]]})
+                           f'{p["lo"]:.2f}~{p["hi"]:.2f}',
+                           (p.get("sector") or "—")
+                           + (f' 🔥{p["sector_pct"]:+.1f}%'
+                              if p.get("sector_pct") is not None else "")),
+                          [_HL, _HL, _HL, _HL, _MUT]) for p in in_zone[:5]]})
         else:
             sgroup.append({
                 "title": "🔁 卖出资金去向",

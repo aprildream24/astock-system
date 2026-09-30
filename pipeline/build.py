@@ -1054,6 +1054,12 @@ def build(task="close", date=None, period_days=30):
                                       ladder_next=ladder_cards,
                                       pending=pending,
                                       prev_review=prev_review)
+        if task == "close":
+            # 09-30 用户需求⑥：当日总结（市场全景）挂在收盘报告尾部
+            try:
+                brief += notifier.render_market_summary(con, date, emo)
+            except Exception as e:  # noqa: BLE001
+                print(f"[build] market_summary failed: {e}")
         detail = notifier.render_candidates(
             f"{'盘前计划' if task=='pre' else '竞价裁决' if task=='auction' else '收盘观察'} {date}",
             picks, [f"{c['code']}: {c['old']}→{c['new']} {c['reason']}"

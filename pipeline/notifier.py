@@ -938,6 +938,59 @@ def render_exec_report(today, acct, opened=(), blocked=(), holdings=(),
     return html
 
 
+def _mini_card(d, cap_why=""):
+    """简略一票一卡（09-30 用户：换股备选参照一票一卡制作，不必太详细）。
+    必备：状态徽章/名称/现价+距买区/买区；有则显示：止损/板块热度/
+    强度(20日位置·决断力)/综合分。d 需含 zone/close/dist_pct，其余可选。"""
+    zone = d.get("zone") or [None, None]
+    zone_s = (f"{zone[0]:.2f}~{zone[1]:.2f}"
+              if zone[0] and zone[1] else "—")
+    close = d.get("close")
+    price_s = f"{close:.2f}" if close else "—"
+    dist = d.get("dist_pct")
+    if dist is not None and dist != 0:
+        dc = "#ff8a80" if dist > 0 else "#4ecf8e"
+        price_s += (f' <span style="color:{dc};font-size:12px;'
+                    f'font-weight:700">距买区{dist:+.1f}%</span>')
+    elif dist == 0:
+        price_s += (' <span style="color:#3fae6b;font-size:12px;'
+                    'font-weight:700">区内</span>')
+    rows = [_row("现价", price_s, v_bold=True),
+            _row("买区", f'<span style="color:#ff6b5e">{zone_s}</span>',
+                 v_bold=True)]
+    if d.get("stop"):
+        rows.append(_row("止损", f'<span style="color:#ff8a80">'
+                         f'{d["stop"]:.2f}</span>'))
+    sec = d.get("sector") or ""
+    if sec:
+        heat = ""
+        if d.get("sector_pct") is not None:
+            heat = (f' <span style="color:'
+                    f'{"#ff6b5e" if d["sector_pct"] >= 0 else "#4ecf8e"}">'
+                    f'{"🔥" if d["sector_pct"] >= 0 else "❄️"}'
+                    f'{d["sector_pct"]:+.1f}%</span>')
+        rows.append(_row("板块", _esc(sec) + heat))
+    strength = [x for x in (d.get("pos_label"),
+                            (f'净移{d["dec_net"]:+.1f}%'
+                             if d.get("dec_net") is not None else "")) if x]
+    if strength:
+        rows.append(_row("强度", " · ".join(strength)))
+    if d.get("score") is not None:
+        rows.append(_row("综合分", _esc(d["score"])))
+    if cap_why:
+        rows.append(_row("提示", f'<span style="color:#9aa0a6;font-size:12px">'
+                         f'{_esc(cap_why)}</span>'))
+    badge = state_badge(d)
+    inner = (_table(
+        f"<tr><td><span style='font-size:15px;font-weight:700;"
+        f"color:#e8eaed'>{_esc(d.get('name') or d.get('code', ''))}</span>"
+        f"<span style='color:#8a93a3;font-size:12px;margin-left:6px'>"
+        f"{_esc(d.get('code', ''))}</span></td>"
+        f'<td align="right" valign="top">{badge}</td></tr>')
+        + "".join(rows))
+    return _card(inner, border="#2b313d")
+
+
 def render_holding_advice(holdings_eval, candidates=(), date=""):
     """★ 用户需求（2026-09-18）：真实持仓体检 + 换股候选。
 
@@ -1069,44 +1122,19 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
                 '排序即推荐优先级，第 1 名最值得换入。溢价 = 现价高于买区'
                 '上沿的幅度（负数 = 低于下沿，等回升到区内再买）。</p>')
     if opts:
-        rows = ""
-        for rank, (d, c) in enumerate(opts[:8], start=1):
-            badge = state_badge({"dist_pct": d})
-            if d is None:
-                d_s, d_c = "—", "#9aa0a6"
-            elif d == 0:
-                d_s, d_c = "区内", "#3fae6b"
-            elif d < 0:
-                d_s, d_c = f"{d:+.1f}%", "#6ab0ff"
-            else:
-                d_s, d_c = f"溢价{d:+.1f}%", ("#e0a93b" if d <= 5
-                                              else "#ff8a4a")
-            eff = c.get("eff_score") or c.get("score") or "—"
-            sector_s = (c.get("sector") or "")
-            if c.get("sector_temp"):
-                sector_s += f" {c['sector_temp']}"
-            rows += (
-                '<tr><td style="padding:5px 2px;border-bottom:1px solid '
-                f'#2b313d;font-size:13.5px;color:#e8eaed;white-space:nowrap">'
-                f'{rank}. {badge} {_esc(c.get("name") or c.get("code",""))}'
-                f' <span style="color:#8a93a3;font-size:12px">'
-                f'{_esc(c.get("code",""))}</span></td>'
-                '<td style="padding:5px 4px;border-bottom:1px solid #2b313d;'
-                'font-size:13px;white-space:nowrap">'
-                f'<span style="color:#8a93a3">买</span> '
-                f'<span style="color:#3fae6b;font-weight:700">'
-                f'{_fmt2(c.get("buy_low"))}~{_fmt2(c.get("buy_high"))}'
-                f'</span></td>'
-                f'<td style="padding:5px 4px;border-bottom:1px solid #2b313d;'
-                f'font-size:13px;font-weight:700;color:{d_c};'
-                f'white-space:nowrap">{_esc(d_s)}</td>'
-                '<td style="padding:5px 4px;border-bottom:1px solid #2b313d;'
-                'font-size:12.5px;color:#9aa0a6;white-space:nowrap">'
-                f'分{_esc(eff)} {_esc(sector_s)}</td></tr>')
-        body.append(_card(_table(rows), border="#2b313d"))
-        if len(opts) > 8:
+        # 09-30 用户口径：换股备选改**简略一票一卡**（板块/强度齐全，
+        # 不再挤四列表格——手机上一行折两行没法读）
+        for rank, (d, c) in enumerate(opts[:6], start=1):
+            cd = dict(c)
+            cd.setdefault("close", c.get("close"))
+            cd["dist_pct"] = d
+            cd.setdefault("zone", [c.get("buy_low"), c.get("buy_high")])
+            why = ("排第 1，最值得换入" if rank == 1
+                   else f"备选第 {rank} 位")
+            body.append(_mini_card(cd, cap_why=why))
+        if len(opts) > 6:
             body.append(f'<p style="color:#9aa4b2;font-size:12px">'
-                        f'另有 {len(opts) - 8} 只备选见网页版完整详情。</p>')
+                        f'另有 {len(opts) - 6} 只备选见网页版完整详情。</p>')
     else:
         body.append('<div style="background:#3a1416;border:1px solid '
                     '#7a2226;border-radius:6px;padding:8px 10px;margin:6px 0;'
@@ -1132,13 +1160,24 @@ def render_daily_summary(rep, today=""):
     day_amt = rep.get("day_amt") or 0
     ret_pct = rep.get("ret_pct") or 0
     sign = "#3fae6b" if day_amt >= 0 else "#e25c5c"
-    summary = (f"净值 ¥{eq:,.0f}　现金 ¥{rep.get('cash',0):,.0f}　"
-               f"持仓 {rep.get('n_hold',0)} 只　累计 {ret_pct:+.2f}%<br>"
-               f'<b style="font-size:16px;color:{sign}">当日 '
-               f'{day_amt:+,.0f} 元（{day_pct:+.2f}%）</b>')
+    # 09-30 用户口径：日结概要卡片化（大数字速览，替代文字堆砌）
+    def _stat(label, val, color):
+        return (f'<td width="25%" align="center" style="padding:7px 0">'
+                f'<div style="font-size:11px;color:#9aa0a6">{_esc(label)}</div>'
+                f'<div style="font-size:16px;font-weight:700;color:{color}">'
+                f'{_esc(val)}</div></td>')
+    strip = _card(_table(
+        "<tr>"
+        + _stat("净值", f"¥{eq:,.0f}", "#e8eaed")
+        + _stat("当日", f"{day_amt:+,.0f}", sign)
+        + _stat("当日涨幅", f"{day_pct:+.2f}%", sign)
+        + _stat("累计", f"{ret_pct:+.2f}%", "#9aa0a6")
+        + "</tr>"), border="#2b313d")
     body = [f'<h3 style="margin:6px 0 2px">📊 模拟盘日结 {_esc(today)}</h3>',
-            f'<p style="color:#9aa4b2;font-size:13px;margin:0 0 10px">'
-            f'{summary}</p>']
+            strip,
+            f'<p style="color:#9aa4b2;font-size:12px;margin:4px 0 10px">'
+            f'现金 ¥{rep.get("cash",0):,.0f} · 持仓 {rep.get("n_hold",0)} 只 · '
+            f'未实现盈亏 {(rep.get("unrealized") or 0):+,.0f} 元</p>']
     # ② 持仓当日表现
     hrows = []
     for h in (rep.get("rows") or []):
@@ -1186,7 +1225,85 @@ def render_daily_summary(rep, today=""):
     return html
 
 
+def render_market_summary(con, date, emo=None):
+    """当日总结（09-30 用户需求⑥）：今天总体情况——板块领涨/领跌/
+    发酵/接力 + 涨停连板概况。数据全部来自库内 sector_heat/zt_pool。"""
+    rows = con.execute(
+        "SELECT sector, pct, net_yi FROM sector_heat WHERE date=? "
+        "ORDER BY pct DESC", (date,)).fetchall()
+    if not rows:
+        return ""
+    top = rows[:6]
+    bot = sorted(rows, key=lambda r: (r[1] or 0))[:5]
+    today_top = {r[0] for r in rows[:10]}
+    prev = con.execute(
+        "SELECT MAX(date) FROM sector_heat WHERE date<?", (date,)).fetchone()
+    prev_date = prev[0] if prev else None
+    prev_top = set()
+    if prev_date:
+        prev_top = {r[0] for r in con.execute(
+            "SELECT sector FROM sector_heat WHERE date=? ORDER BY pct DESC "
+            "LIMIT 10", (prev_date,)).fetchall()}
+    keep = today_top & prev_top           # 连续在榜 = 还在发酵/持续
+    rise = today_top - prev_top           # 新进今日前10 = 接力候选
+    fade = prev_top - today_top           # 掉出榜 = 退潮
+    zt = con.execute(
+        "SELECT COUNT(*), MAX(streak), COALESCE(SUM(streak>=2),0) "
+        "FROM zt_pool WHERE date=?", (date,)).fetchone()
+    n_zt, max_stk, n_lianban = (zt if zt else (0, 0, 0))
+    emo_s = ""
+    if emo:
+        emo_s = (f'情绪 {_esc(emo.get("score"))}（{_esc(emo.get("label"))}/'
+                 f'{_esc(emo.get("phase"))}） · ')
+
+    def _sec_rows(items):
+        out = ""
+        for s, pct, net in items:
+            col = "#ff6b5e" if (pct or 0) >= 0 else "#4ecf8e"
+            net_s = f"主力{net:+.1f}亿" if net is not None else ""
+            out += ('<tr><td style="padding:3px 8px 3px 0;font-size:13px;'
+                    f'color:#e8eaed">{_esc(s)}</td>'
+                    f'<td style="padding:3px 4px;font-size:13px;'
+                    f'font-weight:700;color:{col}">{pct:+.2f}%</td>'
+                    f'<td style="padding:3px 0;font-size:12px;color:#9aa0a6">'
+                    f'{net_s}</td></tr>')
+        return out
+
+    body = [f'<h3 style="margin:6px 0 2px">🌐 当日总结 · 市场全景</h3>']
+    head_s = (emo_s + f'涨停 {n_zt} 家' +
+              (f' · 连板 {n_lianban} 家（最高 {max_stk} 板）'
+               if n_lianban else ""))
+    body.append(f'<p style="color:#9aa4b2;font-size:13px;margin:0 0 8px">'
+                f'{head_s}</p>')
+    body.append(_card(_table(
+        '<tr><th style="text-align:left">🔥 领涨板块</th>'
+        '<th style="text-align:left">💧 领跌板块</th></tr>'
+        '<tr><td valign="top">' + _table(_sec_rows(top)) + '</td>'
+        '<td valign="top">' + _table(_sec_rows(bot)) + '</td></tr>'),
+        border="#2b313d"))
+    lines = []
+    if keep:
+        lines.append(f"<b>持续发酵</b>：{'、'.join(sorted(keep))}"
+                     f"（连续两日在榜，关注分歧转一致）")
+    if rise:
+        lines.append(f"<b>可能接力</b>：{'、'.join(sorted(rise))}"
+                     f"（新进今日前 10，次日看是否延续）")
+    if fade:
+        lines.append(f"<b>退潮警示</b>：{'、'.join(sorted(fade))}"
+                     f"（掉出今日榜单，谨慎接力）")
+    if lines:
+        body.append('<div style="background:#1d222b;border:1px solid '
+                    '#2b313d;border-radius:8px;font-size:13px;'
+                    'color:#c4ccd6;padding:9px 12px;margin:8px 0">'
+                    + "<br>".join(lines) + "</div>")
+    html = ('<div style="' + _STY["doc"] + '">' + "".join(body) + "</div>")
+    if len(html) > PP_HTML_CAP:
+        html = _clip_html(html)
+    return html
+
+
 def render_evening_digest(date, narrative_html="", daily_html="",
+
                           holding_html="", watch_html=""):
     """★ 用户需求⑤：把复盘原本分散的多条推送（AI叙事 / 模拟盘日结 / 持仓体检 /
     自选建议）合并为**一条**晚间综合推送，显著降低消息数量。
