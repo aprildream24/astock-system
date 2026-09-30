@@ -1114,7 +1114,7 @@
  },
  "ed01582285f40d7b": {
   "mode": "rehearsal_rehearsal_exec",
-  "ts": "2026-09-30 12:27:35",
+  "ts": "2026-09-30 21:39:04",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -1147,6 +1147,86 @@
  "2d15049661f2c3f3": {
   "mode": "review",
   "ts": "2026-09-30 21:20:23",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "693e8675fa16edb2": {
+  "mode": "rehearsal_build_pre",
+  "ts": "2026-09-30 21:36:29",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "b42eff8a8088cc04": {
+  "mode": "rehearsal_holding_check",
+  "ts": "2026-09-30 21:36:52",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "e88de3c6a0df18e5": {
+  "mode": "rehearsal_build_auction",
+  "ts": "2026-09-30 21:37:26",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "4e86341bf29d3783": {
+  "mode": "rehearsal_holding_check",
+  "ts": "2026-09-30 21:37:44",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "56e3bef68b0f1f96": {
+  "mode": "rehearsal_build_close",
+  "ts": "2026-09-30 21:38:18",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "190b36c6bb7b9a29": {
+  "mode": "rehearsal_review",
+  "ts": "2026-09-30 21:38:46",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "7916e9bf8b90c157": {
+  "mode": "rehearsal_holding_intraday",
+  "ts": "2026-09-30 21:39:34",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "e54c663e0b733c18": {
+  "mode": "rehearsal_intraday_live",
+  "ts": "2026-09-30 21:39:56",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "b2cea9518d00460a": {
+  "mode": "rehearsal_intraday_am",
+  "ts": "2026-09-30 21:40:26",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "c66ccb7e22d6bb3d": {
+  "mode": "rehearsal_intraday_pm",
+  "ts": "2026-09-30 21:40:53",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
