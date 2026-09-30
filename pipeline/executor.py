@@ -738,6 +738,9 @@ def report_period(con, today, days=30):
     if snap["n_hold"] >= RISK["max_holdings"]:
         improve.append(f"持仓已达上限 {snap['n_hold']} 只：严守单票"
                        f"≤{RISK['max_pos_pct']:.0%} 敞口上限，避免赌单一票。")
+    # 09-30 修：常量在 engines 模块（历史重构后此处引用悬空，
+    # NameError 让周期复盘从 CLI 到运行时全坏）
+    from .engines import DECISIVE_NET_MIN, DECISIVE_EFF_MIN
     improve.append("系统层面：若连续多周期跑输沪指，建议上调决断门控"
                    f"（DECISIVE_NET_MIN={DECISIVE_NET_MIN}/DECISIVE_EFF_MIN="
                    f"{DECISIVE_EFF_MIN}）进一步剔除磨叽票，并提升板块热度权重，"
