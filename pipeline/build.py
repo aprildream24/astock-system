@@ -966,6 +966,18 @@ def build(task="close", date=None, period_days=30):
         rp_lines = []
     # M35 变化式主推送（简洁）+ 详情报告落盘（HTML+JSON）
     if task in ("close", "pre", "auction"):
+        # ★ 09-30 修（用户：「之前说的几次推荐的股票标签没有了」）：
+        #   confirm 计数必须发生在卡片组装**之前**。原顺序是先组装卡片
+        #   （_CARD_KEYS 复制 confirms）后计数 ⇒ 复制时恒为 None ⇒
+        #   「推荐次数」行永远不渲染，双/三确认标签集体消失。
+        _cc = _confirm_counts(con, date)
+        for c in picks + ladder_next:
+            n_conf = _cc.get(c["code"], 0)
+            c["confirms"] = n_conf
+            c["confirm_note"] = ({3: "三确认（强）",
+                                  2: "双确认"}.get(n_conf)
+                                 or ("首次推荐" if n_conf <= 1
+                                     else f"已确认 {n_conf} 次"))
         # 主推荐位 = 「现在买」且现价落在买区内；其余（等回踩/小仓试/已跳出买区）
         # 一律进「等待更好买点」独立分组，并强制标注距买区 —— 不再混入备选，
         # 否则用户点开看到现价早跳出买区，就是"推的票不在购买区间"。
@@ -1005,14 +1017,6 @@ def build(task="close", date=None, period_days=30):
             print(f"[build] prev review failed: {e}")
         cov = LAST_SCAN_COVERAGE
         ut = cov.get("untradable", 0)
-        _cc = _confirm_counts(con, date)
-        for c in picks + ladder_next:
-            n_conf = _cc.get(c["code"], 0)
-            c["confirms"] = n_conf
-            c["confirm_note"] = ({3: "三确认（强）",
-                                  2: "双确认"}.get(n_conf)
-                                 or ("首次推荐" if n_conf <= 1
-                                     else f"已确认 {n_conf} 次"))
         _vd_level, _vd_text = today_verdict(emo, mood)
         meta = {"reviewed": len(cands), "data_date": date,
                 "verdict": _vd_level, "verdict_text": _vd_text,

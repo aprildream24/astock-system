@@ -355,5 +355,32 @@ class TestSwapOptions(unittest.TestCase):
         self.assertIn("今日无溢价≤10% 的换股备选", html)
 
 
+
+    def test_confirm_count_before_card_assembly(self):
+        """★ 09-30 血案锁：confirm 计数必须在卡片组装之前，否则
+        _CARD_KEYS 复制时 confirms 恒为 None ⇒ 标签集体消失。"""
+        import pipeline.notifier as _n
+        root = os.path.dirname(os.path.dirname(os.path.abspath(_n.__file__)))
+        src = open(os.path.join(root, "pipeline", "build.py"),
+                   encoding="utf-8").read()
+        i_cc = src.find("_cc = _confirm_counts(con, date)")
+        i_loop = src.find("first = None")
+        i_upd = src.find('d.update({k: c.get(k) for k in _CARD_KEYS')
+        self.assertGreater(i_cc, 0)
+        self.assertLess(i_cc, i_loop, "计数必须先于卡片组装循环")
+        self.assertLess(i_cc, i_upd, "计数必须先于 _CARD_KEYS 复制")
+
+    def test_compact_row_carries_confirm_tag(self):
+        """紧凑行（未到买点/其余备选）也必须带确认标签。"""
+        d = _decision(11.0, 10.0, 10.3, dist=6.8, status="等待确认")
+        d["confirms"] = 3
+        line = notifier._pick_line(d)
+        self.assertIn("三确认", line)
+        d["confirms"] = 2
+        self.assertIn("双确认", notifier._pick_line(d))
+        d["confirms"] = 1
+        self.assertNotIn("确认", notifier._pick_line(d))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

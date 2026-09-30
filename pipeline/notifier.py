@@ -430,10 +430,13 @@ def _pick_line(d):
     dist = d.get("dist_pct")
     dist_s = (f"距买区{dist:+.1f}%" if dist is not None and dist != 0
               else ("区内" if dist == 0 else ""))
+    conf = d.get("confirms") or 0
+    conf_s = {3: "✅三确认", 2: "●双确认"}.get(conf, "")
     parts = [f"{badge} {d.get('name','')} {d.get('code','')}",
              f"买{zs}",
              f"停{d['stop']:.2f}" if d.get("stop") else "",
              dist_s,
+             conf_s,
              _sector_label(d),
              f"分{d.get('score')}" if d.get("score") is not None else ""]
     return " ".join(p for p in parts if p)[:CAND_LINE_CAP]
@@ -447,7 +450,8 @@ def _compact_row(d):
             f'{_esc(_pick_line(d))}{mark}</td></tr>')
 
 
-MAX_COMPACT_ROWS = 14        # 紧凑行总预算：放开限量后的"推送长度保险丝"
+MAX_COMPACT_ROWS = 24        # 紧凑行总预算：09-30 用户「可以全部推送」——
+                             # 当日推荐全部进推送（上限仍受 PP_HTML_CAP 兜底）
 
 
 def _compact_block(items, budget=None):
