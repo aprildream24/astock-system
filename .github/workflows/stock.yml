@@ -276,6 +276,10 @@ jobs:
             echo "[rehearsal] 模拟盘演练（时段闸门/打扰纪律自动裁决）"
             python -m tools.executor --task auto --slot am
             python tools/exec_sample.py
+            echo "[rehearsal] 盘中三格式（买点触发/早盘校验/尾盘机会）"
+            python -c "from pipeline import intraday; [intraday.run(slot=s, force_window=True) for s in ('live', 'am', 'pm')]"
+            echo "[rehearsal] 周期复盘格式"
+            python -m pipeline.build --task period --period-days 30
             echo "[rehearsal] 全版式推送完成"
             exit 0
           fi

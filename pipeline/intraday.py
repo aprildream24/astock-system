@@ -853,8 +853,9 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     # live 的去重已经由事件账本完成（同票同事件一天一次）⇒ 必须 force
     # 绕过"每 mode 一天一条"的日熔丝，否则当天第二个新事件永远发不出。
     # am/pm 维持日熔丝语义（一天一条摘要）不变。
+    # ASTOCK_FORCE_PUSH=1（演练/补发）时三种盘中格式都可强制重发
     r = notifier.push(f"intraday_{slot}", title, html, date=date, con=con,
-                      force=_live)
+                      force=_live or os.environ.get("ASTOCK_FORCE_PUSH") == "1")
     if r.get("sent"):
         # 主推送送达后记账（所有 slot）：早盘/尾盘摘要报过的买区票也要登记，
         # 否则 5 分钟后的 live 轮次会把同一只再报一遍。

@@ -1227,6 +1227,9 @@ def build(task="close", date=None, period_days=30):
                     for a in watch_advice))
         digest = notifier.render_evening_digest(
             date, narrative_html, daily_html, holding_html, watch_html)
+        print(f"[build] digest 段落长度: narrative={len(narrative_html)} "
+              f"daily={len(daily_html)} holding={len(holding_html)} "
+              f"watch={len(watch_html)}")
         if digest:
             r = notifier.push("review", date, digest, date=date, con=con,
                               force=_force_push())
