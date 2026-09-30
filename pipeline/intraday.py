@@ -330,12 +330,26 @@ def _alerted_set(con, date):
         "SELECT kind, code FROM live_alerts WHERE date=?", (date,)).fetchall()}
 
 
+def _entry_count(con, date, code, kind=KIND_ZONE):
+    """同票同事件当日的已提醒次数（detail 首段 hits=N）。"""
+    row = con.execute(
+        "SELECT detail FROM live_alerts WHERE date=? AND kind=? AND code=?",
+        (date, kind, code)).fetchone()
+    if not row:
+        return 0
+    try:
+        return int(str(row[0]).split("|", 1)[0].replace("hits=", "") or 0)
+    except Exception:                               # noqa: BLE001
+        return 1
+
+
 def _mark_alerted(con, date, kind, items, ts):
-    """推送成功后记账；items 元素需含 code。"""
+    """推送成功后记账（detail 首段记 hits=N 供当日次数上限判断）。"""
     for x in items:
+        n = _entry_count(con, date, x["code"], kind) + 1
         con.execute("INSERT OR REPLACE INTO live_alerts VALUES(?,?,?,?,?)",
                     (date, kind, x["code"], ts,
-                     f'{x.get("name", "")}@{x.get("price", "")}'))
+                     f"hits={n}|{x.get('name', '')}@{x.get('price', '')}"))
     con.commit()
 
 
@@ -522,6 +536,11 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         out["reason"] = f"快照异常（{_qsrc} {len(snap)}/{_need}）"
         print(f"[intraday] {out['reason']} → 不推送")
         return out
+    # 上一轮价格（本写入覆盖前快照）——供「从区外进入区内」转换检测。
+    # 09-30 用户实测：早上推过的票下午跌进买区，被一次性去重吞掉不推。
+    _prev_price = {c: pr for c, pr in con.execute(
+        "SELECT code, price FROM snapshot_live WHERE date=? AND slot=?",
+        (date, slot)) if pr}
     # 只落独立表：**不碰** klines / snapshot 主表
     con.executemany(
         "INSERT OR REPLACE INTO snapshot_live VALUES(?,?,?,?,?,?,?)",
@@ -542,10 +561,14 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                    else round((v["price"] / hi - 1) * 100, 1)
                    if v["price"] > hi
                    else round((v["price"] / lo - 1) * 100, 1))
+        prev_p = _prev_price.get(code)
+        fresh = bool(prev_p and lo and hi
+                     and not (lo <= prev_p <= hi)
+                     and lo <= v["price"] <= hi)  # 区外(上或下)→区内
         item = {"code": code, "name": name or v.get("name", ""),
                 "price": v.get("price"), "pct": v.get("pct"),
                 "lo": lo, "hi": hi, "state": state, "label": label,
-                "action": action, "pct_dist": _pd}
+                "action": action, "pct_dist": _pd, "fresh_entry": fresh}
         {"in_zone": in_zone, "above": above, "below": below,
          "broke_stop": stopped, "limit_up": limit}.get(state, []).append(item)
     # 持仓实时风控（与计划无关，独立成组）
@@ -650,8 +673,17 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     if _live:
         # 09-30：连板通道/观望不进「可买」组（逻辑漏洞修复）
         in_zone = [p for p in in_zone if p.get("action") in _LIVE_BUYABLE]
+        # 09-30 三次修：**从区外新跌进区内 = 新事件必推**——早上的一次性
+        # 去重把「有些跌下来了」的票全吞了（用户实测指正）。同票当日
+        # 进区提醒上限 2 次（防来回震荡刷屏）；其余维持一日一次。
         _n0 = (len(in_zone), len(watch_zone_hits))
-        in_zone = _fresh(KIND_ZONE, in_zone, _prev)
+
+        def _zone_allowed(p):
+            cnt = _entry_count(con, date, p["code"])
+            if p.get("fresh_entry"):
+                return cnt < 2            # 区外→区内：当日 ≤2 次
+            return cnt == 0               # 区内未变：当日只报第一次
+        in_zone = [p for p in in_zone if _zone_allowed(p)]
         watch_zone_hits = _fresh(KIND_WZONE, watch_zone_hits, _prev)
         _new = len(in_zone) + len(watch_zone_hits)
         if _new == 0 and not sell_hits and not watch_stop_hits \

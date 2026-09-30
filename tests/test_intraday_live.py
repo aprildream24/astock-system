@@ -212,6 +212,32 @@ class TestEventDedup(_LedgerIsolated):
             con.execute("SELECT COUNT(*) FROM live_alerts WHERE kind='stop'"
                         ).fetchone()[0], 1)
 
+
+    def test_reentry_after_exit_repushes(self):
+        """★ 09-30 用户实测锁：早上推过的票下午**跌出去再跌回区内**，
+        必须重新推——一次性去重吞掉再进事件就是「到了买点却不推」。
+        同票当日进区提醒上限 2 次。"""
+        con = _mkcon()
+        _plan(con, "sh600519", "贵州茅台", 20.0, 21.0)
+        # 第 1 次：区内 → 推
+        r1, con, _ = _run("live", _snap([("600519", 20.5, 1.0)]), con=con)
+        self.assertTrue(r1["pushed"])
+        # 涨出区（无事件）
+        r2, con, _ = _run("live", _snap([("600519", 22.0, 3.0)]), con=con)
+        self.assertFalse(r2["pushed"])
+        # 跌回区内 → 转换事件 → 必须再推（虽已标记过）
+        r3, con, _ = _run("live", _snap([("600519", 20.6, 1.0)]), con=con)
+        self.assertTrue(r3["pushed"], f"区外→区内是新事件必须推，实际 {r3}")
+        # 再涨出、再回 → 第 3 次进区（r1 第 1 + r3 第 2）→ 超当日上限 2 → 静默
+        r4, con, _ = _run("live", _snap([("600519", 22.0, 3.0)]), con=con)
+        self.assertFalse(r4["pushed"])
+        r5, con, _ = _run("live", _snap([("600519", 20.6, 1.0)]), con=con)
+        self.assertFalse(r5["pushed"], "当日进区提醒上限 2 次")
+        self.assertEqual(
+            con.execute("SELECT COUNT(*) FROM live_alerts WHERE kind='zone'"
+                        ).fetchone()[0], 1,
+            "被上限拦截的进区不得记账（否则计数虚增）")
+
     def test_dry_run_never_marks_ledger(self):
         """dry 只算不推也不记账——否则验收跑一遍会把真实事件标记为已报。"""
         con = _mkcon()
