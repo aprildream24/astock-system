@@ -104,7 +104,12 @@ def _already_running(token, repo, my_run_id):
                 r["created_at"].replace("Z", "+00:00")).astimezone(_CST)
             if created.strftime("%Y-%m-%d") != today:
                 continue
-            if r.get("status") != "completed" or r.get("conclusion") == "success":
+            # 09-30 二次修：只挡**真正在跑**的并发实例（queued/in_progress）。
+            # 原判定把"当日已 success"也算占用——结果一次 30 秒的守门退出
+            # 自身就是 success，把当天后续所有派发全部挡死（实测踩坑）。
+            # 正常跑完（15:00 success）之后新触发的实例会因收盘闸自然退出，
+            # 无需守门代劳。
+            if r.get("status") in ("queued", "in_progress"):
                 return True
     except Exception as e:                      # noqa: BLE001
         print(f"[live-loop] 并发检查失败（放行）: {type(e).__name__} {e}",

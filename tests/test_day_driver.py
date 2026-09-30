@@ -226,6 +226,25 @@ class TestLiveLoopGuard(unittest.TestCase):
                                                         tzinfo=BJT)):
                 self.assertTrue(self.ll._already_running("t", "x/y", 123))
 
+    def test_success_exit_does_not_block(self):
+        """09-30 二次修：守门退出/正常跑完的 success 实例不算占用——
+        否则一次 30 秒的守门退出会把当天后续派发全部挡死（实测踩坑）。"""
+        runs = [{"id": 999, "status": "completed", "conclusion": "success",
+                 "created_at": "2026-09-24T01:00:00Z"}]
+        with mock.patch("urllib.request.urlopen", self._fake_urlopen(runs)):
+            with mock.patch.object(self.ll, "_bj_now",
+                                   lambda: _dt.datetime(2026, 9, 24, 9, 30,
+                                                        tzinfo=BJT)):
+                self.assertFalse(self.ll._already_running("t", "x/y", 123))
+        queued = [{"id": 999, "status": "queued", "conclusion": None,
+                   "created_at": "2026-09-24T01:00:00Z"}]
+        with mock.patch("urllib.request.urlopen", self._fake_urlopen(queued)):
+            with mock.patch.object(self.ll, "_bj_now",
+                                   lambda: _dt.datetime(2026, 9, 24, 9, 30,
+                                                        tzinfo=BJT)):
+                self.assertTrue(self.ll._already_running("t", "x/y", 123),
+                                "排队中也要算占用")
+
     def test_ignores_self_and_failures_and_other_days(self):
         runs = [
             {"id": 123, "status": "in_progress", "conclusion": None,
