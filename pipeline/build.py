@@ -1609,7 +1609,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="close",
                     choices=["pre", "auction", "close", "review", "site",
-                             "intraday"])
+                             "intraday", "period"])
     ap.add_argument("--date", default=None)
     # M41 盘中任务：--slot am|pm 决定早盘校验/尾盘机会；live=高频买点巡检
     # （每 10 分钟一轮，事件级去重，见 intraday.py 模块注释）；--dry 只算不推

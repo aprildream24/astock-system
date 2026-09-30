@@ -155,10 +155,18 @@ def narrate(stats, http_fn=None):
             try:
                 text = _call(p, prompt, p["temp"], http_fn=http_fn)
                 if text:
+                    print(f"[narrative] AI 源 {p['name']} 成功，"
+                          f"{len(text)} 字", flush=True)
                     return text
             except QuotaExhausted:
+                print(f"[narrative] AI 源 {p['name']} 额度耗尽 → 换家",
+                      flush=True)
                 break                              # 换家
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                print(f"[narrative] AI 源 {p['name']} 失败"
+                      f"（第 {attempt + 1}/2 次）: {type(e).__name__} {e}",
+                      flush=True)
                 if attempt:
                     break
+    print("[narrative] 全部 AI 源失败 → 规则引擎兜底", flush=True)
     return rule_engine(stats)
