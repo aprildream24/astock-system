@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import ssl
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -1408,6 +1409,38 @@ def _reconcile(con, key, mode, ts, dist_ok):
     return False
 
 
+# ---------------------------------------------------------------------------
+# 防频控间距（09-30）：PushPlus 对同一 token 高频连发会**静默丢弃**
+# （接口仍返回 ok，但微信不送——今日 8 连发演练后，下午尾盘/收盘全部
+# 没收到，接口层却全部 sent）。同一进程/同一 runner 环境内，两次真实
+# 发送之间强制 ≥25 秒间隔；跨 run 的自然间隔（分钟级）本身已足够。
+_PUSH_GAP_STATE = os.path.join(tempfile.gettempdir(), "_astra_last_push_ts")
+_PUSH_MIN_GAP = float(os.environ.get("ASTOCK_PUSH_MIN_GAP", "25") or 25)
+
+
+def _anti_burst_wait():
+    try:
+        last = 0.0
+        if os.path.exists(_PUSH_GAP_STATE):
+            with open(_PUSH_GAP_STATE, encoding="utf-8") as f:
+                last = float(f.read().strip() or 0)
+        wait = _PUSH_MIN_GAP - (time.time() - last)
+        if wait > 0:
+            print(f"[push] 防频控：距上次推送不足 {_PUSH_MIN_GAP:.0f}s，"
+                  f"等待 {wait:.0f}s", flush=True)
+            time.sleep(wait)
+    except Exception:                               # noqa: BLE001
+        pass
+
+
+def _anti_burst_mark():
+    try:
+        with open(_PUSH_GAP_STATE, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except Exception:                               # noqa: BLE001
+        pass
+
+
 def push(mode, title, content, date=None, con=None,
          channels=None, force=False):
     """推送 + 三态账本（M37）+ 防混淆标识 + 去重。
@@ -1489,12 +1522,14 @@ def push(mode, title, content, date=None, con=None,
             if "wxpusher" in channels else []
         multi = len(wx_accounts) > 1
         for a in wx_accounts:
+            _anti_burst_wait()
             # 单收件人 → 用户要求的纯净形态【任务】【Astra】；
             # 多收件人才在第二段带上账号名（保留"多账号分不清"的防混淆能力）
             src = f"{tag}·{a.get('name', '')}" if multi else tag
             t = f"{"【演练】" if _rh else ""}{title_prefix(mode, src)}{title}"
             body = f"<p><small>📮 {tag} · {a.get('name', '')}</small></p>" + content
             st, detail = wxpusher.send(a, t, body)
+            _anti_burst_mark()
             results[f"wxpusher:{a['name']}"] = {"status": st, "detail": detail}
         statuses = [r["status"] for r in results.values()]
         all_failed = wx_accounts and statuses and all(
@@ -1506,9 +1541,11 @@ def push(mode, title, content, date=None, con=None,
                                      "role": "fallback"}
         if not wx_accounts or "wxpusher" not in channels:
             if "pushplus" in channels and cfg.get("pushplus_token"):
+                _anti_burst_wait()
                 st, detail = _send_pushplus(cfg["pushplus_token"],
                                             f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
                                             f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
+                _anti_burst_mark()
                 results["pushplus"] = {"status": st, "detail": detail}
                 # ⚠️ 2026-09-16 修（血案：PushPlus 是当前唯一通道，却无兜底）：
                 # 原实现只在 **wxpusher 全失败** 时才落 ServerChan 备用

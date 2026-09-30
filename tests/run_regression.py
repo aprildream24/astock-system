@@ -30,6 +30,7 @@ unittest 结果词 + `Ran N tests` 交叉校验，不再子串匹配。
 """
 import json
 import os
+os.environ.setdefault("ASTOCK_PUSH_MIN_GAP", "0")  # 回归不打防频控间距
 import re
 import subprocess
 import sys
