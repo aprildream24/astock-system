@@ -262,18 +262,20 @@ class TestPushDiscipline(_LedgerIsolated):
         self.assertEqual(res["in_zone"], 1)
         self.assertTrue(notifier._daily_sent(con, "intraday_pm", DATE))
 
-    def test_pm_silent_when_nothing_actionable(self):
-        """全部涨出买区 → 没有机会就不凑数，一条都不发。"""
+    def test_pm_summarizes_unreached(self):
+        """09-30 用户口径：没有当下可买的票时，pm 把「未到买点」并入尾盘
+        一起总结（不再完全静默——用户要知道哪些在等回踩）。"""
         con = _mkcon()
         _plan(con, "sh600519", "贵州茅台", 20.0, 21.0)
         _plan(con, "sz000001", "平安银行", 9.0, 9.5)
         res, con, notifier = _run(
             "pm", _snap([("600519", 25.0, 6.0), ("000001", 11.0, 5.0)]),
             con=con)
-        self.assertFalse(res["pushed"])
-        self.assertIn("静默", res["reason"])
-        self.assertFalse(notifier._daily_sent(con, "intraday_pm", DATE),
-                         "静默时不得占用当日额度（否则真实机会被自家保险丝拦掉）")
+        self.assertTrue(res["pushed"], "pm 必须总结未到买点")
+        self.assertTrue(notifier._daily_sent(con, "intraday_pm", DATE))
+        groups = res.get("_groups") or []
+        self.assertTrue(any("未到买点" in g["title"] for g in groups),
+                        f"必须有未到买点组，实际 {[g['title'] for g in groups]}")
 
     def test_am_pushes_on_deterioration(self):
         con = _mkcon()

@@ -54,6 +54,7 @@ am 定在 **09:45**：开盘 15 分钟即可识别「高开低走/低开走强�
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import time
 import urllib.request
@@ -71,6 +72,12 @@ KIND_SELL = "sell"        # 持仓系统判定卖出
 KIND_WSTOP = "wstop"      # 自选跌破止损
 # 抓取异常的兜底：正常盘中应有 4500+ 只快照，低于此值说明源异常
 _MIN_UNIVERSE = 500
+# 09-30 用户口径：live/盘中推送里「进入买区（可当日下单）」组只放**当下
+# 真能照价下单**的计划。连板通道（次日竞价达标买）的买区是竞价条件带、
+# 观望/禁买根本不是买入计划——它们混进"可下单"组就是逻辑漏洞
+# （用户实测：「收到信息现在进入买区当日可下单，结果详情又是观望候选」）。
+# 这些统一并入 20:02 复盘总结。小仓试 = 可买（建议仓位行已注明小仓）。
+_LIVE_BUYABLE = ("现在买", "等回踩", "小仓试")
 
 
 def _bj_now():
@@ -112,6 +119,70 @@ def _purge_old(con, date):
                   f"live_alerts -{b} 行")
     except Exception as e:                      # noqa: BLE001
         print(f"[intraday] 保留期清理失败（不阻断）: {e}")
+
+
+def _enrich(con, date, items):
+    """给买区票补两行详情所需的信息：板块/板块热度/20日位置/决断力/确认数。
+    逐项 best-effort：拿不到就不标注，绝不阻断推送。"""
+    for it in items:
+        try:
+            ind = con.execute(
+                "SELECT sector FROM stock_industry WHERE code=?",
+                (it["code"],)).fetchone()
+            it["sector"] = ind[0] if ind else ""
+            if it["sector"]:
+                heat = con.execute(
+                    "SELECT pct FROM sector_heat WHERE date=? AND sector=?",
+                    (date, it["sector"])).fetchone()
+                it["sector_pct"] = heat[0] if heat else None
+            ex = con.execute(
+                "SELECT extra FROM candidate_snapshots WHERE code=? "
+                "AND date<=? AND json_extract(extra,'$.buy_low') IS NOT NULL "
+                "ORDER BY date DESC LIMIT 1",
+                (it["code"], date)).fetchone()
+            if ex and ex[0]:
+                x = json.loads(ex[0])
+                it["pos_label"] = x.get("pos_label")
+                dec = x.get("decisive") or {}
+                it["dec_net"] = dec.get("net")
+            cc = con.execute(
+                "SELECT COUNT(DISTINCT date || task) FROM confirm_log "
+                "WHERE code=? AND date>=date(?, '-10 day')",
+                (it["code"], date)).fetchone()
+            it["confirms"] = cc[0] if cc else 0
+        except Exception:                           # noqa: BLE001
+            continue
+
+
+def _live_stock_block(p):
+    """两行一票（09-30 用户：「细分为属于什么板块，现在强度如何等等，
+    一个股票用两行展示」）：第一行 名称/现价/买区，第二行 板块热度/位置/
+    强度/确认。"""
+    price = f'{p["price"]:.2f}' if p.get("price") else "—"
+    pct = f'{p["pct"]:+.1f}%' if p.get("pct") is not None else ""
+    zone = (f'{p["lo"]:.2f}~{p["hi"]:.2f}'
+            if p.get("lo") and p.get("hi") else "—")
+    sector = p.get("sector") or ""
+    heat = ""
+    if sector and p.get("sector_pct") is not None:
+        heat = (f' {"🔥" if p["sector_pct"] >= 0 else "❄️"}'
+                f'{p["sector_pct"]:+.1f}%')
+    conf = {3: "✅三确认", 2: "●双确认"}.get(p.get("confirms") or 0, "")
+    l1 = ('<div style="font-size:14.5px;font-weight:700;color:#e8eaed">'
+          f'✅可买 {p.get("name") or ""}'
+          f' <span style="color:#8a93a3;font-size:12px">{p["code"]}</span>'
+          f' <span style="color:#3fae6b">现价{price} {pct}</span>'
+          f' <span style="color:#8a93a3;font-weight:400">买区 {zone}</span>'
+          '</div>')
+    l2parts = [f'板块 {sector or "—"}{heat}',
+               p.get("pos_label") or "",
+               (f'20日净移{p["dec_net"]:+.1f}%'
+                if p.get("dec_net") is not None else ""),
+               conf]
+    l2 = ('<div style="font-size:12px;color:#9aa0a6;margin:1px 0 8px">'
+          + " · ".join(x for x in l2parts if x) + "</div>")
+    return ('<div style="border-bottom:1px dashed #2b313d;padding:4px 0">'
+            f"{l1}{l2}</div>")
 
 
 def _cap_rows(rows, hint, cap=15):
@@ -331,7 +402,9 @@ def render_html(date, slot, now, groups, plan_n, coverage_note=""):
     """groups: [{"title","hint","rows":[(cells, colors)]}, ...]"""
     head = {"am": "早盘校验", "pm": "尾盘机会"}.get(slot, "买点巡检")
     body = "".join(
-        _section(g["title"], "".join(_row(c, col) for c, col in g["rows"]),
+        _section(g["title"],
+                 g.get("html") or "".join(
+                     _row(c, col) for c, col in g["rows"]),
                  g.get("hint", ""))
         for g in groups)
     if not body:
@@ -569,6 +642,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     watch_stop_hits = _fresh(KIND_WSTOP, watch_stop_hits, _prev)
     hold_hits = _fresh(KIND_STOP, hold_hits, _prev)
     if _live:
+        # 09-30：连板通道/观望不进「可买」组（逻辑漏洞修复）
+        in_zone = [p for p in in_zone if p.get("action") in _LIVE_BUYABLE]
         _n0 = (len(in_zone), len(watch_zone_hits))
         in_zone = _fresh(KIND_ZONE, in_zone, _prev)
         watch_zone_hits = _fresh(KIND_WZONE, watch_zone_hits, _prev)
@@ -599,6 +674,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                        f'{h["pct"]:+.1f}%' if h["pct"] is not None else "—",
                        f'止损 {h["stop"]:.2f}'), [_TXT, _TXT, _UP, _UP, _UP])
                      for h in hold_hits]})
+    in_zone = [p for p in in_zone if p.get("action") in _LIVE_BUYABLE]
     if in_zone:
         _zh = {"am": "早盘", "pm": "尾盘"}.get(slot, "现价")
         _rows = [((p["code"],
@@ -608,11 +684,23 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                    f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
                    f'{p["lo"]:.2f}~{p["hi"]:.2f}'),
                   [_TXT, _TXT, _HL, _HL, _HL]) for p in in_zone]
-        _rows, _hint = _cap_rows(
-            _rows, "现价已在计划买区内；收盘前有效，次日可卖")
-        groups.append({
-            "title": f"● {_zh}进入买区（可当日下单）", "hint": _hint,
-            "rows": _rows})
+        if _live:
+            # 09-30：两行一票（板块热度/强度/位置/确认），上限 12 只
+            _enrich(con, date, in_zone)
+            _html = "".join(_live_stock_block(p) for p in in_zone[:12])
+            if len(in_zone) > 12:
+                _html += (f'<div style="font-size:12px;color:#9aa0a6">'
+                          f'另有 {len(in_zone) - 12} 只见网页版完整详情</div>')
+            groups.append({
+                "title": f"● 现在可以买入（{len(in_zone)} 只在买区内）",
+                "hint": "现价在买区内，照价下单即可；次日可卖",
+                "html": _html})
+        else:
+            _rows, _hint = _cap_rows(
+                _rows, "现价已在计划买区内；收盘前有效，次日可卖")
+            groups.append({
+                "title": f"● {_zh}进入买区（可当日下单）", "hint": _hint,
+                "rows": _rows})
     if slot == "am" and plans and len(below) * 2 >= len(plans):
         groups.append({
             "title": "○ 盘前计划转差", "hint": "多数标的已跌破买区下沿，当日不宜按计划挂单",
@@ -621,6 +709,16 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                        f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
                        f'下沿 {p["lo"]:.2f}' if p["lo"] else "—"),
                       [_TXT, _TXT, _DN, _DN, _DN]) for p in below]})
+    if slot == "pm" and above:
+        # 09-30 用户口径：未到买点的票不单独推，并入尾盘一起总结
+        groups.append({
+            "title": f"○ 未到买点 · {len(above)} 只（高于买区，等回踩）",
+            "hint": "现价高于买区上沿，回踩到位再买；明日继续监控",
+            "rows": [((p["code"], p["name"],
+                       f'{p["price"]:.2f}' if p["price"] else "—",
+                       f'{p["pct"]:+.1f}%' if p["pct"] is not None else "—",
+                       f'上沿 {p["hi"]:.2f}' if p["hi"] else "—"),
+                      [_TXT, _TXT, _DN, _DN, _DN]) for p in above[:14]]})
     if slot == "pm" and not in_zone and below:
         groups.append({
             "title": "○ 计划整体走弱", "hint": "尾盘无一进入买区，跌破者已标注",
@@ -655,6 +753,23 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                        (s["verdict"] + "·已破止损" if s["live_broke"]
                         else s["verdict"])),
                       [_TXT, _TXT, _UP, _UP, _UP]) for s in sell_hits]}]
+        # 09-30 用户口径：「不要建议卖出结果后续的什么都没有」——
+        # 卖出信号必须同时给出资金去向：现价可换入的票，或明说持币观望。
+        if in_zone:
+            sgroup.append({
+                "title": "🔁 卖出资金去向（现价可换入）",
+                "hint": "以下为当下在买区内、可照价下单的标的，自行挑选",
+                "rows": [((p["code"], p["name"],
+                           f'{p["price"]:.2f}' if p["price"] else "—",
+                           f'{p["lo"]:.2f}~{p["hi"]:.2f}'),
+                          [_HL, _HL, _HL, _HL]) for p in in_zone[:5]]})
+        else:
+            sgroup.append({
+                "title": "🔁 卖出资金去向",
+                "hint": "",
+                "rows": [(("—", "当前无可换入标的（候选均未到买点或溢价过高）",
+                           "建议：卖出后持币观望", "勿强行换股"),
+                          [_MUT, _TXT, _DN, _MUT])]})
         shtml = render_html(date, slot, now, sgroup, len(plans))
         sr = notifier.push("holding_intraday", f"持仓卖出信号 {date[5:]}",
                            shtml, date=date, con=con, force=True)

@@ -352,7 +352,8 @@ class TestSwapOptions(unittest.TestCase):
                 "score": 40}]
         html = notifier.render_holding_advice(self.HOLDINGS, sky,
                                               "2026-09-28")
-        self.assertIn("今日无溢价≤10% 的换股备选", html)
+        self.assertIn("建议卖出后持币观望", html)
+        self.assertIn("勿强行换股", html)
 
 
 

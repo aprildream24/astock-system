@@ -924,10 +924,12 @@ def render_exec_report(today, acct, opened=(), blocked=(), holdings=(),
                 f'color:{st_col}">{_esc(st)}</td></tr>')
         h.append(_card(_table(inner), border="#2b313d"))
 
-    # ⑥ 未到买点（折叠）
+    # ⑥ 未到买点（09-30 用户：「到底是哪些，可以直接展示给我」）
     if skipped:
-        h.append(f'<div style="{_STY["meta"]}">其余 {len(skipped)} 只'
-                 f'未到买点（现价跳出买区/无行情），未下单</div>')
+        names = "；".join(f"{c}（{d}）" for c, d in skipped[:8])
+        tail = (f"　另有 {len(skipped) - 8} 只略" if len(skipped) > 8 else "")
+        h.append(f'<div style="{_STY["meta"]}">未到买点 {len(skipped)} 只，'
+                 f'未下单：{names}{tail}</div>')
 
     html = ('<div style="' + _STY["doc"] + '">' + "".join(h) + "</div>")
     if len(html) > PP_HTML_CAP:
@@ -1105,8 +1107,12 @@ def render_holding_advice(holdings_eval, candidates=(), date=""):
             body.append(f'<p style="color:#9aa4b2;font-size:12px">'
                         f'另有 {len(opts) - 8} 只备选见网页版完整详情。</p>')
     else:
-        body.append('<p style="color:#8a93a3">今日无溢价≤10% 的换股备选'
-                    '（其余候选均已涨离买区过远，不列）。</p>')
+        body.append('<div style="background:#3a1416;border:1px solid '
+                    '#7a2226;border-radius:6px;padding:8px 10px;margin:6px 0;'
+                    'color:#ff8a80;font-weight:700;font-size:13.5px">'
+                    '当前无可换入标的（候选均未到买点或溢价&gt;10%）'
+                    '→ <b>建议卖出后持币观望</b>，勿强行换股——'
+                    '宁可空仓等下一次机会。</div>')
 
     html = ('<div style="' + _STY["doc"] + '">' + "".join(body) + "</div>")
     if len(html) > PP_HTML_CAP:
