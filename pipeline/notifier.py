@@ -1483,6 +1483,24 @@ def push(mode, title, content, date=None, con=None,
     # biz_key 不同照样拦。失败/不确定的首次推送不拦，次日触发可补发。
     if not force and _daily_sent(con, mode, date):
         return {"sent": False, "dedup": True, "key": key, "daily_gate": True}
+    # PushPlus 当日额度保护（09-30 深夜）：免费通道静默丢消息的诱因之一
+    # 是当日发送量过大（08 连发演练 + 全天 16 条）。同渠道当日真实发送
+    # 超过上限后，非 force 的推送一律跳过——额度留给收盘/复盘这类关键
+    # 推送。force（补发/告警）不受限。
+    _pp_daily_cap = int(os.environ.get("ASTOCK_PUSHPLUS_DAILY_CAP", "20") or 20)
+    if cfg.get("pushplus_token") and "pushplus" in channels and not force:
+        try:
+            _pp_sent_today = con.execute(
+                "SELECT COUNT(*) FROM push_ledger WHERE ts LIKE ? "
+                "AND status='sent' AND channel LIKE '%pushplus%'",
+                (date + "%",)).fetchone()[0]
+        except Exception:                           # noqa: BLE001
+            _pp_sent_today = 0
+        if _pp_sent_today >= _pp_daily_cap:
+            print(f"[push] PushPlus 当日已发 {_pp_sent_today} 条 "
+                  f"(≥上限 {_pp_daily_cap}) → 跳过以保额度（force 可绕过）")
+            return {"sent": False, "skipped": True, "mode": mode,
+                    "reason": "pushplus 当日额度保护"}
     # ⚠️ 2026-09-16 修（血案：补发历史会**吃掉当日额度**）：
     # `ts` 的**日期部分必须用交易日 `date`**，不能用「当前日期」。
     # 反例：09-16 凌晨以 `--date 2026-09-15` 补发昨天的收盘报告时，ts 被写成
