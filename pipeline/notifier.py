@@ -1619,6 +1619,19 @@ def push(mode, title, content, date=None, con=None,
         # 双通道同发——任何一家静默丢消息，另一家兜底。
         if primary == "wxpusher" and cfg.get("pushplus_token"):
             channels = ("wxpusher", "pushplus")
+    # 企业微信自建应用（09-30 深夜）：**文本直出个人微信**——配合
+    # 「微信插件」关注，应用消息全文显示在微信会话里（ServerChan 同原理）。
+    # 配置来源：notify.json wecom 字典 或 env WECOM_CORPID/WECOM_SECRET/
+    # WECOM_AGENTID。配置存在即加入通道。
+    _wecom_cfg = (cfg.get("wecom") or
+                  ({"corpid": os.environ.get("WECOM_CORPID"),
+                    "secret": os.environ.get("WECOM_SECRET"),
+                    "agentid": os.environ.get("WECOM_AGENTID"),
+                    "touser": os.environ.get("WECOM_TOUSER") or "@all"}
+                   if os.environ.get("WECOM_CORPID")
+                   and os.environ.get("WECOM_SECRET") else None))
+    if _wecom_cfg:
+        channels = tuple(channels) + ("wecom",)
     # 09-30 用户口径：「不需要点开就可以看到」——摘要写进标题，
     # 微信通知横幅/会话列表直接可见（横幅约显示 40 字，摘要须短）。
     if headline:
@@ -1756,6 +1769,15 @@ def push(mode, title, content, date=None, con=None,
                 st, detail = _send_serverchan(cfg["serverchan_key"],
                                               f"{title_prefix(mode, tag, 'SC')}{title}", content)
                 results["serverchan"] = {"status": st, "detail": detail}
+        if "wecom" in channels and _wecom_cfg:
+            # 企业微信自建应用：文本直出（配合微信插件全文显示在个人微信）
+            _anti_burst_wait()
+            _wtxt = html_to_text(content).strip() or title
+            st, detail = _send_wecom(_wecom_cfg,
+                                     f"{title_prefix(mode, tag, '企业微信')}{title}",
+                                     f"【{tag}】{_wtxt}")
+            _anti_burst_mark()
+            results["wecom"] = {"status": st, "detail": detail}
     # 聚合口径：任一通道送达即 sent；不确定优先于 failed
     statuses = [r["status"] for r in results.values()] or ["dry-run"]
     if "sent" in statuses:
