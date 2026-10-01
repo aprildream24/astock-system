@@ -1154,10 +1154,11 @@
  },
  "693e8675fa16edb2": {
   "mode": "rehearsal_build_pre",
-  "ts": "2026-09-30 00:26:26",
+  "ts": "2026-09-30 00:45:06",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  },
  "b42eff8a8088cc04": {
@@ -1170,10 +1171,11 @@
  },
  "e88de3c6a0df18e5": {
   "mode": "rehearsal_build_auction",
-  "ts": "2026-09-30 00:27:22",
+  "ts": "2026-09-30 00:46:57",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  },
  "4e86341bf29d3783": {
@@ -1186,10 +1188,11 @@
  },
  "56e3bef68b0f1f96": {
   "mode": "rehearsal_build_close",
-  "ts": "2026-09-30 00:28:14",
+  "ts": "2026-09-30 00:48:45",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  },
  "190b36c6bb7b9a29": {
@@ -1242,26 +1245,29 @@
  },
  "89722e421b0e8a6b": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-09-30 00:26:45",
+  "ts": "2026-09-30 00:45:56",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  },
  "b46bcbdfc4b6c9a2": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-09-30 00:27:40",
+  "ts": "2026-09-30 00:47:41",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  },
  "1b67520c8a6d775f": {
   "mode": "rehearsal_review",
-  "ts": "2026-09-30 04:12:48",
+  "ts": "2026-09-30 00:51:04",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  },
  "8202f34814b65948": {
@@ -1298,10 +1304,11 @@
  },
  "d8a88a4f25ce0b3f": {
   "mode": "rehearsal_period",
-  "ts": "2026-10-01 00:29:39",
+  "ts": "2026-10-01 00:52:25",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  },
  "1287a29b56a8d040": {
@@ -1314,10 +1321,11 @@
  },
  "4df5d969098254fc": {
   "mode": "rehearsal_rehearsal_exec",
-  "ts": "2026-10-01 00:29:13",
+  "ts": "2026-10-01 00:51:33",
   "status": "sent",
   "channels": {
-   "pushplus": "sent"
+   "pushplus": "sent",
+   "wecom_hook": "sent"
   }
  }
 }
