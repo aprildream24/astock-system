@@ -301,6 +301,17 @@ def run_part(part, wf_file, token=None, repo=None, now=None, dry=False):
         verify_prior(part, token, repo, date, "start", dry=dry)
     for hhmm, task, extra in PLAN[part]:
         wait_until(hhmm, now=now)
+        # 09-30 深夜修：派发前核对云端账本——该时点已由 cron-job 定时器
+        # 送达时跳过派发，消除「GH schedule 迟到 3~7h」造成的重复集群。
+        # intraday 类时点常合法静默（账本无行）→ 永不跳过。
+        if token and not extra.get("slot") and task in (
+                "pre", "auction", "close", "review"):
+            sent, readable = ledger_modes_today(token, repo, date)
+            mode = "build_" + task
+            if readable and mode in sent:
+                print(f"[driver] {hhmm} {mode} 今日已送达 → 跳过冗余派发",
+                      flush=True)
+                continue
         if dry:
             print(f"[driver] [dry] dispatch {task} {extra or ''}", flush=True)
             ok += 1

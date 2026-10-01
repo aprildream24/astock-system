@@ -800,10 +800,13 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                            f'上沿 {p["hi"]:.2f}' if p["hi"] else "—"),
                           [_TXT, _TXT, _DN, _DN, _DN])
                          for p in _near_ab[:14]]})
-    if slot == "pm" and not in_zone and below:
-        # 跌破 ≤10% 的才有"等回升"意义；跌穿太远的已是破位票，不列
+    if slot == "pm" and not in_zone:
+        # 跌破 ≤10% 的才有"等回升"意义；跌穿太远的已是破位票，不列。
+        # 09-30 深夜修：过滤必须发生在建组**之前**——否则全部跌破 >10%
+        # 时会推出一张空表（有标题无内容）。
         below = [p for p in below if (p.get("pct_dist") is not None
                                       and -10 <= p["pct_dist"] < 0)]
+    if slot == "pm" and not in_zone and below:
         groups.append({
             "title": "○ 计划整体走弱", "hint": "尾盘无一进入买区，跌破者已标注",
             "rows": [((p["code"], p["name"],

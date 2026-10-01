@@ -1575,6 +1575,10 @@ def push(mode, title, content, date=None, con=None,
     primary = cfg.get("primary_channel") or "wxpusher"
     if channels is None:
         channels = (primary,)
+        # 09-30 用户要求防单点丢消息：wxpusher 与 PushPlus 同时配置时
+        # 双通道同发——任何一家静默丢消息，另一家兜底。
+        if primary == "wxpusher" and cfg.get("pushplus_token"):
+            channels = ("wxpusher", "pushplus")
     # 演练通道（用户 2026-09-19「全部在网络上运行一次，该推送的全部推送」）：
     # ASTOCK_REHEARSAL=1 时账本键加 rehearsal_ 前缀（与正式推送的日级保险丝
     # 完全隔离，周末实弹演练不影响周一正式推送），标题加【演练】；
@@ -1674,8 +1678,10 @@ def push(mode, title, content, date=None, con=None,
                                        f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, '备用SC')}{title}", content)
             results["serverchan"] = {"status": st2, "detail": d2,
                                      "role": "fallback"}
-        if not wx_accounts or "wxpusher" not in channels:
-            if "pushplus" in channels and cfg.get("pushplus_token"):
+        if "pushplus" in channels and cfg.get("pushplus_token"):
+            # 09-30 双通道：不再依赖「wx 账号缺失」才走 PushPlus——
+            # 两渠道各自独立发送，互为冗余
+            if True:
                 _anti_burst_wait()
                 st, detail = _send_pushplus(cfg["pushplus_token"],
                                             f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
