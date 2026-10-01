@@ -1558,6 +1558,43 @@ def _anti_burst_mark():
         pass
 
 
+def _send_wecom(wcfg, title, text_body):
+    """企业微信自建应用消息（09-30 用户需求）：**文本直出聊天窗口，
+    免点开可读全文**——比模板消息（只显标题）更贴合用户「不需要点开
+    就可以看到」的口径。wcfg: {corpid, secret, agentid, touser?}。
+    text 上限 2048 字节（UTF-8 中文 ≈660 字），超长截断留网页版指引。"""
+    data = text_body.encode("utf-8")
+    if len(data) > 1900:
+        text_body = (text_body[:600]
+                     + "…（内容较长，完整版见网页版/其他渠道）")
+    try:
+        tok_url = ("https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+                   f"?corpid={wcfg['corpid']}&corpsecret={wcfg['secret']}")
+        tok = json.loads(urllib.request.urlopen(
+            urllib.request.Request(tok_url, headers={"User-Agent": UA}),
+            timeout=15).read().decode()).get("access_token")
+        if not tok:
+            return "failed", "gettoken 无 access_token"
+        body = json.dumps({
+            "touser": wcfg.get("touser") or "@all",
+            "msgtype": "text",
+            "agentid": int(wcfg["agentid"]),
+            "text": {"content": f"{title}" + "\n" + text_body},
+            "duplicate_check_interval": 120,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://qyapi.weixin.qq.com/cgi-bin/message/send"
+            f"?access_token={tok}", data=body,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": UA})
+        resp = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+        if resp.get("errcode") == 0:
+            return "sent", "ok"
+        return "failed", f"errcode={resp.get('errcode')} {resp.get('errmsg', '')}"
+    except Exception as e:                          # noqa: BLE001
+        return "failed", f"{type(e).__name__} {e}"
+
+
 def push(mode, title, content, date=None, con=None,
          channels=None, force=False, headline=None):
     """推送 + 三态账本（M37）+ 防混淆标识 + 去重。
