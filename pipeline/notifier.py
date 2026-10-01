@@ -1558,6 +1558,9 @@ def _anti_burst_mark():
         pass
 
 
+UA_WECOM = "Mozilla/5.0 (Astra-WeCom-Channel)"
+
+
 def _send_wecom(wcfg, title, text_body):
     """企业微信自建应用消息（09-30 用户需求）：**文本直出聊天窗口，
     免点开可读全文**——比模板消息（只显标题）更贴合用户「不需要点开
@@ -1571,7 +1574,7 @@ def _send_wecom(wcfg, title, text_body):
         tok_url = ("https://qyapi.weixin.qq.com/cgi-bin/gettoken"
                    f"?corpid={wcfg['corpid']}&corpsecret={wcfg['secret']}")
         tok = json.loads(urllib.request.urlopen(
-            urllib.request.Request(tok_url, headers={"User-Agent": UA}),
+            urllib.request.Request(tok_url, headers={"User-Agent": UA_WECOM}),
             timeout=15).read().decode()).get("access_token")
         if not tok:
             return "failed", "gettoken 无 access_token"
@@ -1586,7 +1589,7 @@ def _send_wecom(wcfg, title, text_body):
             f"https://qyapi.weixin.qq.com/cgi-bin/message/send"
             f"?access_token={tok}", data=body,
             headers={"Content-Type": "application/json",
-                     "User-Agent": UA})
+                     "User-Agent": UA_WECOM})
         resp = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
         if resp.get("errcode") == 0:
             return "sent", "ok"
