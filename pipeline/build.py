@@ -1082,8 +1082,10 @@ def build(task="close", date=None, period_days=30):
         notifier.save_detail_report(detail, date, site_data)
         # 补发标记（见 _backfill 注释）：仅在手工补发时出现，正常触发零影响。
         _title = f"【补发】{date}" if _backfill() else date
+        n_buy = (1 if first else 0) + len(backups)
         r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
-                          force=_force_push())
+                          force=_force_push(),
+                          headline=f"可买{n_buy}只·{meta.get('verdict', '')}")
         print(f"[build] push={r}")
         if r.get("sent") and task in ("pre", "auction", "close"):
             _record_confirms(con, date, task, picks)
@@ -1155,11 +1157,16 @@ def build(task="close", date=None, period_days=30):
                 if any(x.get("exit_action") == "SELL" or x.get("swap_hint")
                        or x.get("phase") in ("已到期", "接近到期")
                        or x.get("sector_retreat") for x in _heval):
+                    _need_n = sum(1 for x in _heval
+                                  if x.get("exit_action") == "SELL"
+                                  or x.get("swap_hint"))
                     hr = notifier.push(
                         "holding_check",
                         f"持仓操作建议 {date[5:]}"
                         + ("（盘前）" if task == "pre" else "（竞价）"),
-                        _hhtml, date=date, con=con, force=_force_push())
+                        _hhtml, date=date, con=con, force=_force_push(),
+                        headline=f"需处理{_need_n}只·换股备选"
+                                 f"{len(_cands)}只")
                     print(f"[build] holding push={hr}")
             except Exception as e:  # noqa: BLE001
                 print(f"[build] pre/auction holding advice failed: {e}")
@@ -1237,8 +1244,13 @@ def build(task="close", date=None, period_days=30):
               f"daily={len(daily_html)} holding={len(holding_html)} "
               f"watch={len(watch_html)}")
         if digest:
+            _rev_head = ""
+            try:
+                _rev_head = f"模拟盘{rep.get('day_amt', 0):+,.0f}元"
+            except Exception:  # noqa: BLE001
+                pass
             r = notifier.push("review", date, digest, date=date, con=con,
-                              force=_force_push())
+                              force=_force_push(), headline=_rev_head)
             print(f"[build] evening_digest push={r}")
         else:
             print("[build] evening_digest empty → 跳过")

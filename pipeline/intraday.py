@@ -896,8 +896,15 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     # 绕过"每 mode 一天一条"的日熔丝，否则当天第二个新事件永远发不出。
     # am/pm 维持日熔丝语义（一天一条摘要）不变。
     # ASTOCK_FORCE_PUSH=1（演练/补发）时三种盘中格式都可强制重发
+    _live_head = ""
+    if _live and in_zone:
+        _names = "、".join(p.get("name") or p["code"]
+                           for p in in_zone[:2])
+        _live_head = (f"{_names}" + (f"等{len(in_zone)}只"
+                                     if len(in_zone) > 2 else ""))
     r = notifier.push(f"intraday_{slot}", title, html, date=date, con=con,
-                      force=_live or os.environ.get("ASTOCK_FORCE_PUSH") == "1")
+                      force=_live or os.environ.get("ASTOCK_FORCE_PUSH") == "1",
+                      headline=_live_head)
     if r.get("sent"):
         # 主推送送达后记账（所有 slot）：早盘/尾盘摘要报过的买区票也要登记，
         # 否则 5 分钟后的 live 轮次会把同一只再报一遍。

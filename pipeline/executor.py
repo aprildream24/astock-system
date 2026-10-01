@@ -856,27 +856,40 @@ def _revert_offday_fills(con, today):
         d = str(ts)[:10]
         if trade_calendar.is_trade_day(d):
             continue
-        rside = "buy" if side == "sell" else "sell"
-        prev = con.execute(
-            "SELECT c FROM klines WHERE code=? ORDER BY date DESC LIMIT 1",
-            (code,)).fetchone()
-        oid, status, why = place_order(
-            con, code, rside, int(qty), float(price), today,
-            prev_close=prev[0] if prev and prev[0] else None,
-            risk_sell=True,
-            reason=f"offday_revert: 冲正 {d} 的{side}单（假期误执行）")
-        if status == "filled":
-            con.execute("INSERT OR REPLACE INTO offday_reverted VALUES(?)",
-                        (_fid,))
-            # 冲正单自身的成交也立即标记（其 ts=当前时刻，可能与 today
-            # 不同——不标记会在 _now() 恰为假日时无限循环）
-            for r2 in con.execute(
-                    "SELECT fill_id FROM fills WHERE order_id=?", (oid,)):
-                con.execute("INSERT OR REPLACE INTO offday_reverted "
-                            "VALUES(?)", (r2[0],))
-            n += 1
-            print(f"[executor] 冲正非交易日成交: {d} {side} {code} "
-                  f"x{int(qty)} @ {price} → {status}", flush=True)
+        # 09-30 用户口径：「把前面一笔交易撤回，根据节后开盘再重新交易」
+        # —— 直接按原始买入单**还原仓位与现金**（不再按旧价格买回），
+        # 节后开盘由巡逻用真实行情重新裁决。
+        fee_row = con.execute(
+            "SELECT fee, qty FROM fills WHERE fill_id=?", (_fid,)).fetchone()
+        fill_fee = fee_row[0] if fee_row else 0.0
+        amt = qty * float(price)
+        if side == "sell":
+            # 撤销卖出：找到原始买入单，按其数量/成本/日期还原批次
+            buy = con.execute(
+                "SELECT qty, price, substr(ts, 1, 10) FROM orders "
+                "WHERE code=? AND side='buy' AND status='filled' AND ts<=? "
+                "ORDER BY ts DESC LIMIT 1", (code, ts)).fetchone()
+            bqty, bprice, bdate = buy if buy else (qty, price, d)
+            con.execute("INSERT INTO position_batches(code, buy_date, qty, "
+                        "cost, available, strategy) VALUES(?,?,?,?,?,'sim')",
+                        (code, bdate, bqty, bprice, bqty))
+            cash_delta = -(amt - fill_fee)
+        else:
+            # 撤销买入（理论不可能：买入有 session_gate，防御性保留）
+            con.execute("DELETE FROM position_batches WHERE code=? "
+                        "AND buy_date=?", (code, d))
+            cash_delta = amt + fill_fee
+        acct = con.execute("SELECT cash FROM account_state WHERE id=1").fetchone()
+        cash = acct[0] + cash_delta
+        con.execute("UPDATE account_state SET cash=? WHERE id=1",
+                    (round(cash, 2),))
+        con.execute("INSERT INTO cashflow VALUES(?,?,?,?,?)",
+                    (ts, f"revert_{side}", cash_delta, round(cash, 2),
+                     f"offday_revert: 撤销 {d} {side} {code} x{int(qty)}"))
+        con.execute("INSERT OR REPLACE INTO offday_reverted VALUES(?)", (_fid,))
+        n += 1
+        print(f"[executor] 已撤销非交易日成交: {d} {side} {code} "
+              f"x{int(qty)}（仓位与现金还原）", flush=True)
     if n:
         con.commit()
     return n

@@ -1559,7 +1559,7 @@ def _anti_burst_mark():
 
 
 def push(mode, title, content, date=None, con=None,
-         channels=None, force=False):
+         channels=None, force=False, headline=None):
     """推送 + 三态账本（M37）+ 防混淆标识 + 去重。
 
     主通道由配置决定（primary_channel: wxpusher | pushplus | serverchan，
@@ -1579,6 +1579,10 @@ def push(mode, title, content, date=None, con=None,
         # 双通道同发——任何一家静默丢消息，另一家兜底。
         if primary == "wxpusher" and cfg.get("pushplus_token"):
             channels = ("wxpusher", "pushplus")
+    # 09-30 用户口径：「不需要点开就可以看到」——摘要写进标题，
+    # 微信通知横幅/会话列表直接可见（横幅约显示 40 字，摘要须短）。
+    if headline:
+        title = f"{title}｜{headline}"
     # 演练通道（用户 2026-09-19「全部在网络上运行一次，该推送的全部推送」）：
     # ASTOCK_REHEARSAL=1 时账本键加 rehearsal_ 前缀（与正式推送的日级保险丝
     # 完全隔离，周末实弹演练不影响周一正式推送），标题加【演练】；
