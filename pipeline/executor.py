@@ -1110,6 +1110,14 @@ def run(task="scan", price_of=None, slot=None, now=None):
     """
     con = get_conn()
     today = today_str()
+    # 09-30：冲正假期里误执行的模拟成交（账目还原，见 _revert_offday_fills）。
+    # ⚠️ 必须在假日闸**之前**——冲正是账目清理，与是否交易日无关；
+    # 放在闸后会让「假期误卖出的仓位」整个假期都不还原（10-01 用户实测：
+    # 「卖出的科德教育没有加回模拟盘」）。
+    try:
+        _revert_offday_fills(con, today)
+    except Exception as e:                          # noqa: BLE001
+        print(f"[executor] 假期错账冲正失败（不影响主流程）: {e}")
     # ★ 09-30 Bug 修复（用户：「休市可以卖出股票么？」）：非交易日模拟盘
     # 整体跳过——原来只有买入有 session_gate，巡逻的**卖出路径没有**：
     # T+1 解锁后假期巡逻会用旧收盘价执行卖出，还推送「休市卖出」的矛盾
@@ -1120,11 +1128,6 @@ def run(task="scan", price_of=None, slot=None, now=None):
               f"（{trade_calendar.why_closed(today)}）→ 模拟盘跳过")
         return []
     ensure_account(con, today)
-    # 09-30：冲正假期里误执行的模拟成交（账目还原，见 _revert_offday_fills）
-    try:
-        _revert_offday_fills(con, today)
-    except Exception as e:                          # noqa: BLE001
-        print(f"[executor] 假期错账冲正失败（不影响主流程）: {e}")
     # M22 日内熔断：触发后当日锁定（不因盘中反弹自动解除），卖出不受限
     if day_pnl_pct(con, today) <= RISK["daily_loss_halt"] * 100:
         con.execute("UPDATE account_state SET frozen=1 WHERE id=1")
