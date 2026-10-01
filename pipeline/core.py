@@ -149,6 +149,8 @@ CREATE TABLE IF NOT EXISTS fills(
     code TEXT, side TEXT, qty REAL, price REAL, fee REAL);
 CREATE TABLE IF NOT EXISTS cashflow(
     ts TEXT, type TEXT, amount REAL, balance REAL, note TEXT);
+CREATE TABLE IF NOT EXISTS offday_reverted(
+    fill_id INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS account_state(
     id INTEGER PRIMARY KEY CHECK(id=1), cash REAL,
     day_start_equity REAL, day_key TEXT, frozen INTEGER DEFAULT 0);

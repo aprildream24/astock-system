@@ -837,6 +837,51 @@ def holdings_rows(con, today, slot=None):
     return out
 
 
+def _revert_offday_fills(con, today):
+    """把发生在**非交易日**的模拟成交按原价冲正（09-30 假期巡逻 Bug 的
+    账目修复）：假期卖出 → 等量原价买回（仓位/现金还原，fees 双计极小）；
+    假期买入（理论不可能，买入有闸）→ 等量原价卖出冲正。冲正单 reason
+    标注 offday_revert；冲正单本身记在交易日 → 不会再次触发。"""
+    con.execute("CREATE TABLE IF NOT EXISTS offday_reverted("
+                "fill_id INTEGER PRIMARY KEY)")
+    con.commit()
+    rows = con.execute(
+        "SELECT f.fill_id, f.ts, f.code, f.side, f.qty, f.price FROM fills f "
+        "WHERE substr(f.ts, 1, 10) <= ? AND NOT EXISTS "
+        "(SELECT 1 FROM offday_reverted r WHERE r.fill_id = f.fill_id)",
+        (today,)).fetchall()
+    from . import trade_calendar
+    n = 0
+    for _fid, ts, code, side, qty, price in rows:
+        d = str(ts)[:10]
+        if trade_calendar.is_trade_day(d):
+            continue
+        rside = "buy" if side == "sell" else "sell"
+        prev = con.execute(
+            "SELECT c FROM klines WHERE code=? ORDER BY date DESC LIMIT 1",
+            (code,)).fetchone()
+        oid, status, why = place_order(
+            con, code, rside, int(qty), float(price), today,
+            prev_close=prev[0] if prev and prev[0] else None,
+            risk_sell=True,
+            reason=f"offday_revert: 冲正 {d} 的{side}单（假期误执行）")
+        if status == "filled":
+            con.execute("INSERT OR REPLACE INTO offday_reverted VALUES(?)",
+                        (_fid,))
+            # 冲正单自身的成交也立即标记（其 ts=当前时刻，可能与 today
+            # 不同——不标记会在 _now() 恰为假日时无限循环）
+            for r2 in con.execute(
+                    "SELECT fill_id FROM fills WHERE order_id=?", (oid,)):
+                con.execute("INSERT OR REPLACE INTO offday_reverted "
+                            "VALUES(?)", (r2[0],))
+            n += 1
+            print(f"[executor] 冲正非交易日成交: {d} {side} {code} "
+                  f"x{int(qty)} @ {price} → {status}", flush=True)
+    if n:
+        con.commit()
+    return n
+
+
 def _reject_once(con, code, today, why):
     """REJECT 的**当天一次性**进推送：live 巡检（2026-09-26 起）每 10 分钟
     一轮，同一只票的"到价未成交"若每轮都报就是 20+ 条噪音。全量留痕在
@@ -1052,7 +1097,21 @@ def run(task="scan", price_of=None, slot=None, now=None):
     """
     con = get_conn()
     today = today_str()
+    # ★ 09-30 Bug 修复（用户：「休市可以卖出股票么？」）：非交易日模拟盘
+    # 整体跳过——原来只有买入有 session_gate，巡逻的**卖出路径没有**：
+    # T+1 解锁后假期巡逻会用旧收盘价执行卖出，还推送「休市卖出」的矛盾
+    # 信息。休市 = 不巡逻不下单不推送。
+    from . import trade_calendar
+    if not trade_calendar.is_trade_day(today):
+        print(f"[executor] {today} 非交易日"
+              f"（{trade_calendar.why_closed(today)}）→ 模拟盘跳过")
+        return None
     ensure_account(con, today)
+    # 09-30：冲正假期里误执行的模拟成交（账目还原，见 _revert_offday_fills）
+    try:
+        _revert_offday_fills(con, today)
+    except Exception as e:                          # noqa: BLE001
+        print(f"[executor] 假期错账冲正失败（不影响主流程）: {e}")
     # M22 日内熔断：触发后当日锁定（不因盘中反弹自动解除），卖出不受限
     if day_pnl_pct(con, today) <= RISK["daily_loss_halt"] * 100:
         con.execute("UPDATE account_state SET frozen=1 WHERE id=1")
