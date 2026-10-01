@@ -1598,6 +1598,29 @@ def _send_wecom(wcfg, title, text_body):
         return "failed", f"{type(e).__name__} {e}"
 
 
+def _send_wecom_hook(hook_url, title, text_body):
+    """企业微信群机器人 Webhook（09-30 用户提供）：markdown 直出群聊，
+    原生渲染换行/粗体，免点开可读。markdown 上限 4096 字节。"""
+    nl = chr(10)
+    content = "## " + title + nl + text_body
+    if len(content.encode("utf-8")) > 4000:
+        content = (content[:1300]
+                   + nl + "…（内容较长，完整版见网页版/其他渠道）")
+    try:
+        body = json.dumps({"msgtype": "markdown",
+                           "markdown": {"content": content}}).encode("utf-8")
+        req = urllib.request.Request(
+            hook_url, data=body,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": UA_WECOM})
+        resp = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+        if resp.get("errcode") == 0:
+            return "sent", "ok"
+        return "failed", f"errcode={resp.get('errcode')} {resp.get('errmsg', '')}"
+    except Exception as e:                          # noqa: BLE001
+        return "failed", f"{type(e).__name__} {e}"
+
+
 def push(mode, title, content, date=None, con=None,
          channels=None, force=False, headline=None):
     """推送 + 三态账本（M37）+ 防混淆标识 + 去重。
@@ -1632,6 +1655,13 @@ def push(mode, title, content, date=None, con=None,
                    and os.environ.get("WECOM_SECRET") else None))
     if _wecom_cfg:
         channels = tuple(channels) + ("wecom",)
+    # 群机器人 Webhook（09-30 用户提供）：markdown 直出群聊，免点开可读。
+    # ⚠️ Webhook 地址只从配置/环境读取——绝不硬编码默认值：
+    # 硬编码会让回归测试的每次推送都打到用户真实群里（09-30 深夜实测泄漏）。
+    _hook_url = (cfg.get("wecom_hook")
+                 or os.environ.get("WECOM_HOOK") or "")
+    if _hook_url:
+        channels = tuple(channels) + ("wecom_hook",)
     # 09-30 用户口径：「不需要点开就可以看到」——摘要写进标题，
     # 微信通知横幅/会话列表直接可见（横幅约显示 40 字，摘要须短）。
     if headline:
@@ -1778,6 +1808,14 @@ def push(mode, title, content, date=None, con=None,
                                      f"【{tag}】{_wtxt}")
             _anti_burst_mark()
             results["wecom"] = {"status": st, "detail": detail}
+        if "wecom_hook" in channels and _hook_url:
+            _anti_burst_wait()
+            _wtxt = html_to_text(content).strip() or title
+            st, detail = _send_wecom_hook(
+                _hook_url,
+                f"{title_prefix(mode, tag, '群机器人')}{title}", _wtxt)
+            _anti_burst_mark()
+            results["wecom_hook"] = {"status": st, "detail": detail}
     # 聚合口径：任一通道送达即 sent；不确定优先于 failed
     statuses = [r["status"] for r in results.values()] or ["dry-run"]
     if "sent" in statuses:
