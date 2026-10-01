@@ -1772,7 +1772,7 @@ def push(mode, title, content, date=None, con=None,
                 _anti_burst_wait()
                 st, detail = _send_pushplus(cfg["pushplus_token"],
                                             f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
-                                            f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
+                                            _pp_text(title, content, tag))
                 _anti_burst_mark()
                 results["pushplus"] = {"status": st, "detail": detail}
                 # ⚠️ 2026-09-16 修（血案：PushPlus 是当前唯一通道，却无兜底）：
@@ -1898,6 +1898,20 @@ def _send_serverchan(key, title, content, _retries=3):
     return "uncertain", last
 
 
+def _pp_text(title, content, tag="Astra"):
+    """微信端（PushPlus）纯净文本组装（09-30 用户：「格式全部都是混乱的，
+    全部重新编排」）：深色卡片表格在微信 webview 里必然错位 → 微信端改发
+    结构化纯文本（永不乱），富版式保留在网页版。输出：
+    来源角标 + 正文（html_to_text 结构化换行）+ 网页版链接。"""
+    site = "https://aprildream24.github.io/astock-system/"
+    body = html_to_text(content).strip()
+    if not body:
+        body = re.sub(r"<[^>]+>", "", content).strip() or title
+    sep = chr(8212) * 11
+    return (f"📮 {tag} · PushPlus\n" + body + "\n" + sep
+            + "\n📊 完整版式（网页）: " + site)
+
+
 def _send_pushplus(token, title, content, _retries=3):
     """M36 主推通道。返回 (status, detail)。status ∈ sent/failed/uncertain。
 
@@ -1919,7 +1933,7 @@ def _send_pushplus(token, title, content, _retries=3):
         try:
             body = json.dumps({"token": token, "title": title,
                                "content": content[:PP_HTML_CAP],
-                               "template": "html"}).encode()
+                               "template": "txt"}).encode()
             req = urllib.request.Request(
                 "https://www.pushplus.plus/send", data=body,
                 headers={"Content-Type": "application/json"})
