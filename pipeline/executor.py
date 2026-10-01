@@ -1118,7 +1118,7 @@ def run(task="scan", price_of=None, slot=None, now=None):
     if not trade_calendar.is_trade_day(today):
         print(f"[executor] {today} 非交易日"
               f"（{trade_calendar.why_closed(today)}）→ 模拟盘跳过")
-        return None
+        return []
     ensure_account(con, today)
     # 09-30：冲正假期里误执行的模拟成交（账目还原，见 _revert_offday_fills）
     try:

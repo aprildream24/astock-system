@@ -86,5 +86,5 @@ if __name__ == "__main__":
     ap.add_argument("--dry", action="store_true",
                     help="只渲染不推送（测试版面用）")
     a = ap.parse_args()
-    for row in run(a.task, slot=a.slot, dry=a.dry):
+    for row in (run(a.task, slot=a.slot, dry=a.dry) or []):
         print(row)
