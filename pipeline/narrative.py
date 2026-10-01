@@ -145,8 +145,9 @@ def rule_engine(stats):
 def narrate(stats, http_fn=None):
     """走降级链；全部失败或未配置 → 规则引擎兜底（永不失败）。"""
     prompt = (
-        "你是A股复盘助手。根据以下JSON数据写一段≤300字盘后复盘，"
-        "客观、给操作纪律提示、不荐股不夸大：\n"
+        "你是A股复盘助手。根据以下JSON数据写一段≤500字盘后复盘，"
+        "内容含：今日市场总体特征、盘面主线与退潮方向、明日操作纪律提示。"
+        "客观、不荐股不夸大，输出为纯文本：\n"
         + json.dumps(stats, ensure_ascii=False, default=str))
     for p in _providers():
         if not p["enabled"]:
