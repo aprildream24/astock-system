@@ -1328,5 +1328,14 @@
    "pushplus": "sent",
    "wecom_hook": "sent"
   }
+ },
+ "c2978b908a93f367": {
+  "mode": "data_holiday",
+  "ts": "2026-10-02 08:50:41",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent"
+  }
  }
 }
