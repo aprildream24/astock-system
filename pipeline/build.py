@@ -849,6 +849,24 @@ def build(task="close", date=None, period_days=30):
          and c.get("wait_days", 0) < 5],
         env_w, winrates, sector_of=lambda c: c.get("sector") or c["pool"],
         limit=pick_limit, per_sector=per_sector, ladder_cap=ladder_cap)
+    # ★ 09-30 用户口径（「同样的股票一会优先推荐A一会推荐B，数据打架，
+    #    以谁为主」）：**一天一套推荐，以盘前为主**。竞价/收盘不再重算
+    # 名单——只对盘前名单用最新行情刷新价格与状态（decisions 生命周期
+    # 本就负责超价取消/条件满足）；当日新增的达标候选仅在「现价可下单」
+    # 时增补（盘中 live 监控同样捕捉，双保险）。名单稳定后 confirm_log
+    # 的双确认/三确认才能跨时点真实累计。
+    if task in ("auction", "close"):
+        _prev = con.execute(
+            "SELECT code FROM rec_picks WHERE date=?", (date,)).fetchall()
+        _prev_codes = {r[0] for r in _prev}
+        if _prev_codes:
+            by_code = {c["code"]: c for c in cands}
+            kept = [by_code[c] for c in sorted(_prev_codes) if c in by_code]
+            added = [c for c in picks if c["code"] not in _prev_codes
+                     and scoring.is_buyable_now(c)]
+            picks = kept + added
+            print(f"[build] 推荐名单沿用盘前 {len(kept)} 只"
+                  f"（新增可买 {len(added)} 只，名单不日内重算）")
     ladder_next = scoring.compute_top_picks(
         [c for c in cands if c.get("action") == "次日竞价达标买"
          and not c.get("yizi")],

@@ -1598,15 +1598,36 @@ def _send_wecom(wcfg, title, text_body):
         return "failed", f"{type(e).__name__} {e}"
 
 
+def _tg_chat_id(token):
+    """从 getUpdates 自动发现用户 chat_id（用户给 Bot 发过任意消息即可，
+    无需手动查 id）。取最近一条消息的 chat.id；无消息 → None。"""
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/getUpdates",
+        headers={"User-Agent": UA_WECOM})
+    updates = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+    ids = []
+    for u in updates.get("result") or []:
+        msg = u.get("message") or u.get("edited_message") or {}
+        cid = (msg.get("chat") or {}).get("id")
+        if cid and cid not in ids:
+            ids.append(cid)
+    return ids[-1] if ids else None
+
+
 def _send_tg(tg_cfg, title, text_body):
     """Telegram Bot 消息（可选通道）：全文直出聊天窗口，无 IP 限制。
-    tg_cfg: {token, chat_id}（BotFather 建 Bot 得 token；给 Bot 发消息后
-    getUpdates 得 chat_id）。text 上限 4096 字符。"""
+    tg_cfg: {token, chat_id?}——chat_id 缺省时自动从 getUpdates 发现
+    （用户给 Bot 发过 /start 即可）。text 上限 4096 字符。"""
+    chat_id = tg_cfg.get("chat_id")
+    if not chat_id:
+        chat_id = _tg_chat_id(tg_cfg["token"])
+        if not chat_id:
+            return "failed", "用户尚未给 Bot 发送 /start（无法发现 chat_id）"
     text = f"{title}\n{text_body}"
     if len(text.encode("utf-8")) > 3800:
         text = text[:1700] + "\n…（内容较长，完整版见网页版/其他渠道）"
     try:
-        body = json.dumps({"chat_id": tg_cfg["chat_id"], "text": text,
+        body = json.dumps({"chat_id": chat_id, "text": text,
                            "disable_web_page_preview": True}).encode("utf-8")
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{tg_cfg['token']}/sendMessage",
