@@ -1818,8 +1818,11 @@ def push(mode, title, content, date=None, con=None,
             _anti_burst_mark()
             results["wecom"] = {"status": st, "detail": detail}
         if "wecom_hook" in channels and _hook_url:
+            # 09-30 用户口径：群里的推送要**简单明了**——优先发动作清单
+            # （wx_text：几行看完要做什么），无清单时才发全文转换。
             _anti_burst_wait()
-            _wtxt = html_to_text(content).strip() or title
+            _wtxt = (wx_text.strip()
+                     if wx_text else (html_to_text(content).strip() or title))
             st, detail = _send_wecom_hook(
                 _hook_url,
                 f"{title_prefix(mode, tag, '群机器人')}{title}", _wtxt)
