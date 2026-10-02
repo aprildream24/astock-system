@@ -1083,9 +1083,24 @@ def build(task="close", date=None, period_days=30):
         # 补发标记（见 _backfill 注释）：仅在手工补发时出现，正常触发零影响。
         _title = f"【补发】{date}" if _backfill() else date
         n_buy = (1 if first else 0) + len(backups)
+        # 09-30 用户口径：微信端推送 = **一眼看出要做什么**的动作清单
+        # （PushPlus 走 txt 模板纯文本，永不乱）；完整版式在网页。
+        _wx = []
+        for c in ([first] if first else []) + backups:
+            _wx.append(f"▶ 买入：{c.get('name')}（现价区内，可下单）")
+        if pending:
+            _pn = "、".join(p.get("name") for p in pending[:3])
+            _more = f" 等{len(pending)}只" if len(pending) > 3 else ""
+            _wx.append(f"▶ 等回踩：{_pn}{_more}（未到价，勿追）")
+        if not _wx:
+            _wx.append("▶ 今日无当下可买——不追高，等回踩")
+        _wx.append(f"▶ 纪律：{meta.get('verdict', '')}"
+                   f"（{meta.get('verdict_text', '')}）")
         r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
                           force=_force_push(),
-                          headline=f"可买{n_buy}只·{meta.get('verdict', '')}")
+                          headline=f"可买{n_buy}只·{meta.get('verdict', '')}",
+                          wx_text="【今日操作】" + chr(10)
+                                  + chr(10).join(_wx))
         print(f"[build] push={r}")
         if r.get("sent") and task in ("pre", "auction", "close"):
             _record_confirms(con, date, task, picks)

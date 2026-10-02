@@ -1622,7 +1622,7 @@ def _send_wecom_hook(hook_url, title, text_body):
 
 
 def push(mode, title, content, date=None, con=None,
-         channels=None, force=False, headline=None):
+         channels=None, force=False, headline=None, wx_text=None):
     """推送 + 三态账本（M37）+ 防混淆标识 + 去重。
 
     主通道由配置决定（primary_channel: wxpusher | pushplus | serverchan，
@@ -1770,9 +1770,18 @@ def push(mode, title, content, date=None, con=None,
             # 两渠道各自独立发送，互为冗余
             if True:
                 _anti_burst_wait()
-                st, detail = _send_pushplus(cfg["pushplus_token"],
-                                            f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
-                                            f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
+                # 09-30 用户口径：微信端推送要「一眼看出要做什么」——
+                # wx_text（动作清单纯文本）提供时走 txt 模板（永不乱）；
+                # 未提供时维持原 HTML 卡片版式。
+                if wx_text:
+                    st, detail = _send_pushplus(
+                        cfg["pushplus_token"],
+                        f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
+                        wx_text, template="txt")
+                else:
+                    st, detail = _send_pushplus(cfg["pushplus_token"],
+                                                f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
+                                                f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
                 _anti_burst_mark()
                 results["pushplus"] = {"status": st, "detail": detail}
                 # ⚠️ 2026-09-16 修（血案：PushPlus 是当前唯一通道，却无兜底）：
@@ -1898,7 +1907,7 @@ def _send_serverchan(key, title, content, _retries=3):
     return "uncertain", last
 
 
-def _send_pushplus(token, title, content, _retries=3):
+def _send_pushplus(token, title, content, _retries=3, template="html"):
     """M36 主推通道。返回 (status, detail)。status ∈ sent/failed/uncertain。
 
     ⚠️ 2026-09-16 修（血案：08:50 盘前推送**彻底丢失**，用户当天没收到任何
@@ -1919,7 +1928,7 @@ def _send_pushplus(token, title, content, _retries=3):
         try:
             body = json.dumps({"token": token, "title": title,
                                "content": content[:PP_HTML_CAP],
-                               "template": "html"}).encode()
+                               "template": template}).encode()
             req = urllib.request.Request(
                 "https://www.pushplus.plus/send", data=body,
                 headers={"Content-Type": "application/json"})
