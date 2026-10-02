@@ -1598,6 +1598,28 @@ def _send_wecom(wcfg, title, text_body):
         return "failed", f"{type(e).__name__} {e}"
 
 
+def _send_tg(tg_cfg, title, text_body):
+    """Telegram Bot 消息（可选通道）：全文直出聊天窗口，无 IP 限制。
+    tg_cfg: {token, chat_id}（BotFather 建 Bot 得 token；给 Bot 发消息后
+    getUpdates 得 chat_id）。text 上限 4096 字符。"""
+    text = f"{title}\n{text_body}"
+    if len(text.encode("utf-8")) > 3800:
+        text = text[:1700] + "\n…（内容较长，完整版见网页版/其他渠道）"
+    try:
+        body = json.dumps({"chat_id": tg_cfg["chat_id"], "text": text,
+                           "disable_web_page_preview": True}).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{tg_cfg['token']}/sendMessage",
+            data=body, headers={"Content-Type": "application/json",
+                                "User-Agent": UA_WECOM})
+        resp = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+        if resp.get("ok"):
+            return "sent", "ok"
+        return "failed", f"{resp.get('error_code')} {resp.get('description', '')}"
+    except Exception as e:                          # noqa: BLE001
+        return "failed", f"{type(e).__name__} {e}"
+
+
 def _send_wecom_hook(hook_url, title, text_body):
     """企业微信群机器人 Webhook（09-30 用户提供）：markdown 直出群聊，
     原生渲染换行/粗体，免点开可读。markdown 上限 4096 字节。"""
@@ -1662,6 +1684,14 @@ def push(mode, title, content, date=None, con=None,
                  or os.environ.get("WECOM_HOOK") or "")
     if _hook_url:
         channels = tuple(channels) + ("wecom_hook",)
+    # Telegram 通道（可选）：用户自建 Bot，全文直出聊天
+    _tg_cfg = (cfg.get("tg") or
+               ({"token": os.environ.get("TG_BOT_TOKEN"),
+                 "chat_id": os.environ.get("TG_CHAT_ID")}
+                if os.environ.get("TG_BOT_TOKEN")
+                and os.environ.get("TG_CHAT_ID") else None))
+    if _tg_cfg:
+        channels = tuple(channels) + ("tg",)
     # 09-30 用户口径：「不需要点开就可以看到」——摘要写进标题，
     # 微信通知横幅/会话列表直接可见（横幅约显示 40 字，摘要须短）。
     if headline:
@@ -1828,6 +1858,15 @@ def push(mode, title, content, date=None, con=None,
                 f"{title_prefix(mode, tag, '群机器人')}{title}", _wtxt)
             _anti_burst_mark()
             results["wecom_hook"] = {"status": st, "detail": detail}
+        if "tg" in channels and _tg_cfg:
+            _anti_burst_wait()
+            _ttxt = wx_text.strip() if wx_text else (
+                html_to_text(content).strip() or title)
+            st, detail = _send_tg(_tg_cfg,
+                                  f"{title_prefix(mode, tag, 'TG')}{title}",
+                                  _ttxt)
+            _anti_burst_mark()
+            results["tg"] = {"status": st, "detail": detail}
     # 聚合口径：任一通道送达即 sent；不确定优先于 failed
     statuses = [r["status"] for r in results.values()] or ["dry-run"]
     if "sent" in statuses:

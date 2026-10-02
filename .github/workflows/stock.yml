@@ -205,6 +205,8 @@ jobs:
           WECOM_CORPID: ${{ secrets.WECOM_CORPID }}
           WECOM_SECRET: ${{ secrets.WECOM_SECRET }}
           WECOM_AGENTID: ${{ secrets.WECOM_AGENTID }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           WATCH_CODES: ${{ secrets.WATCH_CODES }}
           HOLDINGS_CONF: ${{ secrets.HOLDINGS_CONF }}
           GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
