@@ -1860,18 +1860,12 @@ def push(mode, title, content, date=None, con=None,
             # 两渠道各自独立发送，互为冗余
             if True:
                 _anti_burst_wait()
-                # 09-30 用户口径：微信端推送要「一眼看出要做什么」——
-                # wx_text（动作清单纯文本）提供时走 txt 模板（永不乱）；
-                # 未提供时维持原 HTML 卡片版式。
-                if wx_text:
-                    st, detail = _send_pushplus(
-                        cfg["pushplus_token"],
-                        f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
-                        wx_text, template="txt")
-                else:
-                    st, detail = _send_pushplus(cfg["pushplus_token"],
-                                                f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
-                                                f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
+                # ★ 10-03 修（用户澄清）：PushPlus（微信）**永远发详细 HTML
+                # 一票一卡**——wx_text 简洁清单只进企业微信群和 TG，
+                # 不再进 PushPlus（此前错接导致微信端收到精简 txt）。
+                st, detail = _send_pushplus(cfg["pushplus_token"],
+                                            f"{"【演练】" if _rh else ""}{title_prefix(mode, tag, 'PushPlus')}{title}",
+                                            f"<p><small>📮 {tag} · PushPlus</small></p>" + content)
                 _anti_burst_mark()
                 results["pushplus"] = {"status": st, "detail": detail}
                 # ⚠️ 2026-09-16 修（血案：PushPlus 是当前唯一通道，却无兜底）：
