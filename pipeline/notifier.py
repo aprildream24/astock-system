@@ -1640,7 +1640,19 @@ def _send_tg(tg_cfg, title, text_body):
     if not chat_id:
         chat_id = _tg_chat_id(tg_cfg["token"])
         if not chat_id:
-            return "failed", "用户尚未给 Bot 发送 /start（无法发现 chat_id）"
+            # 附带 Bot 用户名——用户核对「到底该给哪个 Bot 发 /start」
+            bot_user = ""
+            try:
+                req = urllib.request.Request(
+                    f"https://api.telegram.org/bot{tg_cfg['token']}/getMe",
+                    headers={"User-Agent": UA_WECOM})
+                me = json.loads(urllib.request.urlopen(
+                    req, timeout=15).read().decode())
+                bot_user = f"@{me['result']['username']} "
+            except Exception:                       # noqa: BLE001
+                pass
+            return "failed", (f"{bot_user}尚未收到你的 /start"
+                              "（请确认你发消息的正是这个 Bot）")
     text = f"{title}\n{text_body}"
     if len(text.encode("utf-8")) > 3800:
         text = text[:1700] + "\n…（内容较长，完整版见网页版/其他渠道）"
