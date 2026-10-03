@@ -82,4 +82,6 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           WXPUSHER_CONF: ${{ secrets.WXPUSHER_CONF }}
+          WECOM_HOOK: ${{ secrets.WECOM_HOOK }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         run: python -m pipeline.timer_guard
