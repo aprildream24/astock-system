@@ -1641,6 +1641,14 @@ def _send_tg(tg_cfg, title, text_body):
         return "failed", f"{type(e).__name__} {e}"
 
 
+def _short_digest(text, cap=400):
+    """群机器人/TG 统一短文本：超长截断 + 尾注（用户：越简单越好）。"""
+    text = (text or "").strip()
+    if len(text) <= cap:
+        return text
+    return text[:cap] + "…（详见网页版）"
+
+
 def _send_wecom_hook(hook_url, title, text_body):
     """企业微信群机器人 Webhook（09-30 用户提供）：markdown 直出群聊，
     原生渲染换行/粗体，免点开可读。markdown 上限 4096 字节。"""
@@ -1872,8 +1880,8 @@ def push(mode, title, content, date=None, con=None,
             # 09-30 用户口径：群里的推送要**简单明了**——优先发动作清单
             # （wx_text：几行看完要做什么），无清单时才发全文转换。
             _anti_burst_wait()
-            _wtxt = (wx_text.strip()
-                     if wx_text else (html_to_text(content).strip() or title))
+            _wtxt = _short_digest(wx_text or (html_to_text(content).strip()
+                                              or title))
             st, detail = _send_wecom_hook(
                 _hook_url,
                 f"{title_prefix(mode, tag, '群机器人')}{title}", _wtxt)
@@ -1881,8 +1889,8 @@ def push(mode, title, content, date=None, con=None,
             results["wecom_hook"] = {"status": st, "detail": detail}
         if "tg" in channels and _tg_cfg:
             _anti_burst_wait()
-            _ttxt = wx_text.strip() if wx_text else (
-                html_to_text(content).strip() or title)
+            _ttxt = _short_digest(wx_text or (html_to_text(content).strip()
+                                              or title))
             st, detail = _send_tg(_tg_cfg,
                                   f"{title_prefix(mode, tag, 'TG')}{title}",
                                   _ttxt)

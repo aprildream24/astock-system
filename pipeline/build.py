@@ -1105,15 +1105,15 @@ def build(task="close", date=None, period_days=30):
         # （PushPlus 走 txt 模板纯文本，永不乱）；完整版式在网页。
         _wx = []
         for c in ([first] if first else []) + backups:
-            _wx.append(f"▶ 买入：{c.get('name')}（现价区内，可下单）")
+            _px = f" {c['close']:.2f}" if c.get("close") else ""
+            _wx.append(f"✅买：{c.get('name')}{_px}")
         if pending:
             _pn = "、".join(p.get("name") for p in pending[:3])
             _more = f" 等{len(pending)}只" if len(pending) > 3 else ""
-            _wx.append(f"▶ 等回踩：{_pn}{_more}（未到价，勿追）")
+            _wx.append(f"⏳回踩：{_pn}{_more}")
         if not _wx:
-            _wx.append("▶ 今日无当下可买——不追高，等回踩")
-        _wx.append(f"▶ 纪律：{meta.get('verdict', '')}"
-                   f"（{meta.get('verdict_text', '')}）")
+            _wx.append("⏳今日无买点，等回踩")
+        _wx.append(f"⚠️纪律：{meta.get('verdict', '')}")
         r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
                           force=_force_push(),
                           headline=f"可买{n_buy}只·{meta.get('verdict', '')}",
