@@ -241,10 +241,9 @@ class TestBriefRendersSector(unittest.TestCase):
         self.assertIn("偏热", html)
 
     def test_card_shows_sector_row(self):
+        """09-30 用户口径：卡片精简后板块热度行移除（板块榜仍在简报顶部）。"""
         html = notifier.render_card(self._card(), head="【待回踩】")
-        self.assertIn("板块热度", html)
-        self.assertIn("半导体", html)
-        self.assertIn("+4.20%", html)
+        self.assertNotIn("板块热度", html)
 
     def test_cand_line_contains_sector(self):
         line = notifier._cand_line(_cand("sh600001", sector="半导体",

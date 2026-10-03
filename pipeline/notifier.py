@@ -579,43 +579,19 @@ def render_card(d, first=False, head=None, accent=None):
         + _row("买入区间", f'<span style="color:#ff6b5e">{zone_s}</span>',
                v_bold=True)
         + _wide_row(_zone_bar(zone[0], zone[1], close))
-        + _row("不追价上限", cap)
         # 三色纪律（2026-09-14）：买入红 / 卖出（目标区间）绿 / 止损深红
         + _row("目标区间",
                f'<span style="color:#4ecf8e;font-weight:700">{target}</span>')
         + _row("止损",
                f'<span style="color:#ff8a80;font-weight:700">'
                f'{d["stop"]:.2f}</span>' if d.get("stop") else "—")
-        + (_row("板块热度", _sector_row_html(d)) if d.get("sector") else "")
-        + (_row("板块阶段", f'<span style="font-weight:700">'
-                f'{_esc(d.get("mainline") or "非主线")} · '
-                f'{_esc(d.get("sector_state") or "—")}</span>'
-                + (f'<span style="color:#9aa0a6;font-size:12px"> — '
-                   f'{_esc(d.get("sector_state_note"))}</span>'
-                   if d.get("sector_state_note") else ""))
-          if d.get("sector_state") else "")
-        + ((_row("推荐次数", _confirm_badge(d.get("confirms", 0))))
-          if d.get("confirms") is not None else "")
-        # 决断力证据（2026-09-19「要么上要么下」）：让读者看见它为什么
-        # 不属于磨叽票——20 日净位移与方向效率，绿=达标。
-        + (_row("决断力(20日)",
-                f'<span style="color:#4ecf8e;font-weight:700">'
-                f'净移{d["decisive"]["net"]:+.1f}% · 效率{d["decisive"]["eff"]:.2f}'
-                f'</span>') if d.get("decisive") else "")
-        + (_row("20日位置",
-                f'<span style="font-weight:700">'
-                f'{_esc(d.get("pos_label") or "—")}'
-                f'（区间 {_esc(str(d.get("pos_pct") or ""))}%）'
-                f'</span>') if d.get("pos_label") else "")
+        # 09-30 用户口径：卡片回归早期精简板式（现价/买区/目标/止损/仓位/
+        # 失效/理由）——板块热度/阶段、决断力、20日位置、未到价观察等
+        # 运营信息全部移除（网页版详情保留完整数据）。
         + (_row("推荐次数", _confirm_badge(d.get("confirms") or 1))
           if d.get("confirms") is not None else "")
-        + (_row("未到价观察", f'<span style="color:#e6a700;font-weight:700">'
-                f'已连续 {d["wait_days"]} 日未到买点'
-                f'（满 5 日自动移出，不再占推荐位）'
-                f'</span>') if (d.get("wait_days") or 0) >= 2 else "")
         + (_row("建议仓位", _esc(d.get("position") or "1成"))
            if d.get("position") or first else "")
-        + _row("有效期至", _esc(d.get("valid_until")))
         + _row("失效条件", _esc(d.get("invalid_if") or "条件破坏即失效")))
     inner = tbl
     if d.get("reason") or d.get("score") is not None:
