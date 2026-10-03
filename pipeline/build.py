@@ -944,7 +944,13 @@ def build(task="close", date=None, period_days=30):
     # 有完整标签，不依赖内存中的候选 dict 生命周期。
     def _extra_of(code):
         r = con.execute(
-            "SELECT extra FROM candidate_snapshots WHERE code=? AND date=?",
+            # 09-30 用户口径（「一会说一个强」）：同票同日多池多行时，
+            # 标签读取必须**确定性**——可执行动作优先 → 高分优先，
+            # 否则每次构建随手抓一行，强度/板块标签来回翻转。
+            "SELECT extra FROM candidate_snapshots WHERE code=? AND date=? "
+            "ORDER BY CASE WHEN action IN ('现在买','等回踩','小仓试') THEN 0 "
+            "WHEN action = '次日竞价达标买' THEN 1 ELSE 2 END, "
+            "COALESCE(score,0) DESC LIMIT 1",
             (code, date)).fetchone()
         if r and r[0]:
             try:

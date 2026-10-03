@@ -136,9 +136,16 @@ def _enrich(con, date, items):
                     (date, it["sector"])).fetchone()
                 it["sector_pct"] = heat[0] if heat else None
             ex = con.execute(
-                "SELECT extra FROM candidate_snapshots WHERE code=? "
-                "AND date<=? AND json_extract(extra,'$.buy_low') IS NOT NULL "
-                "ORDER BY date DESC LIMIT 1",
+                "SELECT extra FROM ("
+                "  SELECT extra, action, score, ROW_NUMBER() OVER ("
+                "    PARTITION BY code ORDER BY date DESC,"
+                "      CASE WHEN action IN ('现在买','等回踩','小仓试') THEN 0"
+                "           WHEN action = '次日竞价达标买' THEN 1 ELSE 2 END,"
+                "      COALESCE(score,0) DESC) AS rn"
+                "  FROM candidate_snapshots"
+                "  WHERE code=? AND date<=?"
+                "    AND json_extract(extra,'$.buy_low') IS NOT NULL"
+                "  ) WHERE rn=1",
                 (it["code"], date)).fetchone()
             if ex and ex[0]:
                 x = json.loads(ex[0])
