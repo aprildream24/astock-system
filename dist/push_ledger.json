@@ -1154,12 +1154,12 @@
  },
  "693e8675fa16edb2": {
   "mode": "rehearsal_build_pre",
-  "ts": "2026-09-30 18:41:42",
+  "ts": "2026-09-30 00:44:48",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  },
  "b42eff8a8088cc04": {
@@ -1246,22 +1246,22 @@
  },
  "89722e421b0e8a6b": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-09-30 18:42:57",
+  "ts": "2026-09-30 00:45:59",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  },
  "b46bcbdfc4b6c9a2": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-09-30 18:45:33",
+  "ts": "2026-09-30 00:48:36",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  },
  "1b67520c8a6d775f": {
@@ -1317,12 +1317,12 @@
  },
  "1287a29b56a8d040": {
   "mode": "rehearsal_review",
-  "ts": "2026-09-30 18:48:50",
+  "ts": "2026-09-30 00:51:27",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  },
  "4df5d969098254fc": {
@@ -1383,22 +1383,22 @@
  },
  "6b55dd81d5473378": {
   "mode": "rehearsal_rehearsal_exec",
-  "ts": "2026-10-03 18:49:43",
+  "ts": "2026-10-03 00:52:31",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  },
  "878e6729343f902a": {
   "mode": "rehearsal_period",
-  "ts": "2026-10-03 18:51:01",
+  "ts": "2026-10-03 00:53:49",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  },
  "6e0ee4a719bc0d3c": {
@@ -1433,22 +1433,22 @@
  },
  "6666a8cf0226cf56": {
   "mode": "rehearsal_build_auction",
-  "ts": "2026-09-30 18:44:20",
+  "ts": "2026-09-30 00:47:27",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  },
  "d6a5bf04cc2bd991": {
   "mode": "rehearsal_build_close",
-  "ts": "2026-09-30 18:46:54",
+  "ts": "2026-09-30 00:50:02",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "failed"
+   "tg": "sent"
   }
  }
 }
