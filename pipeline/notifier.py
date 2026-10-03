@@ -1714,11 +1714,12 @@ def push(mode, title, content, date=None, con=None,
     if _hook_url:
         channels = tuple(channels) + ("wecom_hook",)
     # Telegram 通道（可选）：用户自建 Bot，全文直出聊天
+    # ⚠️ 09-30 深夜修：接入门槛只要求 token——chat_id 由 _send_tg 内部
+    # 自动发现（用户发过 /start 即可）。原门槛同时要求 TG_CHAT_ID 环境变量，
+    # 而该 Secret 从未设置 ⇒ 通道永远不激活（TG 静默的真凶）。
     _tg_cfg = (cfg.get("tg") or
-               ({"token": os.environ.get("TG_BOT_TOKEN"),
-                 "chat_id": os.environ.get("TG_CHAT_ID")}
-                if os.environ.get("TG_BOT_TOKEN")
-                and os.environ.get("TG_CHAT_ID") else None))
+               ({"token": os.environ.get("TG_BOT_TOKEN")}
+                if os.environ.get("TG_BOT_TOKEN") else None))
     if _tg_cfg:
         channels = tuple(channels) + ("tg",)
     # 09-30 用户口径：「不需要点开就可以看到」——摘要写进标题，
