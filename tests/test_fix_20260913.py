@@ -201,7 +201,7 @@ class TestPushLayout(unittest.TestCase):
     def test_required_fields(self):
         html = self._brief()
         for need in ("首选观察", "备选观察", "计划变化", "复核 120 只",
-                     "失效条件", "超价取消",
+                     "不追价上限", "失效条件", "超价取消",
                      "现价", "买入区间", "目标区间", "止损"):
             self.assertIn(need, html)
 

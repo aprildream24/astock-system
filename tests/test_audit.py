@@ -398,7 +398,7 @@ class TestRender(unittest.TestCase):
                                      {"reviewed": 120, "data_date": "2026-09-12",
                                       "valid_until": "2026-09-18"})
         for need in ("首选观察", "备选观察", "计划变化", "复核 120 只",
-                     "失效条件", "超价取消"):
+                     "不追价上限", "失效条件", "超价取消"):
             self.assertIn(need, html)
         self.assertLess(len(re.sub(r"<[^>]+>", "", html)), 2500,
                         "主报告应简洁（M35：300~600字目标量级）")
