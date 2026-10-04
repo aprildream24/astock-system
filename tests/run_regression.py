@@ -118,7 +118,11 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           #   F1 情绪裁决闸门（离场为主不建仓/谨慎限 1 笔 20%）；
           #   F2 首推不拿大档（双确认才上 30%，09-28 首推 30% 档次日三线齐破）；
           #   F3 盈利回吐保护（曾 +3% 回吐到 +0.5% 以下离场，09-30 +4.6%→-3.0%）。
-          "test_sim_loss_fixes.py"]
+          "test_sim_loss_fixes.py",
+          # 2026-10-05 并列排名总序决胜（用户「云瑶健康/吉鑫科技相互第一」）：
+          #   同分票名次由 确认次数→代码 决胜，与输入序无关；展示层与
+          #   终审同尺（有效分）；zt_pool/标签读取全部显式排序。
+          "test_rank_tiebreak.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

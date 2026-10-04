@@ -141,7 +141,7 @@ def _enrich(con, date, items):
                 "    PARTITION BY code ORDER BY date DESC,"
                 "      CASE WHEN action IN ('现在买','等回踩','小仓试') THEN 0"
                 "           WHEN action = '次日竞价达标买' THEN 1 ELSE 2 END,"
-                "      COALESCE(score,0) DESC) AS rn"
+                "      COALESCE(score,0) DESC, rowid DESC) AS rn"
                 "  FROM candidate_snapshots"
                 "  WHERE code=? AND date<=?"
                 "    AND json_extract(extra,'$.buy_low') IS NOT NULL"
@@ -489,9 +489,12 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     _purge_old(con, date)
 
     # 计划 = 当日构建写入的推荐（pre/auction/close 都会写 rec_picks）
+    # 2026-10-05 显式排序（有效分 desc → code）：不再依赖写入序，
+    # 同分票在盘中推送里的先后也永不互换。
     plans = con.execute(
         "SELECT code, name, action, buy_low, buy_high, stop, score "
-        "FROM rec_picks WHERE date=?", (date,)).fetchall()
+        "FROM rec_picks WHERE date=? ORDER BY score DESC, code",
+        (date,)).fetchall()
     # ★ 历史候选并入（用户 2026-09-25「到达买点的票随时推，不要永远只是
     # 那几只」）：近 5 个交易日出现过的全部候选（含当日未入选的）都纳入
     # 到买点监控；同票以当日推荐优先，历史候选标注 src=hist。

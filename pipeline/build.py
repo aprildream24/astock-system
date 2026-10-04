@@ -214,8 +214,12 @@ def scan_all(con, date, bar_anchor=None):
     # 成交量不构成任何判定依据。收盘/复盘任务 bar_anchor=None ⇒ 仍用当日。
     snap_date = bar_anchor or date
     snap = _snapshot(con, snap_date)
+    # 2026-10-05 加 ORDER BY code：旧实现无序 → dict 按 rowid 迭代，
+    # 涨停池每晚重建时 rowid 重排 → 连板候选进入 compute_top_picks 的
+    # 输入序漂移，同分票名次互换的源头之一。
     zt_today = {code: streak for code, streak in con.execute(
-        "SELECT code, streak FROM zt_pool WHERE date=?", (date,)).fetchall()}
+        "SELECT code, streak FROM zt_pool WHERE date=? "
+        "ORDER BY code, streak", (date,)).fetchall()}
     cands, skipped = [], []
     stat = {"stale": 0, "no_history": 0, "fresh": 0}
     # 新鲜度锚：盘前任务（pre/auction）当日K线尚未产生，锚定上一交易日；
@@ -844,6 +848,16 @@ def build(task="close", date=None, period_days=30):
         if wd:
             c["wait_days"] = wd
     _stale = [c["code"] for c in cands if c.get("wait_days", 0) >= 5]
+    # ★ 2026-10-05 确认次数提前注入：终审排序的决胜键（同分票谁排前面）
+    # 需要 confirms，而卡片标签原本在排序之后才计数——决胜键会全部读到 0。
+    # 一次 GROUP BY 的成本，换来「双确认优先于首推」的真实语义。
+    try:
+        _cc = _confirm_counts(con, date)
+        for c in cands:
+            if _cc.get(c["code"]):
+                c["confirms"] = _cc[c["code"]]
+    except Exception as e:  # noqa: BLE001 — 计数失败只降级决胜键，不阻断
+        print(f"[build] confirm 计数失败（不影响主流程）: {e}")
     picks = scoring.compute_top_picks(
         [c for c in cands if c.get("action") in NOW_ACTIONS
          and c.get("wait_days", 0) < 5],
@@ -884,7 +898,14 @@ def build(task="close", date=None, period_days=30):
     # 展示口径（2026-09-14 用户困惑整改）：可下单的票永远排在「等回踩/小仓试」
     # 前面——此前详情报告把高分的等回踩票排在首位，用户第一眼看到"不能买"，
     # 再往下才看到可买票，产生"一下说观望一下说能买"的矛盾观感。
-    picks.sort(key=lambda c: (not c.get("buyable_now"), -(c.get("score") or 0)))
+    # ★ 2026-10-05 改用有效分排序（原用原始分 score）：排名是按 eff_score
+    # （含板块/趋势/RS 加成）定的，展示却按原始分重排，两把尺子在两次
+    # 构建间加成差不同 → 云瑶健康/吉鑫科技名次互换。同一把尺 + 确认次数、
+    # 代码两级决胜 → 全序确定。
+    picks.sort(key=lambda c: (not c.get("buyable_now"),
+                              -(c.get("eff_score") or c.get("score") or 0),
+                              -(c.get("confirms") or 0),
+                              c["code"]))
     for c in picks + ladder_next:
         con.execute("INSERT OR REPLACE INTO rec_picks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (date, c["code"], c.get("name", ""), c["tag"], c["action"],
@@ -950,7 +971,7 @@ def build(task="close", date=None, period_days=30):
             "SELECT extra FROM candidate_snapshots WHERE code=? AND date=? "
             "ORDER BY CASE WHEN action IN ('现在买','等回踩','小仓试') THEN 0 "
             "WHEN action = '次日竞价达标买' THEN 1 ELSE 2 END, "
-            "COALESCE(score,0) DESC LIMIT 1",
+            "COALESCE(score,0) DESC, rowid DESC LIMIT 1",
             (code, date)).fetchone()
         if r and r[0]:
             try:
@@ -1549,7 +1570,8 @@ def build_data_for_site(con, date):
                    for r in con.execute(
                        "SELECT code,name,pool,score,action,reason,extra "
                        "FROM candidate_snapshots WHERE date=? AND "
-                       "action='次日竞价达标买' ORDER BY score DESC LIMIT 2",
+                       "action='次日竞价达标买' ORDER BY score DESC, code "
+                       "LIMIT 2",
                        (date,)).fetchall()]
     # 自选股建议（build_site 独立构建站点时也生成）
     try:

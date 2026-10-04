@@ -170,8 +170,16 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
                 eff *= 0.95
         c["eff_score"] = round(eff, 2)
         scored.append(c)
-    scored.sort(key=lambda c: (c["eff_score"], ACTION_RANK.get(c.get("action"), 0)),
-                reverse=True)
+    # ★ 2026-10-05 总序决胜（用户「到底是云瑶健康还是吉鑫科技，两个带头
+    # 相互第一」）：旧键 (eff_score, action) 并列时稳定排序保留**输入序**，
+    # 而输入序里的连板池来自无 ORDER BY 的查询（rowid 序随重建漂移）——
+    # 两只同分票的名次在两次构建间互换。终键改成完整全序：
+    # 有效分 → 可执行动作 → 确认次数（被推送天数，双确认优先于首推）→
+    # 代码升序（绝对决胜，同一输入永远同一输出）。
+    scored.sort(key=lambda c: (-c["eff_score"],
+                               -ACTION_RANK.get(c.get("action"), 0),
+                               -(c.get("confirms") or 0),
+                               c["code"]))
     # 板块内限额：同板块保留分数最高的前 per_sector 只。
     # ⚠️ 旧实现的 `sector_of` 因候选无 `sector` 字段而退化成「按池别去重」——
     # 不同行业的波段票被当成同一板块互斥，每次只活一只。现已改为真实行业。

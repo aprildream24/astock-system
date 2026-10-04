@@ -802,7 +802,7 @@ def _pick_of(con, today, code):
     """当日推荐里的这只票（名称/动作/买区/评分）。供推送渲染回溯。"""
     return con.execute(
         "SELECT name, action, buy_low, buy_high, score FROM rec_picks "
-        "WHERE date=? AND code=? ORDER BY score DESC LIMIT 1",
+        "WHERE date=? AND code=? ORDER BY score DESC, rowid DESC LIMIT 1",
         (today, code)).fetchone()
 
 
@@ -1006,7 +1006,7 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
     rows = con.execute(
         "SELECT code, name, action, buy_low, buy_high, score FROM rec_picks "
         "WHERE date=? AND action IN ('现在买','等回踩','小仓试') "
-        "ORDER BY score DESC", (today,)).fetchall()
+        "ORDER BY score DESC, code", (today,)).fetchall()
     if not rows:
         return []
     held = {r[0] for r in con.execute(
