@@ -1154,12 +1154,12 @@
  },
  "693e8675fa16edb2": {
   "mode": "rehearsal_build_pre",
-  "ts": "2026-09-30 06:16:03",
+  "ts": "2026-09-30 23:59:46",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "sent"
+   "tg": "failed"
   }
  },
  "b42eff8a8088cc04": {
@@ -1246,22 +1246,22 @@
  },
  "89722e421b0e8a6b": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-09-30 06:17:14",
+  "ts": "2026-09-30 00:00:50",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "sent"
+   "tg": "failed"
   }
  },
  "b46bcbdfc4b6c9a2": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-09-30 06:19:50",
+  "ts": "2026-09-30 00:03:26",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "sent"
+   "tg": "failed"
   }
  },
  "1b67520c8a6d775f": {
@@ -1317,12 +1317,12 @@
  },
  "1287a29b56a8d040": {
   "mode": "rehearsal_review",
-  "ts": "2026-09-30 06:22:44",
+  "ts": "2026-09-30 00:07:00",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "sent"
+   "tg": "failed"
   }
  },
  "4df5d969098254fc": {
@@ -1433,22 +1433,42 @@
  },
  "6666a8cf0226cf56": {
   "mode": "rehearsal_build_auction",
-  "ts": "2026-09-30 06:18:40",
+  "ts": "2026-09-30 00:02:18",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "sent"
+   "tg": "failed"
   }
  },
  "d6a5bf04cc2bd991": {
   "mode": "rehearsal_build_close",
-  "ts": "2026-09-30 06:21:16",
+  "ts": "2026-09-30 00:04:53",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
    "wecom_hook": "sent",
-   "tg": "sent"
+   "tg": "failed"
+  }
+ },
+ "46db4d7ad9ce1731": {
+  "mode": "rehearsal_rehearsal_exec",
+  "ts": "2026-10-04 00:07:53",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "121af89422684817": {
+  "mode": "rehearsal_period",
+  "ts": "2026-10-04 00:09:41",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
   }
  }
 }
