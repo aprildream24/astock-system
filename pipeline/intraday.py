@@ -912,6 +912,17 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
                            for p in in_zone[:2])
         _live_head = (f"{_names}" + (f"等{len(in_zone)}只"
                                      if len(in_zone) > 2 else ""))
+    # ★ 2026-10-05 用户需求：「行情差提示我观望/空仓，不要让我高位被套」——
+    # 到价照报（告知不缺席），但差裁决日标题必须带纪律，防误读成追高许可。
+    try:
+        _vdrow = con.execute(
+            "SELECT verdict FROM day_meta WHERE date=?", (date,)).fetchone()
+        if _vdrow and _vdrow[0] in ("离场为主", "观望为主"):
+            title = (f"⚠️{_vdrow[0]}·到价仅提示 "
+                     f"{date[5:]} {now:%H:%M}" if _live
+                     else f"⚠️今日{_vdrow[0]} · 盘中{head} {date[5:]}")
+    except Exception:                        # noqa: BLE001 — 读不到不阻断
+        pass
     r = notifier.push(f"intraday_{slot}", title, html, date=date, con=con,
                       force=_live or os.environ.get("ASTOCK_FORCE_PUSH") == "1",
                       headline=_live_head)

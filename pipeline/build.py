@@ -1151,12 +1151,24 @@ def build(task="close", date=None, period_days=30):
             _wx.append(f"⏳回踩：{_pn}{_more}")
         if not _wx:
             _wx.append("⏳今日无买点，等回踩")
-        _wx.append(f"⚠️纪律：{meta.get('verdict', '')}")
-        r = notifier.push(f"build_{task}", _title, brief, date=date, con=con,
-                          force=_force_push(),
-                          headline=f"可买{n_buy}只·{meta.get('verdict', '')}",
-                          wx_text="【今日操作】" + chr(10)
-                                  + chr(10).join(_wx))
+        # ★ 2026-10-05 用户需求：「行情比较差，提示我小仓观望或者直接空仓，
+        # 不要让我随时进入高位被套」——裁决转差时它必须是**第一条**信息，
+        # 买点清单退居其后；标题也不再写「可买N只」制造入场暗示。
+        # 裁决正常（可开仓/轻仓试探/谨慎）时纪律行保持在末尾（原行为）。
+        _vd = meta.get("verdict", "")
+        _vd_bad = _vd in ("离场为主", "观望为主")
+        if _vd_bad:
+            _wx.insert(0, f"🛑今日{_vd}（{meta.get('note', '')[:36]}）"
+                          "→ 不开新仓，持仓反弹减、破位走")
+        else:
+            _wx.append(f"⚠️纪律：{_vd}")
+        r = notifier.push(
+            f"build_{task}", _title, brief, date=date, con=con,
+            force=_force_push(),
+            headline=(f"{_vd}·不开新仓" if _vd_bad
+                      else f"可买{n_buy}只·{_vd}"),
+            wx_text="【今日操作】" + chr(10)
+                    + chr(10).join(_wx))
         print(f"[build] push={r}")
         if r.get("sent") and task in ("pre", "auction", "close"):
             _record_confirms(con, date, task, picks)
