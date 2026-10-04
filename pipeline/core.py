@@ -154,6 +154,15 @@ CREATE TABLE IF NOT EXISTS offday_reverted(
 CREATE TABLE IF NOT EXISTS account_state(
     id INTEGER PRIMARY KEY CHECK(id=1), cash REAL,
     day_start_equity REAL, day_key TEXT, frozen INTEGER DEFAULT 0);
+-- 当日仓位裁决（build 算好落库，模拟盘建仓前必读——2026-10-04 亏损修正：
+-- 09-28/09-30 情绪 36.4/36.1「离场为主」日志里明写，执行器却照常建仓 74%）。
+CREATE TABLE IF NOT EXISTS day_meta(
+    date TEXT PRIMARY KEY, verdict TEXT, verdict_text TEXT,
+    mood REAL, heat TEXT, updated_at TEXT);
+-- 持仓盈利高水位（浮盈回吐保护：曾 +3% 回吐到 +0.5% 以下 → 离场）。
+-- 09-30 实测 sh603978 早盘 +4.6% → 收盘 -3.0%，7.6 个点回吐无人管。
+CREATE TABLE IF NOT EXISTS pos_hwm(
+    code TEXT PRIMARY KEY, hwm REAL, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS snapshot(
     date TEXT, code TEXT, name TEXT, price REAL, pct REAL,
     amt REAL, turn REAL, fmv REAL,

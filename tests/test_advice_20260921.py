@@ -81,6 +81,12 @@ class TestAutoOpenIntraday(unittest.TestCase):
         con.execute("INSERT OR REPLACE INTO rec_picks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (today, pick[0], pick[1], "趋势", "现在买",
                      pick[2], pick[3], pick[2] * 0.92, 16, 17, 90, "", None))
+        # 2026-10-04 F2 起大档位要求双确认——本类测的是「盘中回补拿下一档」
+        # （09-21 用户需求），夹具的票按已跟踪确认的票处理。
+        con.execute("INSERT OR REPLACE INTO confirm_log VALUES(?,?,?)",
+                    (DATES[-2], "close", pick[0]))
+        con.execute("INSERT OR REPLACE INTO confirm_log VALUES(?,?,?)",
+                    (today, "pre", pick[0]))
         con.commit()
         return con, today
 

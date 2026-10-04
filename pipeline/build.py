@@ -1061,6 +1061,17 @@ def build(task="close", date=None, period_days=30):
                         + (f"（另有{ut}只退市/未上市/停牌已剔除）" if ut else "")
                         + "；评分不是上涨概率。仅含当下可下单买入的标的；"
                           "待回踩票只列价差不入推荐位，连板次日通道不再推送展示。"}
+        # 裁决落库（2026-10-04 亏损修正 F1）：模拟盘建仓前必读当日裁决。
+        # 09-28/09-30 教训：裁决「离场为主」只进了推送文案，模拟盘读不到，
+        # 冷市照常建仓 74% → 次日隔日止损。裁决必须成为执行器的硬输入。
+        try:
+            con.execute("INSERT OR REPLACE INTO day_meta VALUES(?,?,?,?,?,?)",
+                        (date, _vd_level, _vd_text,
+                         float(emo.get("score") or 0), heat_level,
+                         datetime.now().isoformat(timespec="seconds")))
+            con.commit()
+        except Exception as e:  # noqa: BLE001 — 落库失败不阻断推送
+            print(f"[build] day_meta 落库失败（不影响推送）: {e}")
         ladder_cards = []
         for c in ladder_next:
             d = decisions.make_decision(c, date, missing_fields=())

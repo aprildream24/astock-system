@@ -113,7 +113,12 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           #   · evaluate_real_holdings 结构化体检（浮亏/裁决/板块热冷）
           #   · render_holding_advice 三段式（概要/体检/候选）
           #   · build.py 在 review 挂 holding_check，且只在 actionable 时推（降噪）
-          "test_holding_check.py"]
+          "test_holding_check.py",
+          # 2026-10-04 模拟盘亏损统一修正（CI 日志取证 09-28~10-01 交易链）：
+          #   F1 情绪裁决闸门（离场为主不建仓/谨慎限 1 笔 20%）；
+          #   F2 首推不拿大档（双确认才上 30%，09-28 首推 30% 档次日三线齐破）；
+          #   F3 盈利回吐保护（曾 +3% 回吐到 +0.5% 以下离场，09-30 +4.6%→-3.0%）。
+          "test_sim_loss_fixes.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

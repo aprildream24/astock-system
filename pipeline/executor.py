@@ -217,6 +217,9 @@ def place_order(con, code, side, qty, price, today, prev_close=None,
                     (code, today, qty, price))
         con.execute("UPDATE position_batches SET available=qty WHERE code=? "
                     "AND buy_date<?", (code, today))
+        # 新仓高水位归零（2026-10-04 F3）：旧 hwm 是上一段持仓的遗留，
+        # 不清零会让回吐保护拿新仓成本对旧高点误判（买回即卖）。
+        con.execute("DELETE FROM pos_hwm WHERE code=?", (code,))
     else:
         cash += (amt - fee)
         remain = qty
@@ -287,6 +290,19 @@ def evaluate_exit(con, code, today, protect_prev=None, cost_override=None):
                  if cond(pnl, low_today, protect, ma20)]
     if pnl >= TAKE_PROFIT_PNL:
         triggered.append(("take_profit", "持仓浮盈止盈"))
+    # F3 盈利回吐保护（2026-10-04）：浮盈曾达 +3% 后回吐到 +0.5% 以下 → 离场。
+    # 实测依据：09-30 sh603978 早盘 +4.6% → 收盘 -3.0%，7.6 个点回吐，
+    # 既有规则全部沉默（-3% 硬止损只看亏损端、+15% 止盈太远）。高水位
+    # 只在模拟盘跟踪（真实持仓走 cost_override，口径不变）。
+    if cost_override is None and cost:
+        hwm_row = con.execute(
+            "SELECT hwm FROM pos_hwm WHERE code=?", (code,)).fetchone()
+        hwm = max(hwm_row[0], pnl) if hwm_row else pnl
+        con.execute("INSERT OR REPLACE INTO pos_hwm VALUES(?,?,?)",
+                    (code, hwm, _now()))
+        if hwm >= 3.0 and pnl <= 0.5:
+            triggered.append(("giveback",
+                              f"盈利回吐保护（曾+{hwm:.1f}%→现+{pnl:.1f}%）"))
     if not triggered:
         return "HOLD", [], f"持仓收益 {pnl:+.1f}%，保护线 {protect:.2f}"
     priority = {r[0]: i for i, r in enumerate(RULES)}
@@ -910,6 +926,31 @@ def _reject_once(con, code, today, why):
     return (code, "REJECT", why)
 
 
+def _verdict_of(con, today):
+    """当日仓位裁决（2026-10-04 F1）：build 落库 day_meta → 执行器必读。
+
+    缺行时从 emotion_log 降级推导（竞价 run 早于 build 落库等边缘）。
+    返回 (级别, 说明, 情绪分) 或 None（两个来源都没有 → 不设闸）。"""
+    row = con.execute(
+        "SELECT verdict, verdict_text, mood FROM day_meta WHERE date=?",
+        (today,)).fetchone()
+    if row and row[0]:
+        return row[0], row[1], row[2] or 50.0
+    row = con.execute(
+        "SELECT score, qualified FROM emotion_log WHERE date=?",
+        (today,)).fetchone()
+    if not row:
+        return None
+    s, q = float(row[0] or 50), bool(row[1])
+    if not q:
+        return ("谨慎", f"情绪覆盖不足（{s:.0f}分），轻仓试探或观望", s)
+    if s >= 60:
+        return ("可开仓", f"情绪 {s:.0f} 分偏热，按计划执行", s)
+    if s >= 45:
+        return ("轻仓试探", f"情绪 {s:.0f} 分中性，只买进买区的", s)
+    return ("离场为主", f"情绪 {s:.0f} 分偏冷，不开新仓", s)
+
+
 def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
     """按当日推荐自动建仓——模拟盘「自动运行」的核心（2026-09-18 新增）。
 
@@ -939,6 +980,25 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
     acct = ensure_account(con, today)
     if acct[3]:
         return [("-", "HOLD", "日内亏损熔断锁定，不开新仓（M22）")]
+    # F1 情绪裁决闸门（2026-10-04 亏损统一修正）：建仓规模跟着当日裁决走。
+    # 实测依据：09-28 情绪36.4、09-30 情绪36.1（日志明写「离场为主」），
+    # 执行器照常建仓 74%+20% → 次日隔日止损（sz002614 三线齐破、sz002935
+    # 次日硬止损）。裁决不再只是推送文案，是建仓的硬约束：
+    #   离场为主/观望为主 → 一律不建仓；谨慎/轻仓试探 → 本轮最多 2 笔、
+    #   单笔不超过小仓档（20%）；可开仓 → 按分仓计划正常执行。
+    cap_pct = 1.0
+    vd = _verdict_of(con, today)
+    if vd:
+        _level, _txt, _mood = vd
+        if _level in ("离场为主", "观望为主"):
+            return [("-", "HOLD",
+                     f"今日裁决「{_level}」（情绪{_mood:.0f}）→ 模拟盘不开新仓")]
+        if _level == "谨慎":
+            max_new = 1 if not max_new else min(max_new, 1)
+            cap_pct = 0.20
+        elif _level == "轻仓试探":
+            max_new = 2 if not max_new else min(max_new, 2)
+            cap_pct = 0.20
     # 2026-09-21 用户需求：盘中出现更合适的买点 → **直接按区间买入推荐**。
     # 原「每天最多一批」硬闸取消，改为三层护栏兜底：最大持仓只数、单日委托
     # 数上限、现价必须落在买区（place_order 内还有资金/涨跌停/T+1/敞口）。
@@ -975,6 +1035,22 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
         # 分仓档位：第 len(held)+1 笔占用 plan 对应档（3322/3331）
         slot_i = min(len(held), len(plan) - 1)
         slot_pct = plan[slot_i]
+        # F2 首推不拿大档（2026-10-04）：≥25% 的大档位只给「双确认以上」
+        # 的票（confirm_log 近 10 天被推送 ≥2 天，与卡片确认标签同尺）。
+        # 依据：09-28 首推 sz002614 直取 30% 档 31,697 元，次日三线齐破
+        # 止损——最大敞口押在最没经过时间验证的票上，是本次亏损最大单笔。
+        demoted = False
+        if slot_pct >= 0.25:
+            n_conf = con.execute(
+                "SELECT COUNT(DISTINCT date || task) FROM confirm_log "
+                "WHERE code=? AND date>=date(?, '-10 day') AND date<=?",
+                (code, today, today)).fetchone()[0]
+            if n_conf < 2:
+                slot_pct = 0.20
+                demoted = True
+        if slot_pct > cap_pct:
+            slot_pct = cap_pct
+            demoted = True
         per_amt = eq * slot_pct
         # 现金预算钳制：3322 四档总和 = 100% 净值，最后一档必须给手续费
         # 留缓冲，否则差几块钱被拒单 → 永远建不满 4 仓
@@ -997,14 +1073,16 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
         oid, status, why = place_order(
             con, code, "buy", qty, price, today,
             prev_close=prev[0] if prev else None,
-            reason=(f"自动建仓 {action}（第{slot_i + 1}档 "
+            reason=(f"自动建仓 {action}（第{slot_i + 1}档"
+                    f"{'·首推降档' if demoted else ''} "
                     f"{slot_pct:.0%}·目标{per_amt:,.0f}元）"))
         if status == "filled":
             held.add(code)
             filled += 1
             log.append((code, "BUY",
-                        f"{qty}股@{price:.2f}（{action}·"
-                        f"第{slot_i + 1}档{slot_pct:.0%}≈{per_amt:,.0f}元）"))
+                        f"{qty}股@{price:.2f}（{action}·第{slot_i + 1}档"
+                        f"{'·首推降档' if demoted else ''}"
+                        f"{slot_pct:.0%}≈{per_amt:,.0f}元）"))
         else:
             # ★ 用户需求：**到价了却买不进，必须说清楚原因**（资金不足/
             # 满仓/涨停/单日额度…）。原实现也记 REJECT，但推送里混在流水里
