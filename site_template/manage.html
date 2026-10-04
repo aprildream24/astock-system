@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>持仓管理 · Astra 股票系统</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#151b24; --line:#2b313d; --txt:#e8eaed;
+  --dim:#9aa0a6; --blue:#6ab0ff; --red:#ff6b5e; --green:#4ecf8e; --gold:#f5b83d;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px}
+.wrap{max-width:640px;margin:0 auto;padding:16px 12px 70px}
+h1{font-size:18px;margin:6px 0 2px;color:#fff}
+.sub{color:var(--dim);font-size:12.5px;margin:0 0 14px;line-height:1.7}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:13px 12px;margin:12px 0}
+.panel h2{font-size:15px;margin:0 0 4px}
+.hint{color:var(--dim);font-size:12px;margin:0 0 10px;line-height:1.7}
+.row{background:#0d1117;border:1px solid var(--line);border-radius:8px;
+  padding:8px;margin:8px 0}
+.f{display:flex;gap:6px;margin:5px 0}
+.f label{width:44px;color:var(--dim);font-size:12px;line-height:30px;flex:none}
+.f input,.f textarea{flex:1;width:100%;min-width:0;background:#0d1117;
+  color:var(--txt);border:1px solid var(--line);border-radius:6px;
+  padding:6px 8px;font-size:14px;font-family:inherit}
+textarea{resize:vertical}
+input:focus,textarea:focus{outline:none;border-color:var(--blue)}
+input.bad{border-color:var(--red)}
+.hd{display:flex;justify-content:space-between;align-items:center}
+.hd b{font-size:13px;color:var(--blue)}
+.del{background:#8a2a2e;color:#fff;border:none;border-radius:6px;
+  padding:5px 12px;font-size:12px;font-family:inherit}
+button{background:#1a73e8;color:#fff;border:none;border-radius:7px;
+  padding:10px 18px;font-size:14px;cursor:pointer;font-family:inherit;margin:6px 6px 0 0}
+button.ghost{background:#232b38;color:var(--txt);border:1px solid var(--line)}
+button:active{filter:brightness(1.15)}
+.msg{font-size:12.5px;margin-top:8px;min-height:18px;line-height:1.6}
+.ok{color:var(--green)} .err{color:var(--red)} .info{color:var(--gold)}
+#gate{max-width:340px;margin:60px auto;text-align:center}
+#gate input{width:100%;margin:12px 0;text-align:center;font-size:16px;
+  background:#0d1117;color:var(--txt);border:1px solid var(--line);
+  border-radius:8px;padding:11px}
+.hidden{display:none}
+.note{background:#141c26;border-left:3px solid var(--blue);padding:9px 11px;
+  border-radius:0 6px 6px 0;font-size:12px;color:var(--dim);margin:10px 0 0;
+  line-height:1.8}
+a{color:var(--blue)}
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <h1>持仓管理</h1>
+  <p class="sub">输入<b>站点 owner 口令</b>解锁<br>（与查看页同一个口令）</p>
+  <input type="password" id="pw" placeholder="owner 口令" autocomplete="current-password">
+  <div><button onclick="unlock()">解锁</button></div>
+  <div class="msg" id="gmsg"></div>
+</div>
+
+<div class="wrap hidden" id="app">
+  <h1>持仓管理 <span style="color:var(--blue);font-size:12px" id="whoami"></span></h1>
+  <p class="sub">手机直接改持仓/自选，保存后由 GitHub Actions 写入系统，
+     下一个推送时点自动生效（约 1 分钟）。</p>
+
+  <div class="panel">
+    <h2>① 我的持仓</h2>
+    <p class="hint">持仓票自动进入「止损/持有/减仓」语境并参与止盈止损提醒。
+       止损价留空 = 系统按买区自动算。<b>清空全部行并保存 = 全部清仓登记。</b></p>
+    <div id="hrows"></div>
+    <button class="ghost" onclick="addH()">＋ 加一条持仓</button>
+    <button onclick="saveH()">保存持仓</button>
+    <div class="msg" id="hmsg"></div>
+    <div class="note">字段说明：代码 sh600000/sz000001；买入价是**成本价**（可含摊薄）；
+       股数可留空；备注会原样出现在自选/持仓建议里。卖出的票直接删掉该行。</div>
+  </div>
+
+  <div class="panel">
+    <h2>② 自选股</h2>
+    <p class="hint">每天收盘/复盘会给出自选股操作建议。一行一个代码。</p>
+    <textarea id="wt" rows="5" placeholder="sh600000&#10;sz000001"></textarea>
+    <button onclick="saveW()">保存自选</button>
+    <div class="msg" id="wmsg"></div>
+  </div>
+</div>
+
+<script src="auth.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const CODE_RE = /^(sh|sz)\d{6}$/;
+let ADMIN = null;   // {repo, workflow, ref, token}
+
+function flash(id, text, cls){
+  const el = $(id); el.textContent = text; el.className = "msg " + (cls || "");
+}
+
+async function unlock(){
+  const pw = $("pw").value;
+  if(!pw) return flash("gmsg", "请输入口令", "err");
+  try{
+    const d = await AStocker.open(pw);
+    const admin = d && d._admin;
+    if(!admin || !admin.token)
+      throw new Error("站点编辑令牌未启用（CI Secret SITE_EDIT_TOKEN 缺失）");
+    ADMIN = admin;
+    sessionStorage.setItem("astk_pw", pw);
+    $("gate").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    $("whoami").textContent = "已解锁";
+    renderHoldings(d.holdings || []);
+    $("wt").value = (d.watch || []).join("\n");
+  }catch(e){
+    flash("gmsg", "解锁失败：" + e.message, "err");
+  }
+}
+$("pw").addEventListener("keydown", e => { if(e.key === "Enter") unlock(); });
+
+/* ---------------- 持仓 ---------------- */
+function addH(h){
+  h = h || {};
+  $("hrows").insertAdjacentHTML("beforeend",
+    `<div class="row">
+      <div class="hd"><b>${esc(h.name || "新持仓")}</b>
+        <button class="del" onclick="this.closest('.row').remove()">删除</button></div>
+      <div class="f"><label>代码</label>
+        <input class="hcode" placeholder="sh600000" value="${esc(h.code || "")}"></div>
+      <div class="f"><label>名称</label>
+        <input class="hname" placeholder="名称（可留空）" value="${esc(h.name || "")}"></div>
+      <div class="f"><label>成本</label>
+        <input class="hprice" inputmode="decimal" placeholder="买入/成本价" value="${esc(h.buy_price ?? "")}"></div>
+      <div class="f"><label>股数</label>
+        <input class="hshares" inputmode="numeric" placeholder="股数（可留空）" value="${esc(h.shares ?? "")}"></div>
+      <div class="f"><label>日期</label>
+        <input class="hdate" placeholder="买入日 2026-09-10（可留空）" value="${esc(h.buy_date || "")}"></div>
+      <div class="f"><label>备注</label>
+        <input class="hnote" placeholder="备注（可留空）" value="${esc(h.note || "")}"></div>
+    </div>`);
+}
+function collectH(){
+  const items = [], bad = [];
+  document.querySelectorAll("#hrows .row").forEach(r => {
+    const g = c => r.querySelector(c).value.trim();
+    const inp = r.querySelector(".hcode");
+    const code = g(".hcode").toLowerCase();
+    if(!code) return;
+    if(!CODE_RE.test(code)){ inp.classList.add("bad"); bad.push(code); return; }
+    inp.classList.remove("bad");
+    const o = {code};
+    const name = g(".hname"); if(name) o.name = name;
+    const price = g(".hprice");
+    if(price && !isNaN(+price)) o.buy_price = +price;
+    const shares = g(".hshares");
+    if(shares && !isNaN(+shares)) o.shares = Math.round(+shares);
+    const date = g(".hdate"); if(date) o.buy_date = date;
+    const note = g(".hnote"); if(note) o.note = note;
+    items.push(o);
+  });
+  return {items, bad};
+}
+async function dispatch(inputs){
+  const url = `https://api.github.com/repos/${ADMIN.repo}/actions/workflows/${ADMIN.workflow}/dispatches`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {"Authorization": "Bearer " + ADMIN.token,
+              "Accept": "application/vnd.github+json"},
+    body: JSON.stringify({ref: ADMIN.ref || "main", inputs})
+  });
+  if(r.status !== 204) throw new Error("HTTP " + r.status);
+}
+async function saveH(){
+  if(!ADMIN) return flash("hmsg", "未解锁", "err");
+  const {items, bad} = collectH();
+  if(bad.length)
+    return flash("hmsg", "代码格式错误：" + bad.join("、") + "（sh/sz + 6位）", "err");
+  flash("hmsg", "提交中…", "info");
+  try{
+    await dispatch({task: "holdings-sync",
+                    holdings: JSON.stringify(items)});
+    flash("hmsg", `✅ 已提交 ${items.length} 条持仓，CI 正在写入（约 1 分钟后生效）`, "ok");
+  }catch(e){
+    flash("hmsg", "提交失败：" + e.message +
+      "（若 403/404 多为编辑令牌过期，需 CI 重新生成 SITE_EDIT_TOKEN）", "err");
+  }
+}
+
+/* ---------------- 自选 ---------------- */
+async function saveW(){
+  if(!ADMIN) return flash("wmsg", "未解锁", "err");
+  const codes = [], bad = [];
+  $("wt").value.split(/[\s,;，；]+/).forEach(s => {
+    const c = s.trim().toLowerCase(); if(!c) return;
+    if(!CODE_RE.test(c)) bad.push(c); else codes.push(c);
+  });
+  if(bad.length)
+    return flash("wmsg", "格式错误：" + bad.join("、") + "（sh/sz + 6位）", "err");
+  if(codes.length > 200)
+    return flash("wmsg", "自选最多 200 只", "err");
+  flash("wmsg", "提交中…", "info");
+  try{
+    await dispatch({task: "watch-sync", codes: codes.join(",")});
+    flash("wmsg", `✅ 已提交 ${codes.length} 只自选，CI 正在写入（约 1 分钟后生效）`, "ok");
+  }catch(e){
+    flash("wmsg", "提交失败：" + e.message, "err");
+  }
+}
+
+function renderHoldings(list){
+  $("hrows").innerHTML = "";
+  if(!list.length) addH();
+  list.forEach(h => addH(h));
+}
+</script>
+</body>
+</html>
