@@ -93,6 +93,8 @@ def parse_holdings(text):
                 pass
         if it.get("buy_date"):
             rec["buy_date"] = str(it["buy_date"])
+        if it.get("note"):
+            rec["note"] = str(it["note"])[:200]
         out.append(rec)
     return out[:MAX_ITEMS]
 
