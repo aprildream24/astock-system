@@ -1398,6 +1398,11 @@ def build(task="close", date=None, period_days=30):
             r = notifier.push("review", date, digest, date=date, con=con,
                               force=_force_push(), headline=_rev_head)
             print(f"[build] evening_digest push={r}")
+        # 月度/半月周期复盘自动触发（挂在每日复盘后：同一晚最多两条推送）
+        try:
+            _prep = _maybe_period(con, date)
+        except Exception as e:  # noqa: BLE001 — 周期复盘失败不阻断主流程
+            print(f"[build] auto period failed: {e}")
         else:
             print("[build] evening_digest empty → 跳过")
     return {"date": date, "candidates": len(cands), "picks": picks,
@@ -1692,6 +1697,8 @@ def build_data_for_site(con, date):
             "ladder_next": ladder_next,
             "watch_advice": watch_advice,
             "holdings_detail": holdings_detail,
+            # 持仓收益曲线（buy 角色专属；无持仓/无数据 → 空表，前端不渲染）
+            "holdings_curve": _holdings_curve(con, date),
             "signals": sigs,
             "changes": changes,
             "triggers": trigs,
@@ -1719,6 +1726,49 @@ def _build_holdings_detail(con, date):
                     "buy_date": h.get("buy_date"), "buy_price": bp,
                     "shares": h.get("shares"), "stop": h.get("stop"),
                     "close": close, "pnl_pct": pnl_pct})
+    return out
+
+
+def _holdings_curve(con, date, days=30):
+    """持仓收益曲线（buy 角色专属，2026-10-05 用户需求②）。
+
+    近 days 个交易日的组合累计盈亏%序列：
+      · 全部持仓都有股数 → 市值加权（Σ股数×收盘 / Σ股数×成本 - 1）；
+      · 任一持仓缺股数 → 等权平均各票盈亏（口径明确、不虚构股数）。
+    曲线从**买入日之后**才有意义：早于买入日的收盘缺失自然跳过。
+    返回 [[date, pct], ...]，pct 可能中间缺（停牌），前端断点连线。"""
+    holds = [h for h in load_holdings() if h.get("buy_price")]
+    if not holds:
+        return []
+    rows = con.execute(
+        "SELECT DISTINCT date FROM klines WHERE code='sh000001' "
+        "AND date<=? ORDER BY date DESC LIMIT ?", (date, days)).fetchall()
+    dates = [r[0] for r in rows][::-1]
+    if not dates:
+        return []
+    series = []
+    for h in holds:
+        px = dict(con.execute(
+            "SELECT date, c FROM klines WHERE code=? AND date>=? AND date<=?",
+            (h["code"], dates[0], dates[-1])).fetchall())
+        if px:
+            series.append((h.get("shares"), float(h["buy_price"]), px))
+    if not series:
+        return []
+    out = []
+    for d in dates:
+        pts = [(sh, bp, px.get(d)) for sh, bp, px in series if px.get(d)]
+        if not pts:
+            out.append([d, None])
+            continue
+        if all(sh for sh, _, _ in pts):
+            val = sum(sh * px for sh, _, px in pts)
+            cost = sum(sh * bp for sh, bp, _ in pts)
+            pct = (val / cost - 1) * 100 if cost else None
+        else:
+            rs = [(px / bp - 1) * 100 for _, bp, px in pts]
+            pct = sum(rs) / len(rs)
+        out.append([d, round(pct, 2)] if pct is not None else [d, None])
     return out
 
 
@@ -1751,6 +1801,31 @@ def build_site(date=None):
               encoding="utf-8") as f:
         json.dump(release, f, ensure_ascii=False, indent=1)
     print(f"[site] build & verify OK（N12 发布记录：{release}）")
+
+
+def _maybe_period(con, date):
+    """月度/半月周期复盘自动触发（2026-10-05 用户：「全部同意，全部做」）。
+
+    节奏沿用原设计（每月 1 日 30 天档、16 日 15 天档），但由**每日复盘
+    run 顺带检查**，1 日/16 日遇假期或漏跑时自动顺延到窗口内首个复盘日：
+      · 每月 1-3 日 → 补跑 30 天档；
+      · 每月 14-17 日 → 补跑 15 天档。
+    job_state 幂等记账：period30-202610 / period15-202610 各只跑一次。"""
+    import datetime as _dt
+    d = _dt.date.fromisoformat(str(date)[:10])
+    days = 30 if d.day <= 3 else (15 if 14 <= d.day <= 17 else 0)
+    if not days:
+        return None
+    key = f"period{days}-{d:%Y%m}"
+    if con.execute("SELECT 1 FROM job_state WHERE key=?",
+                   (key,)).fetchone():
+        return None
+    rep = _build_period(con, date, days)
+    con.execute("INSERT OR REPLACE INTO job_state VALUES(?,?,?)",
+                (key, date, datetime.now().isoformat(timespec="seconds")))
+    con.commit()
+    print(f"[build] 自动周期复盘已跑并记账 {key}")
+    return rep
 
 
 def _build_period(con, date, days=30):

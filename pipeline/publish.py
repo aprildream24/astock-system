@@ -107,6 +107,7 @@ def apply_roles(data: dict, user):
     if not _can("buy"):
         d.pop("holdings_detail", None)
         d.pop("holdings", None)
+        d.pop("holdings_curve", None)      # 收益曲线源自持仓 → 同权限门
     # 成本/浮盈：仅 buy 或 all 可见（observe 角色即使看观察池也不含成本）
     if not _can("buy"):
         for c in d.get("candidates", []) or []:

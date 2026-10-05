@@ -463,6 +463,27 @@ def render_html(date, slot, now, groups, plan_n, coverage_note=""):
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
+def _relevance_tier(con, code, watch_set, held_secs):
+    """盘中提醒相关度（2026-10-05 用户需求③）：0=自选（你明确关注的），
+    1=与持仓同板块（联动/换股视角），2=其余。"""
+    if code in watch_set:
+        return 0
+    row = con.execute(
+        "SELECT sector FROM stock_industry WHERE code=?", (code,)).fetchone()
+    return 1 if (row and row[0] and row[0] in held_secs) else 2
+
+
+def relevance_sort(con, plans, watch_set, held_secs):
+    """提醒顺序 = 相关度 → 有效分 → 代码。只排序不筛选：
+    到价照推（告知不缺席），只是与你最相关的排最前。"""
+    def _key(p):
+        score = p[6] if len(p) > 6 else 0
+        return (_relevance_tier(con, p[0], watch_set, held_secs),
+                -(score or 0), p[0])
+    plans.sort(key=_key)
+    return plans
+
+
 def run(slot="pm", date=None, con=None, dry=False, now=None,
         force_window=False):
     """跑一次盘中校验。返回结果字典（供测试与日志断言）。
@@ -548,6 +569,21 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         print(f"[intraday] 自选配置读取失败（不阻断）：{e}")
 
     # ---- 2026-09-29 手术：定向批量报价替代全市场翻页 ----
+    # ---- 2026-10-05 相关度排序（用户需求③）：先按「与你的关系」重排
+    # 计划序——自选股最先，其次与持仓同板块的票，其余按分。到价照推
+    # （告知不缺席），只是提醒列表里最相关的排最前、标题点名前两名。
+    try:
+        _watch_set = {prefixed(c) for c in _watch_codes}
+        _hcodes = list(held.keys())
+        _held_secs = set()
+        if _hcodes:
+            _q = ",".join("?" * len(_hcodes))
+            _held_secs = {r[0] for r in con.execute(
+                "SELECT DISTINCT sector FROM stock_industry "
+                f"WHERE code IN ({_q})", _hcodes).fetchall()}
+        relevance_sort(con, plans, _watch_set, _held_secs)
+    except Exception as e:  # noqa: BLE001 — 排序失败保持原序，不影响推送
+        print(f"[intraday] 相关度排序失败（保持原序）: {e}")
     _codes = ({bare(p[0]) for p in plans} | {bare(c) for c in held}
               | {bare(prefixed(w)) for w in _watch_codes})
     _codes.discard("")

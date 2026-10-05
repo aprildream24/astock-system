@@ -127,7 +127,12 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           # 模拟盘盈亏自动修正选股，不要让我主动说明」）：autotune 有界
           # 调参（k_first/k_hot）/周五或≥7天触发/样本<3不调/落库留痕；
           # holdings_status_lines 每次主推送自动带持仓行。
-          "test_autotune.py"]
+          "test_autotune.py",
+          # 2026-10-05 三项全量自动化（用户「全部同意，全部做」）：
+          #   月度/半月周期复盘自动触发（job_state 幂等）；站点持仓收益
+          #   曲线（等权/市值加权 + buy 角色密文剥除）；盘中买点提醒
+          #   相关度排序（自选 > 持仓同板块 > 其余）。
+          "test_auto_updates.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

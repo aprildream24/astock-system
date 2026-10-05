@@ -167,6 +167,9 @@ CREATE TABLE IF NOT EXISTS pos_hwm(
 -- 只存选股类参数；止损/裁决/仓位纪律绝不进这张表。
 CREATE TABLE IF NOT EXISTS tune_state(
     key TEXT PRIMARY KEY, value REAL, reason TEXT, updated_at TEXT);
+-- 幂等任务记账（如月度/半月周期复盘：period30-202610 只跑一次）。
+CREATE TABLE IF NOT EXISTS job_state(
+    key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS snapshot(
     date TEXT, code TEXT, name TEXT, price REAL, pct REAL,
     amt REAL, turn REAL, fmv REAL,

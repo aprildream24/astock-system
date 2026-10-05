@@ -299,6 +299,41 @@ function watchManageCard() {
   </div>`;
 }
 
+// 持仓收益曲线（2026-10-05 用户需求②）：近 30 交易日组合累计盈亏%。
+// 数据 DATA.holdings_curve = [[date, pct], ...]；pct 缺口（停牌）断点直连。
+// 仅 buy/all 角色可见（发布端已剥权，无键不渲染）。
+function holdingCurveCard() {
+  const pts = (DATA.holdings_curve || []).filter(p => p && p[1] !== null);
+  if (pts.length < 2) return "";
+  const W = 640, H = 120, PAD = 6;
+  const vals = pts.map(p => p[1]);
+  const lo = Math.min(...vals, 0), hi = Math.max(...vals, 0);
+  const span = (hi - lo) || 1;
+  const x = i => PAD + i * (W - 2 * PAD) / (pts.length - 1);
+  const y = v => H - PAD - (v - lo) * (H - 2 * PAD) / span;
+  const path = pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1)
+    + "," + y(p[1]).toFixed(1)).join(" ");
+  const last = vals[vals.length - 1], first = vals[0];
+  const up = last >= 0;
+  const zeroY = y(0).toFixed(1);
+  return `<div class="card">
+    <h3>持仓收益曲线（近 ${pts.length} 个交易日）</h3>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" preserveAspectRatio="none">
+      <line x1="${PAD}" y1="${zeroY}" x2="${W - PAD}" y2="${zeroY}"
+            stroke="#2c3440" stroke-dasharray="4 3"/>
+      <path d="${path}" fill="none" stroke="${up ? "#3ddc84" : "#ff6b6b"}"
+            stroke-width="2"/>
+      <circle cx="${x(pts.length - 1).toFixed(1)}"
+              cy="${y(last).toFixed(1)}" r="3.5"
+              fill="${up ? "#3ddc84" : "#ff6b6b"}"/>
+    </svg>
+    <div class="small" style="margin-top:6px">
+      累计 <b class="${up ? "up" : "down"}">${last >= 0 ? "+" : ""}${last.toFixed(2)}%</b>
+      <span class="muted">（区间 ${lo.toFixed(2)}% ~ ${hi.toFixed(2)}%）</span>
+    </div>
+  </div>`;
+}
+
 function render() {
   document.getElementById("gate").style.display = "none";
   const app = document.getElementById("app");
@@ -328,7 +363,7 @@ function render() {
 
 const VIEWS = {
   overview() {
-    return emoCard() + watchManageCard() + holdingManageCard() + planCards() + watchCard()
+    return emoCard() + holdingCurveCard() + watchManageCard() + holdingManageCard() + planCards() + watchCard()
       + changeCard() + triggerCard() + banner();
   },
   signals() {
