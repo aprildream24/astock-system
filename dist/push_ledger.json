@@ -1470,5 +1470,15 @@
    "wecom_hook": "sent",
    "tg": "failed"
   }
+ },
+ "f71ae3f877f5e6fb": {
+  "mode": "data_holiday",
+  "ts": "2026-10-05 08:50:37",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
  }
 }
