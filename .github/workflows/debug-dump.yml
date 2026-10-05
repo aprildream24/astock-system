@@ -1,40 +1,98 @@
-# 临时排障工作流（2026-10-05）：把 CI 缓存里的真实 market.db 导出为
-# 构件供本地全流程模拟。模拟完成后整个文件删除（用户：模拟没问题改回去）。
+# 临时排障工作流（2026-10-05）：在 CI 里对**真实缓存数据**全流程模拟
+# 周度自修正闭环，结果全部打印到运行日志。只读模拟（tune 写库发生在
+# sqlite backup 副本上，本工作流绝不回存缓存）。完成后整个文件删除。
 name: debug-dump
 on:
   workflow_dispatch: {}
 permissions:
   contents: read
 jobs:
-  dump:
+  sim:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: actions/cache/restore@v4
         with:
           path: cache
-          key: market-db-dump-${{ github.run_id }}
+          key: market-db-sim-${{ github.run_id }}
           restore-keys: |
             market-db-
-      - name: 列出缓存内容
+      - name: 全流程模拟（真实数据）
         run: |
-          ls -la cache/ || true
           python - <<'EOF'
-          import sqlite3, os
-          p = "cache/market.db"
-          if os.path.exists(p):
-              con = sqlite3.connect(p)
-              for t in ("fills", "orders", "confirm_log", "candidate_snapshots",
-                        "klines", "position_batches", "tune_state"):
-                  try:
-                      print(t, con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
-                  except Exception as e:
-                      print(t, "ERR", e)
+          import sqlite3, shutil, tempfile, os, json, glob
+          from pipeline import autotune, core
+
+          src = "cache/market.db"
+          if not os.path.exists(src):
+              print("[SIM] 缓存里没有 market.db")
+              raise SystemExit(0)
+          con = sqlite3.connect(src)
+          latest = con.execute(
+              "SELECT MAX(date) FROM klines WHERE code='sh000001'"
+          ).fetchone()[0]
+          print(f"[SIM] 数据截止: {latest}")
+          for t in ("fills", "orders", "confirm_log", "tune_state",
+                    "position_batches"):
+              try:
+                  print(f"[SIM] {t}:",
+                        con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
+              except Exception as e:
+                  print(f"[SIM] {t}: ERR {e}")
+
+          # ① 触发条件语义
+          for d in ("2026-10-08", "2026-10-09", "2026-10-12", "2026-10-16"):
+              print(f"[SIM] due({d}) =", autotune.due(con, d))
+
+          # ② 真实成交还原（全历史）
+          trades = autotune.collect_trades(con, latest)
+          print(f"[SIM] 平仓交易 {len(trades)} 笔:")
+          for t in trades:
+              print(f"    {t['code']} {t['entry_date']}→ {t['entry_tier']}入场"
+                    f" {t['entry_hm']} pnl={t['pnl_pct']:+.1f}% "
+                    f"持{t['hold_tdays']}交易日 {t['mode']} 裁决={t['verdict']}")
+
+          # ③ 归因 + dry 调参（不写库）
+          st = autotune.analyze(trades)
+          print(f"[SIM] 胜率={st['win_rate']:.0%} 均盈亏={st['avg_pnl']:+.2f}% "
+                f"churn={st['churn_n']} first={st['first_n']}笔均"
+                f"{st['first_avg']:+.1f}%")
+          for tier, g in st["entries"].items():
+              if g["n"]:
+                  print(f"[SIM] 入场-{tier}: {g['n']}笔 均{g['avg']:+.2f}% "
+                        f"胜率{g['win']:.0%}")
+          rep = autotune.tune(con, latest, dry=True)
+          print(f"[SIM] dry 调参: {rep['summary']}")
+
+          # ④ 真写库——在副本上（绝不回存缓存）
+          bak = os.path.join(tempfile.mkdtemp(), "copy.db")
+          shutil.copy2(src, bak)
+          con2 = sqlite3.connect(bak)
+          rep2 = autotune.tune(con2, latest)
+          print(f"[SIM] 写库后 summary: {rep2['summary']}")
+          rows = con2.execute("SELECT key, value, reason FROM tune_state"
+                              ).fetchall()
+          for k, v, why in rows:
+              print(f"[SIM] tune_state: {k}={v} ({why})")
+          for slot in (None, "am"):
+              print(f"[SIM] entry_cap_of(slot={slot}) =",
+                    autotune.entry_cap_of(con2, slot))
+
+          # ⑤ 推荐质量周检（真实数据）
+          wq = autotune.week_quality(con, latest)
+          if wq:
+              for ln in wq["lines"]:
+                  print("[SIM] [周检]", ln)
           else:
-              print("NO market.db")
+              print("[SIM] [周检] 无数据（confirm_log 窗口内无推荐）")
+
+          # ⑥ 周五推送双卡渲染
+          tc = autotune.tune_card_html(rep2)
+          wc = autotune.week_card_html(wq)
+          print(f"[SIM] 自修正卡 {len(tc or '')} 字 · 周检卡 {len(wc or '')} 字")
+          print("[SIM] 全流程模拟完成")
           EOF
-      - uses: actions/upload-artifact@v4
-        with:
-          name: marketdb
-          path: cache/market.db
-          retention-days: 1
-          if-no-files-found: warn
