@@ -1,0 +1,40 @@
+# 临时排障工作流（2026-10-05）：把 CI 缓存里的真实 market.db 导出为
+# 构件供本地全流程模拟。模拟完成后整个文件删除（用户：模拟没问题改回去）。
+name: debug-dump
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-dump-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 列出缓存内容
+        run: |
+          ls -la cache/ || true
+          python - <<'EOF'
+          import sqlite3, os
+          p = "cache/market.db"
+          if os.path.exists(p):
+              con = sqlite3.connect(p)
+              for t in ("fills", "orders", "confirm_log", "candidate_snapshots",
+                        "klines", "position_batches", "tune_state"):
+                  try:
+                      print(t, con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
+                  except Exception as e:
+                      print(t, "ERR", e)
+          else:
+              print("NO market.db")
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marketdb
+          path: cache/market.db
+          retention-days: 1
+          if-no-files-found: warn
