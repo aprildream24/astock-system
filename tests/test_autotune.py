@@ -160,6 +160,32 @@ class TestAutotune(unittest.TestCase):
         self.assertAlmostEqual(scoring.TUNE["k_first"], 0.85)
         scoring.TUNE["k_first"] = 1.0
 
+    def test_全部历史入样_超7天的旧交易也算证据(self):
+        # 用户原话：「运行了一个多月，那么多历史都可以参考借鉴，
+        # 样本不足是伪命题」——学习窗口必须是全部历史。
+        con = _mkcon()
+        _seed_trade(con, "sz000001", "2026-09-07", "2026-09-08", 10.0, 9.4)
+        _seed_trade(con, "sz000002", "2026-09-09", "2026-09-10", 20.0, 19.4)
+        _seed_trade(con, "sh600000", "2026-09-10", "2026-09-15", 10.0, 10.5,
+                    reason="持仓浮盈止盈")
+        rep = autotune.tune(con, "2026-10-05", dry=True)
+        self.assertEqual(rep["n"], 3, "一个月前的平仓必须入样")
+
+    def test_假期幻影成交_剔除不计(self):
+        # 复刻 10-01 真实事故形态：09-30 买入、假期用旧价幻影卖出（已冲正）。
+        con = _mkcon()
+        _seed_trade(con, "sz000001", "2026-09-28", "2026-09-29", 10.0, 9.4)
+        _seed_trade(con, "sh600000", "2026-09-28", "2026-09-30", 10.0, 10.5,
+                    reason="持仓浮盈止盈")
+        _fill(con, "2026-09-30T09:26:00", "sz000002", "buy", 20.0)
+        _fill(con, "2026-10-01T09:25:30", "sz000002", "sell", 19.0,
+              "普通硬止损")
+        fid = con.execute("SELECT MAX(fill_id) FROM fills").fetchone()[0]
+        con.execute("INSERT INTO offday_reverted VALUES(?)", (fid,))
+        con.commit()
+        rep = autotune.tune(con, "2026-10-09", dry=True)
+        self.assertEqual(rep["n"], 2, "冲正标记的幻影卖出不得算成交易")
+
 
 class TestHoldingsStatusLines(unittest.TestCase):
     def test_有持仓_每次推送自带动态行(self):

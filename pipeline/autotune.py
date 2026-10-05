@@ -10,13 +10,16 @@
     每次变化进复盘推送一行说清）。
 
 ## 数据流
-  fills/orders（模拟盘实际成交）→ FIFO 配对出已平仓交易 →
-  按买入日当天的裁决（day_meta）与确认数（confirm_log）给交易打标 →
-  周度统计胜率/均盈亏/失败模式 → 调 k_first（首推折价）/ k_hot（热度
-  因子缩放）→ scoring.TUNE 生效 → 复盘推送报告一行。
+  fills/orders（模拟盘全部历史实际成交，剔除假期幻影冲正单）→
+  FIFO 配对出已平仓交易 → 按买入日当天的裁决（day_meta）与确认数
+  （confirm_log）给交易打标 → 全历史统计胜率/均盈亏/失败模式 →
+  调 k_first（首推折价）/ k_hot（热度因子缩放）→ scoring.TUNE 生效 →
+  复盘推送报告一行。
 
 ## 节奏
-  每周五复盘触发（或距上次 ≥7 天）；样本 <3 笔不调（防小样本过拟合）。
+  每周五复盘触发（或距上次 ≥7 天）——这是「多久复盘一次」；
+  学习窗口是**全部历史**——模拟盘账户开账以来的每一笔平仓都算证据。
+  全历史平仓 <3 笔不调（防小样本过拟合）。
 """
 import datetime as dt
 import json
@@ -77,16 +80,27 @@ def _ymd(ts):
     return str(ts)[:10]
 
 
-def collect_trades(con, today, days=7):
-    """窗口内已平仓交易（FIFO 配对买卖成交）。字段：
-    code, pnl_pct, hold_days, entry_date, verdict, mood, confirms, mode。"""
+def collect_trades(con, today, days=None):
+    """全部历史已平仓交易（FIFO 配对买卖成交）。
+
+    ★ 2026-10-05 修正（用户：「系统运行了一个多月，那么多历史都可以参考
+    借鉴，样本不足是伪命题」）：原实现只看最近 7 天 → 首周必然样本不足。
+    改为**全部历史**入样——模拟盘账户的每一次平仓都是证据；周度只是
+    「多久复盘一次」的节奏，不是「只看多久」的窗口。
+    调用方传 days 时按天过滤（保留给将来分段诊断用）。
+    假期幻影成交（offday_reverted 已冲正标记）一律剔除——那不是交易。
+
+    字段：code, pnl_pct, hold_days, entry_date, verdict, mood,
+    confirms, mode。"""
     cutoff = (dt.date.fromisoformat(str(today)[:10])
-              - dt.timedelta(days=days)).isoformat()
+              - dt.timedelta(days=days)).isoformat() if days else ""
     buys = {}
     trades = []
     rows = con.execute(
         "SELECT f.ts, f.code, f.side, f.price, f.order_id, o.reason "
         "FROM fills f LEFT JOIN orders o ON o.order_id=f.order_id "
+        "WHERE NOT EXISTS (SELECT 1 FROM offday_reverted r "
+        "                  WHERE r.fill_id = f.fill_id) "
         "ORDER BY f.ts").fetchall()
     for ts, code, side, price, oid, reason in rows:
         d = _ymd(ts)
@@ -98,9 +112,9 @@ def collect_trades(con, today, days=7):
             continue
         bd, bp = lots[0]                      # FIFO：最早买入批配对
         buys[code] = lots[1:]
-        if d < cutoff or bp <= 0:
-            continue                          # 窗口外卖出也要消耗批次，
-                                              # 否则窗口内的配对会错位
+        if (cutoff and d < cutoff) or bp <= 0:
+            continue                          # 过滤窗口外的旧交易
+                                              #（无窗口=全历史，只受冲正标记约束）
         try:
             hold = (dt.date.fromisoformat(d)
                     - dt.date.fromisoformat(bd)).days
@@ -200,7 +214,7 @@ def tune(con, today, dry=False):
             f"{k}:{cur[k]:.2f}→{v:.2f}（{why}）" for k, v, why in changes)
         summary = "🔧周度自修正 " + summary
     elif st["n"] < MIN_TRADES:
-        summary = f"🔧周度自修正：本周仅{st['n']}笔平仓，样本不足不调"
+        summary = f"🔧周度自修正：历史平仓仅{st['n']}笔，样本不足不调"
     else:
         summary = "🔧周度自修正：证据未达门槛，参数维持"
     return {"date": today, "n": st["n"], "win_rate": st["win_rate"],
