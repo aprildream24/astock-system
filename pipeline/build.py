@@ -1746,6 +1746,16 @@ def _holdings_curve(con, date, days=30):
     dates = [r[0] for r in rows][::-1]
     if not dates:
         return []
+    # 曲线从**最早买入日**起才叫"收益"——之前的只是行情回溯，画进
+    # 收益曲线会误导（2026-10-05 自查：科德教育 09-30 买入，曲线却从
+    # 8 月开始）。多票取最早买入日，买入前的点一律不画。
+    buy_dates = [str(h.get("buy_date"))[:10] for h in holds
+                 if h.get("buy_date")]
+    if buy_dates:
+        d0 = min(buy_dates)
+        dates = [d for d in dates if d >= d0]
+        if not dates:
+            return []
     series = []
     for h in holds:
         px = dict(con.execute(

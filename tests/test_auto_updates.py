@@ -114,6 +114,16 @@ class TestHoldingsCurve(unittest.TestCase):
         with mock.patch.object(build_mod, "load_holdings", return_value=[]):
             self.assertEqual(build_mod._holdings_curve(con, days[-1]), [])
 
+    def test_曲线从最早买入日起_买入前不画(self):
+        con = _mkcon()
+        days = _seed_days(con, 6)
+        hold = [{"code": "sz300192", "buy_price": 10.0, "shares": None,
+                 "buy_date": days[3]}]           # 第 4 个交易日才买入
+        with mock.patch.object(build_mod, "load_holdings", return_value=hold):
+            curve = build_mod._holdings_curve(con, days[-1])
+        self.assertEqual([p[0] for p in curve], days[3:],
+                         "买入日之前的点不得出现在收益曲线里")
+
     def test_非buy角色密文剥除(self):
         class _U:
             uid = "guest"
