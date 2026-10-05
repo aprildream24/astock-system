@@ -90,8 +90,8 @@ def collect_trades(con, today, days=None):
     调用方传 days 时按天过滤（保留给将来分段诊断用）。
     假期幻影成交（offday_reverted 已冲正标记）一律剔除——那不是交易。
 
-    字段：code, pnl_pct, hold_days, entry_date, verdict, mood,
-    confirms, mode。"""
+    字段：code, pnl_pct, hold_days（日历天）, hold_tdays（交易日）,
+    entry_date, verdict, mood, confirms, mode。"""
     cutoff = (dt.date.fromisoformat(str(today)[:10])
               - dt.timedelta(days=days)).isoformat() if days else ""
     buys = {}
@@ -120,6 +120,12 @@ def collect_trades(con, today, days=None):
                     - dt.date.fromisoformat(bd)).days
         except ValueError:
             hold = 99
+        # 搅肉判定按**交易日**（2026-10-05 演练发现：日历天会把
+        # 「节前买、节后止损」错算成 8 天，漏判追高搅肉）
+        hold_t = con.execute(
+            "SELECT COUNT(DISTINCT date) FROM klines "
+            "WHERE code='sh000001' AND date>? AND date<=?",
+            (bd, d)).fetchone()[0]
         verdict, mood = _day_meta_of(con, bd)
         reason = reason or ""
         if "盈利回吐" in reason:
@@ -132,7 +138,8 @@ def collect_trades(con, today, days=None):
             mode = "other"
         trades.append({
             "code": code, "pnl_pct": (float(price) / bp - 1) * 100,
-            "hold_days": hold, "entry_date": bd, "verdict": verdict,
+            "hold_days": hold, "hold_tdays": hold_t,
+            "entry_date": bd, "verdict": verdict,
             "mood": mood, "confirms": _confirms_of(con, code, bd),
             "mode": mode})
     return trades
@@ -142,7 +149,7 @@ def analyze(trades):
     n = len(trades)
     wins = [t for t in trades if t["pnl_pct"] > 0]
     first = [t for t in trades if (t.get("confirms") or 0) < 2]
-    churn = [t for t in trades if t["hold_days"] <= CHURN_DAYS
+    churn = [t for t in trades if t.get("hold_tdays", 99) <= CHURN_DAYS
              and t["pnl_pct"] < 0]
     return {
         "n": n,
