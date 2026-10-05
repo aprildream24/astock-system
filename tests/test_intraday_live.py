@@ -335,23 +335,24 @@ class TestTimerLive(_LedgerIsolated):
     def test_live_loop_module_wired(self):
         """长驻循环模块存在且触发间隔/收盘退出常量正确（防误改）。"""
         ll = importlib.import_module("tools.live_loop")
-        self.assertEqual(ll.STEP, 10)
+        self.assertEqual(ll.STEP, 1,
+                         "2026-10-05 起：循环必须每分钟一查（第一时间提醒）")
         self.assertEqual(ll.CLOSE_MIN, 15 * 60)
         self.assertEqual(ll.MORNING_START, 9 * 60 + 28)
 
     def test_live_loop_mark_alignment(self):
-        """刻度对齐到 :00/:10/:20…（STEP=10）：09:31:07 → 等 533s 到 09:40；
-        正点刻度 09:30:00 → 等 600s；差 1s 到刻度 → 等 1s。"""
+        """刻度对齐到每分钟 :00（STEP=1）：09:31:07 → 等 53s 到 09:32；
+        正点刻度 09:30:00 → 等 60s；差 1s 到刻度 → 等 1s（下限 5s 防死转）。"""
         ll = importlib.import_module("tools.live_loop")
         bjt = _dt.timezone(_dt.timedelta(hours=8))
         s = ll._sleep_to_next_mark(
             _dt.datetime(2026, 9, 24, 9, 31, 7, tzinfo=bjt))
-        self.assertEqual(s, 533)
+        self.assertEqual(s, 53)
         s2 = ll._sleep_to_next_mark(
             _dt.datetime(2026, 9, 24, 9, 30, 0, 0, tzinfo=bjt))
-        self.assertEqual(s2, 600)
+        self.assertEqual(s2, 60)
         s3 = ll._sleep_to_next_mark(
-            _dt.datetime(2026, 9, 24, 9, 39, 59, tzinfo=bjt))
+            _dt.datetime(2026, 9, 24, 9, 30, 59, tzinfo=bjt))
         self.assertEqual(s3, 5.0, "间隔下限 5s：防时钟漂移导致的 0 间隔死转")
 
     def test_live_loop_once_cycle_gated_by_window(self):

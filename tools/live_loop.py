@@ -37,7 +37,11 @@ import time
 _CST = _dt.timezone(_dt.timedelta(hours=8))
 CLOSE_MIN = 15 * 60           # 15:00 收盘，之后退出
 MORNING_START = 9 * 60 + 28   # 09:28（竞价 09:25 结束后即可开始轮询）
-STEP = 10                     # 触发间隔（分钟）
+STEP = 1                      # 触发间隔（分钟）——2026-10-05 用户需求
+                              # 「所有到买点的票第一时间提醒」：
+                              # 10 分钟对齐刻度改为**每分钟**一查，
+                              # 端到端最坏延迟 ~11 分钟 → ~1-2 分钟
+                              # （免费行情源只有 HTTP 轮询，1 分钟已贴物理上限）
 
 
 def _bj_now():
@@ -50,7 +54,7 @@ def _minutes(now):
 
 
 def _sleep_to_next_mark(now):
-    """对齐到下一个 :0/:10/:20… 刻度的等待秒数（≥5s，防 0 间隔死转）。"""
+    """对齐到下一分钟刻度（STEP=1 → 每 :00 一轮；≥5s 防 0 间隔死转）。"""
     m = _minutes(now)
     nxt = (m // STEP + 1) * STEP
     delta = (nxt - m) * 60 - now.second - now.microsecond / 1e6

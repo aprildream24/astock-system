@@ -6,7 +6,10 @@
 # 本 workflow 用 **单 job 常驻整个交易时段**的方式顶班：
 #
 #   auction(09:25) 主链末尾（stock.yml）dispatch 本 workflow
-#     → runner 常驻至 15:00 → 每 10 分钟一轮：
+#     → runner 常驻至 15:00 → **每 1 分钟一轮**（2026-10-05 用户需求
+#       「所有到买点的股票第一时间提醒」：10 分钟 → 1 分钟，端到端
+#       最坏延迟 ~11 分钟 → ~1-2 分钟；免费行情源只有 HTTP 轮询，
+#       1 分钟已是物理上限）：
 #         · pipeline.build --task intraday --slot live 的事件级去重推送
 #         · 模拟盘按区间同步建仓（executor 内部 session_gate 把守）
 #     → 退出后由 cache/save 把模拟盘状态交还主链（15:22 close 恢复）。
@@ -21,6 +24,13 @@ name: intraday-live
 
 on:
   workflow_dispatch: {}
+
+# 2026-10-05：同时只允许一个驻场循环。auction 主链每天 dispatch 一次；
+# 若异常导致重复 dispatch（或人工重试），新实例取消旧实例后接手——
+# 防止两个循环并存造成双倍轮询（推送本身有 live_alerts 去重兜底）。
+concurrency:
+  group: intraday-live
+  cancel-in-progress: true
 
 permissions:
   contents: read
