@@ -1,24 +1,32 @@
 # -*- coding: utf-8 -*-
-"""cron-job.org 旧定时器清理（CI 侧执行，2026-09-25）。
+"""cron-job.org 定时器核验（CI 侧执行，2026-10-05 改为**只读核验**）。
 
-背景：cron-job.org 上同时挂着两套系统的定时器——本项目 astock-* 9 个，
-旧仓库（另一账户）stock-*/exec-* 前缀 15 个。旧系统至今仍在向用户微信
-推送旧版式消息（用户连续三次反馈「收到的还是老板式/没有标注」的真凶）。
-本机 %TEMP% 里的 API key 被磁盘清理吞掉 ⇒ 由 CI 读取 Secret 执行删除。
+## ⚠️ 历史教训（必须永久记住）
+本脚本 2026-09-25 的版本会**删除** title 以 stock- / exec- 开头的定时器
+（当时误判为「旧系统遗留」）。用户 2026-10-05 明确澄清：
+**stock-* / exec-* 是另一个在用系统的定时器，绝对不能删。**
+删除逻辑已整体拆除——本脚本现在只做只读核验并输出报告，
+对任何任务都不做修改/删除/启停。
 
-纪律：
-  · 只删 title 以 stock- / exec- 开头的任务（旧系统）；astock-* 严禁动；
-  · 删除前逐条 GET /jobs/{id} 留档到运行日志（可重建）；
-  · 终态核验：astock-* 9 个全部存在且 enabled=True，缺一个即标红。
+职责：
+  · 列出全部定时器，核对 astock-* 前缀的任务存在且 enabled=True；
+  · stock-* / exec-*（另一系统）只读不碰；
+  · astock-* 缺失/停用 → 标红输出（人工处理，绝不自动写）。
 """
 import json
 import os
-import sys
 import time
 import urllib.request
 import urllib.error
 
 API = "https://api.cron-job.org/jobs"
+
+# 本项目应有的定时器（astock-* 前缀）。新增/下线定时器时同步此清单。
+EXPECTED_ASTOCK = [
+    "astock-pre", "astock-auction", "astock-close", "astock-review",
+    "astock-intraday-am", "astock-intraday-pm", "astock-intraday-live",
+    "astock-day-morning", "astock-day-evening",
+]
 
 
 def _req(method, path, key, body=None):
@@ -50,50 +58,41 @@ def main():
     key = (os.environ.get("CRONJOB_API_KEY")
            or os.environ.get("CRONJOB_API_KEY_2") or "").strip()
     if not key:
-        print("[cleanup] 无 CRONJOB_API_KEY → 无法执行（跳过，不报错）")
+        print("[verify-timers] 无 CRONJOB_API_KEY → 无法核验（跳过，不报错）")
         return 0
     st, data = _req("GET", "/jobs", key)
     if st != 200:
-        print(f"[cleanup] 列表失败 {st} → 本轮放弃（下轮定时器守门再试）")
+        print(f"[verify-timers] 列表失败 {st} → 本轮放弃"
+              "（密钥疑似失效或接口变更；定时器本身不受影响，"
+              "核验恢复前请到 cron-job.org 后台人工确认）")
         return 0
     jobs = data.get("jobs", [])
-    targets = [j for j in jobs
-               if j.get("title", "").startswith(("stock-", "exec-"))]
-    mine = sorted(j["title"] for j in jobs
-                  if j.get("title", "").startswith("astock-"))
-    print(f"[cleanup] astock-* {len(mine)} 个（保留）| 旧系统 {len(targets)} 个"
-          f"（待删）", flush=True)
-    ok = fail = 0
-    for j in targets:
-        st, det = _req("GET", f"/jobs/{j['jobId']}", key)
-        if st == 200:
-            d = det.get("jobDetails", {})
-            print(f"    留档 {j['title']}: url={d.get('url', '')[:80]}", flush=True)
-        st2, _ = _req("DELETE", f"/jobs/{j['jobId']}", key)
-        if st2 in (200, 204, 404):
-            ok += 1
-            print(f"  删除 {j['title']} ✓ ({st2})", flush=True)
+    mine = {j["title"]: j for j in jobs
+            if j.get("title", "").startswith("astock-")}
+    others = sorted(j["title"] for j in jobs
+                    if not j.get("title", "").startswith("astock-"))
+    print(f"[verify-timers] astock-* {len(mine)} 个 | 其他系统 "
+          f"{len(others)} 个（stock-*/exec-* 等——只读，绝不触碰）",
+          flush=True)
+    bad = []
+    for title in EXPECTED_ASTOCK:
+        j = mine.get(title)
+        if j is None:
+            bad.append(f"{title} 缺失")
+            print(f"  🔴 {title}: 缺失", flush=True)
+        elif not j.get("enabled"):
+            bad.append(f"{title} 停用")
+            print(f"  🔴 {title}: 已停用", flush=True)
         else:
-            fail += 1
-            print(f"  FAIL {j['title']}: {st2}", flush=True)
-        time.sleep(4)
-    # 终态核验
-    st, data = _req("GET", "/jobs", key)
-    left = data.get("jobs", [])
-    left_old = [j["title"] for j in left
-                if not j.get("title", "").startswith("astock-")]
-    bad_mine = [j["title"] for j in left
-                if j.get("title", "").startswith("astock-")
-                and not j.get("enabled")]
-    print(f"[cleanup] 删除 {ok} / 失败 {fail}", flush=True)
-    print("[cleanup] 终态 astock-*:",
-          sorted(j["title"] for j in left
-                 if j.get("title", "").startswith("astock-")), flush=True)
-    if left_old:
-        print(f"[cleanup] ⚠ 旧系统仍有 {len(left_old)} 个存活（限流未删完），"
-              f"下轮继续：{left_old}", flush=True)
-    if bad_mine:
-        print(f"[cleanup] ⚠🔴 本项目定时器被停用：{bad_mine}", flush=True)
+            print(f"  ✅ {title}: enabled", flush=True)
+    extra = [t for t in mine if t not in EXPECTED_ASTOCK]
+    if extra:
+        print(f"  ℹ astock-* 清单外多出（仅提示）：{extra}", flush=True)
+    if bad:
+        print(f"[verify-timers] ⚠ 需人工处理 {len(bad)} 项：{bad}"
+              "（本脚本不自动修复——写入类操作只允许人到后台做）", flush=True)
+    else:
+        print("[verify-timers] ✅ astock-* 定时器全部就绪", flush=True)
     return 0
 
 

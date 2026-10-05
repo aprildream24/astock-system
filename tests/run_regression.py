@@ -132,7 +132,11 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           #   月度/半月周期复盘自动触发（job_state 幂等）；站点持仓收益
           #   曲线（等权/市值加权 + buy 角色密文剥除）；盘中买点提醒
           #   相关度排序（自选 > 持仓同板块 > 其余）。
-          "test_auto_updates.py"]
+          "test_auto_updates.py",
+          # 2026-10-05 定时器安全锁（用户澄清 stock-*/exec-* 是另一在用
+          # 系统，绝不能删）：cron_cleanup 已改只读核验，源码层锁死
+          # 定时器工具永不含删除/写操作。
+          "test_timer_safety.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")
