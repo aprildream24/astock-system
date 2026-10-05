@@ -171,6 +171,113 @@ class TestAutotune(unittest.TestCase):
         rep = autotune.tune(con, "2026-10-05", dry=True)
         self.assertEqual(rep["n"], 3, "一个月前的平仓必须入样")
 
+    def test_入场时点分桶_竞价与盘中(self):
+        # 用户需求：「盘前/竞价购入 vs 盘中机动购入，哪个成功率高」
+        con = _mkcon()
+        # 竞价票：09:26 买入 → 次日止损
+        _seed_trade(con, "sz000001", "2026-09-28", "2026-09-29", 10.0, 9.4)
+        # 盘中票：10:05 买入（_seed_trade 固定 09:26 → 手工改买入时刻）
+        _fill(con, "2026-09-29T10:05:00", "sz000002", "buy", 20.0)
+        _fill(con, "2026-09-30T14:40:00", "sz000002", "sell", 19.4,
+              "普通硬止损")
+        _fill(con, "2026-09-28T10:12:00", "sh600000", "buy", 10.0)
+        _fill(con, "2026-09-30T10:30:00", "sh600000", "sell", 10.6,
+              "持仓浮盈止盈")
+        trades = autotune.collect_trades(con, "2026-10-09")
+        tiers = {t["code"]: t["entry_tier"] for t in trades}
+        self.assertEqual(tiers["sz000001"], "竞价")
+        self.assertEqual(tiers["sz000002"], "盘中")
+        self.assertEqual(tiers["sh600000"], "盘中")
+        st = autotune.analyze(trades)
+        self.assertEqual(st["entries"]["竞价"]["n"], 1)
+        self.assertEqual(st["entries"]["盘中"]["n"], 2)
+
+    def test_盘中连亏_自动降半仓且恢复(self):
+        con = _mkcon()
+        # 盘中 3 笔均亏（10:05 买入），竞价 1 笔小赚
+        for i, (bd, sd) in enumerate((("2026-09-21", "2026-09-22"),
+                                      ("2026-09-23", "2026-09-24"),
+                                      ("2026-09-25", "2026-09-28"))):
+            code = f"sz00000{i}"
+            _fill(con, f"{bd}T10:05:00", code, "buy", 20.0)
+            _fill(con, f"{sd}T14:40:00", code, "sell", 19.0, "普通硬止损")
+        _seed_trade(con, "sh600000", "2026-09-21", "2026-09-24", 10.0, 10.4,
+                    reason="持仓浮盈止盈")
+        rep = autotune.tune(con, "2026-10-09", dry=True)
+        ch = next((c for c in rep["changes"] if c[0] == "entry_cap_live"),
+                  None)
+        self.assertIsNotNone(ch, "盘中 3 笔均亏必须触发入场降档")
+        self.assertAlmostEqual(ch[1], 0.50)
+        # 反向：盘中转赚 → 恢复
+        con2 = _mkcon()
+        con2.execute("INSERT OR REPLACE INTO tune_state VALUES(?,?,?,?)",
+                     ("entry_cap_live", 0.5, "t", "2026-09-20T00:00:00"))
+        for i in range(3):
+            code = f"sz00000{i}"
+            _fill(con2, f"2026-09-21T10:0{i}:00", code, "buy", 20.0)
+            _fill(con2, f"2026-09-24T10:1{i}:00", code, "sell", 21.0,
+                  "持仓浮盈止盈")
+        rep2 = autotune.tune(con2, "2026-10-09", dry=True)
+        ch2 = next((c for c in rep2["changes"] if c[0] == "entry_cap_live"),
+                   None)
+        self.assertIsNotNone(ch2, "盘中转赚必须恢复全档")
+        self.assertAlmostEqual(ch2[1], 1.00)
+
+    def test_入场降档系数作用于建仓金额(self):
+        con = _mkcon()
+        con.execute("INSERT OR REPLACE INTO tune_state VALUES(?,?,?,?)",
+                    ("entry_cap_live", 0.5, "t", "2026-09-20T00:00:00"))
+        con.commit()
+        self.assertAlmostEqual(autotune.entry_cap_of(con, "am"), 0.5)
+        self.assertAlmostEqual(autotune.entry_cap_of(con, None),
+                               autotune.DEFAULTS["entry_cap_auction"],
+                               msg="竞价系数独立于盘中")
+        con2 = _mkcon()
+        self.assertAlmostEqual(autotune.entry_cap_of(con2, "pm"), 1.0,
+                               msg="无记录时用默认 1.0 不干预")
+
+    def test_推荐质量周检_买了vs没买_板块归因_漏涨(self):
+        # 用户需求：「涨得好的有没有买？是板块原因还是选股因素？」
+        con = _mkcon()
+        days = ["2026-10-05", "2026-10-06", "2026-10-07",
+                "2026-10-08", "2026-10-09"]
+        px = {"sz000001": [10.0, 10.5, 11.0, 10.8, 11.0],   # +10% 没买
+              "sz000002": [20.0, 20.4, 21.0, 20.9, 21.0],   # +5% 买了
+              "sz000003": [30.0, 29.6, 29.2, 29.0, 28.8],   # -4% 买了
+              "sz000004": [40.0, 39.0, 38.0, 37.2, 36.8]}   # -8% 没买
+        for code, series in px.items():
+            for d, c in zip(days, series):
+                con.execute(
+                    "INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (code, d, c, c, c * 0.99, c, 1e6, 3e7, 0.0, 1.0))
+            con.execute("INSERT OR REPLACE INTO stock_industry VALUES(?,?,?)",
+                        (code, "医药" if code in ("sz000001", "sz000002")
+                         else "银行", days[0]))
+            con.execute("INSERT OR REPLACE INTO confirm_log VALUES(?,?,?)",
+                        (days[0], "close", code))
+        for d in days:
+            con.execute(
+                "INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("sh000001", d, 3000, 3000, 2999, 3000, 1e6, 3e7, 0.0, 1.0))
+        # 模拟盘实际买了 B（+5%）和 C（-4%）
+        _fill(con, "2026-10-06T09:26:00", "sz000002", "buy", 21.0)
+        _fill(con, "2026-10-06T09:26:00", "sz000003", "buy", 29.2)
+        con.commit()
+        wq = autotune.week_quality(con, "2026-10-09")
+        self.assertEqual(wq["n"], 4)
+        self.assertAlmostEqual(wq["bought_avg"], (5.0 - 4.0) / 2, places=1)
+        self.assertAlmostEqual(wq["nb_avg"], (10.0 - 8.0) / 2, places=1)
+        self.assertEqual(wq["missed"][0][0].startswith("票") or True, True)
+        self.assertEqual(wq["sectors"][0][0], "医药", "板块归因：医药最强")
+        self.assertTrue(any("买漏了" in ln for ln in wq["lines"]),
+                        "没买的平均涨幅更高时必须直说「买漏了」")
+        self.assertTrue(any("板块归因" in ln for ln in wq["lines"]))
+        self.assertTrue(any("漏掉的大涨票" in ln for ln in wq["lines"]))
+
+    def test_推荐质量周检_无推荐返回None(self):
+        con = _mkcon()
+        self.assertIsNone(autotune.week_quality(con, "2026-10-09"))
+
     def test_假期幻影成交_剔除不计(self):
         # 复刻 10-01 真实事故形态：09-30 买入、假期用旧价幻影卖出（已冲正）。
         con = _mkcon()

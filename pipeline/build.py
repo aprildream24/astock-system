@@ -1324,13 +1324,19 @@ def build(task="close", date=None, period_days=30):
         from . import narrative, executor as _ex
         # 周度自修正（用户 2026-10-05：「根据每周模拟盘盈亏自动修正选股，
         # 不要让我主动说明」）：周五复盘/距上次≥7天触发，证据达标才调参，
-        # 结果一行进晚间推送。
+        # 结果一行进晚间推送。同场加映「推荐质量周检」（推荐的一周走势、
+        # 买了 vs 没买、板块归因——用户：「涨得好的有没有买」）。
         tune_rep = None
+        wq = None
         try:
             from . import autotune
             if autotune.due(con, date):
                 tune_rep = autotune.tune(con, date)
                 print(f"[build] {tune_rep['summary']}")
+                wq = autotune.week_quality(con, date)
+                if wq:
+                    for _ln in wq.get("lines", []):
+                        print(f"[build] [周检] {_ln}")
         except Exception as e:  # noqa: BLE001 — 自修正失败不阻断复盘
             print(f"[build] autotune failed: {e}")
         text = narrative.narrate({"date": date, "mood": mood or {},
@@ -1374,10 +1380,11 @@ def build(task="close", date=None, period_days=30):
                     for a in watch_advice))
         digest = notifier.render_evening_digest(
             date, narrative_html, daily_html, holding_html, watch_html)
-        # 自修正小结挂在模拟盘日结前面（同一语境：盈亏 → 修正）
-        if tune_rep:
+        # 自修正小结 + 推荐质量周检一起挂在模拟盘日结前面
+        if tune_rep or wq:
             try:
-                _tc = autotune.tune_card_html(tune_rep)
+                _tc = (autotune.tune_card_html(tune_rep)
+                       + autotune.week_card_html(wq))
                 if _tc and digest:
                     digest = digest.replace(
                         '<div style="', _tc + '<div style="', 1)

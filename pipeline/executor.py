@@ -1052,6 +1052,14 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
             slot_pct = cap_pct
             demoted = True
         per_amt = eq * slot_pct
+        # 入场时点规模系数（2026-10-05 用户需求：「竞价 vs 盘中谁成功率高，
+        # 依据结果修正」）：autotune 每周按实际成交证据对该时点自动
+        # 降半仓/恢复（entry_cap_auction / entry_cap_live，有界 0.5-1.0）。
+        try:
+            from . import autotune as _at
+            per_amt *= _at.entry_cap_of(con, slot)
+        except Exception:  # noqa: BLE001 — 系数读不到按 1.0
+            pass
         # 现金预算钳制：3322 四档总和 = 100% 净值，最后一档必须给手续费
         # 留缓冲，否则差几块钱被拒单 → 永远建不满 4 仓
         _cash = con.execute(

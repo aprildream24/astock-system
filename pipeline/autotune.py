@@ -27,8 +27,13 @@ import json
 KNOBS = {
     "k_first": {"lo": 0.85, "hi": 1.00, "desc": "首推票排名折价"},
     "k_hot": {"lo": 0.60, "hi": 1.40, "desc": "热度因子缩放（板块/RS 加成）"},
+    "entry_cap_auction": {"lo": 0.50, "hi": 1.00,
+                          "desc": "竞价/盘前入场建仓规模系数"},
+    "entry_cap_live": {"lo": 0.50, "hi": 1.00,
+                       "desc": "盘中机动入场建仓规模系数"},
 }
-DEFAULTS = {"k_first": 1.00, "k_hot": 1.00}
+DEFAULTS = {"k_first": 1.00, "k_hot": 1.00,
+            "entry_cap_auction": 1.00, "entry_cap_live": 1.00}
 # 样本与证据门槛：不到门槛绝不动参数（宁可不调，不可乱调）
 MIN_TRADES = 3
 CHURN_DAYS = 2          # 买入后 ≤2 个交易日止损 = 追高搅肉
@@ -105,12 +110,12 @@ def collect_trades(con, today, days=None):
     for ts, code, side, price, oid, reason in rows:
         d = _ymd(ts)
         if side == "buy":
-            buys.setdefault(code, []).append((d, float(price)))
+            buys.setdefault(code, []).append((d, float(price), str(ts)))
             continue
         lots = buys.get(code) or []
         if not lots:
             continue
-        bd, bp = lots[0]                      # FIFO：最早买入批配对
+        bd, bp, bts = lots[0]                 # FIFO：最早买入批配对
         buys[code] = lots[1:]
         if (cutoff and d < cutoff) or bp <= 0:
             continue                          # 过滤窗口外的旧交易
@@ -127,6 +132,10 @@ def collect_trades(con, today, days=None):
             "WHERE code='sh000001' AND date>? AND date<=?",
             (bd, d)).fetchone()[0]
         verdict, mood = _day_meta_of(con, bd)
+        # 入场时点归因（2026-10-05 用户需求：「盘前/竞价购入 vs 盘中机动
+        # 购入，哪个成功率高」）——按买入成交时刻分桶
+        hm = bts[11:16] if len(bts) >= 16 else "09:26"
+        tier = "竞价" if hm <= "09:31" else "盘中"
         reason = reason or ""
         if "盈利回吐" in reason:
             mode = "giveback"
@@ -139,7 +148,8 @@ def collect_trades(con, today, days=None):
         trades.append({
             "code": code, "pnl_pct": (float(price) / bp - 1) * 100,
             "hold_days": hold, "hold_tdays": hold_t,
-            "entry_date": bd, "verdict": verdict,
+            "entry_date": bd, "entry_tier": tier, "entry_hm": hm,
+            "verdict": verdict,
             "mood": mood, "confirms": _confirms_of(con, code, bd),
             "mode": mode})
     return trades
@@ -151,6 +161,15 @@ def analyze(trades):
     first = [t for t in trades if (t.get("confirms") or 0) < 2]
     churn = [t for t in trades if t.get("hold_tdays", 99) <= CHURN_DAYS
              and t["pnl_pct"] < 0]
+    # 入场时点分桶（2026-10-05 用户需求：竞价 vs 盘中机动谁更靠谱）
+    entries = {}
+    for tier in ("竞价", "盘中"):
+        g = [t for t in trades if t.get("entry_tier") == tier]
+        entries[tier] = {"n": len(g),
+                         "avg": (sum(t["pnl_pct"] for t in g) / len(g))
+                         if g else 0.0,
+                         "win": (sum(1 for t in g if t["pnl_pct"] > 0)
+                                 / len(g)) if g else 0.0}
     return {
         "n": n,
         "win_rate": (len(wins) / n) if n else 0.0,
@@ -159,6 +178,7 @@ def analyze(trades):
         "first_avg": (sum(t["pnl_pct"] for t in first) / len(first))
         if first else 0.0,
         "churn_n": len(churn),
+        "entries": entries,
         "modes": {},
     }
 
@@ -210,6 +230,30 @@ def tune(con, today, dry=False):
                 changes.append(("k_hot", new,
                                 f"周胜率{st['win_rate']:.0%} → "
                                 "温和放大有效因子"))
+        # 入场时点归因（用户需求：「盘前/竞价 vs 盘中机动谁成功率高，
+        # 然后修正」）：某一时点 ≥3 笔且均亏 ≤-2%、比另一时点差 ≥2 个点
+        # → 该时点建仓规模降半档；连赚回正 → 恢复。
+        ent = st["entries"]
+        for tier, key in (("竞价", "entry_cap_auction"),
+                          ("盘中", "entry_cap_live")):
+            g = ent.get(tier) or {}
+            other = ent.get("盘中" if tier == "竞价" else "竞价") or {}
+            worse = (g.get("n", 0) >= 3 and g.get("avg", 0) <= -2.0
+                     and (other.get("n", 0) < 3
+                          or g["avg"] <= other.get("avg", 0) - 2.0))
+            better = g.get("n", 0) >= 3 and g.get("avg", 0) >= 1.0
+            if worse:
+                new = _clamp(key, 0.50)
+                if new < cur[key] - 1e-9:
+                    changes.append((key, new,
+                                    f"{tier}入场{g['n']}笔均亏"
+                                    f"{g['avg']:.1f}% → 该时点降半仓"))
+            elif better:
+                new = _clamp(key, 1.00)
+                if new > cur[key] + 1e-9:
+                    changes.append((key, new,
+                                    f"{tier}入场{g['n']}笔均赚"
+                                    f"{g['avg']:.1f}% → 恢复全档"))
     now = dt.datetime.now().isoformat(timespec="seconds")
     if not dry:
         for key, val, why in changes:
@@ -227,7 +271,138 @@ def tune(con, today, dry=False):
     return {"date": today, "n": st["n"], "win_rate": st["win_rate"],
             "avg_pnl": st["avg_pnl"], "first_n": st["first_n"],
             "first_avg": st["first_avg"], "churn_n": st["churn_n"],
+            "entries": st.get("entries") or {},
             "changes": changes, "current": cur, "summary": summary}
+
+
+def entry_cap_of(con, slot):
+    """auto_open 用：当前入场时点的建仓规模系数（竞价 1.0/盘中 1.0 起步，
+    autotune 依据证据降到 0.5）。slot=None → 竞价/盘前班次；其余 → 盘中。"""
+    key = "entry_cap_auction" if slot is None else "entry_cap_live"
+    try:
+        row = con.execute("SELECT value FROM tune_state WHERE key=?",
+                          (key,)).fetchone()
+        return float(row[0]) if row else DEFAULTS[key]
+    except Exception:  # noqa: BLE001 — 无表/无行时用默认
+        return DEFAULTS[key]
+
+
+def _close_of(con, code, date):
+    row = con.execute(
+        "SELECT c FROM klines WHERE code=? AND date<=? "
+        "ORDER BY date DESC LIMIT 1", (code, date)).fetchone()
+    return row[0] if row else None
+
+
+def week_quality(con, today, days=7):
+    """推荐质量周检（2026-10-05 用户需求：「每天推荐的股票一周趋势怎么样、
+    涨得好的有没有买、是板块原因还是选股因素」）。
+
+    数据：confirm_log（近 days 天全部推荐）+ klines（推荐日起涨跌）+
+    fills（模拟盘是否真的买了）。全部本地计算，零网络。"""
+    d0 = (dt.date.fromisoformat(str(today)[:10])
+          - dt.timedelta(days=days)).isoformat()
+    recos = con.execute(
+        "SELECT code, MIN(date) FROM confirm_log "
+        "WHERE date>? AND date<=? GROUP BY code ORDER BY MIN(date)",
+        (d0, today)).fetchall()
+    if not recos:
+        return None
+    bench0 = _close_of(con, "sh000001", d0)
+    bench1 = _close_of(con, "sh000001", today)
+    bench = ((bench1 / bench0 - 1) * 100
+             if bench0 and bench1 else None)
+    items = []
+    for code, first_d in recos:
+        c0 = _close_of(con, code, first_d)
+        c1 = _close_of(con, code, today)
+        if not c0 or not c1 or not c0 > 0:
+            continue
+        bought = bool(con.execute(
+            "SELECT 1 FROM fills WHERE code=? AND side='buy' "
+            "AND date(ts)>=? AND date(ts)<=? LIMIT 1",
+            (code, first_d, today)).fetchone())
+        ind = con.execute(
+            "SELECT sector FROM stock_industry WHERE code=?",
+            (code,)).fetchone()
+        nm = con.execute(
+            "SELECT name FROM snapshot WHERE code=? AND name<>'' "
+            "ORDER BY date DESC LIMIT 1", (code,)).fetchone()
+        items.append({
+            "code": code, "name": (nm[0] if nm else code),
+            "first_d": first_d,
+            "chg": (c1 / c0 - 1) * 100, "bought": bought,
+            "sector": ind[0] if ind else "其他"})
+    if not items:
+        return None
+    chgs = [it["chg"] for it in items]
+    bought_g = [it for it in items if it["bought"]]
+    nb_g = [it for it in items if not it["bought"]]
+    by_sector = {}
+    for it in items:
+        by_sector.setdefault(it["sector"], []).append(it["chg"])
+    sectors = sorted(((s, sum(v) / len(v), len(v))
+                      for s, v in by_sector.items()),
+                     key=lambda x: -x[1])
+    srt = sorted(items, key=lambda x: -x["chg"])
+    out = {
+        "n": len(items),
+        "avg": sum(chgs) / len(chgs),
+        "bench": bench,
+        "excess": (sum(chgs) / len(chgs) - bench)
+        if bench is not None else None,
+        "best": [(it["name"], round(it["chg"], 1)) for it in srt[:3]],
+        "worst": [(it["name"], round(it["chg"], 1)) for it in srt[-3:]],
+        "bought_n": len(bought_g),
+        "bought_avg": (sum(it["chg"] for it in bought_g) / len(bought_g))
+        if bought_g else None,
+        "nb_n": len(nb_g),
+        "nb_avg": (sum(it["chg"] for it in nb_g) / len(nb_g))
+        if nb_g else None,
+        "missed": [(it["name"], it["sector"], round(it["chg"], 1))
+                   for it in srt if not it["bought"] and it["chg"] >= 3.0][:3],
+        "sectors": sectors,
+    }
+    lines = [f"近{days}天推荐 {out['n']} 只 · 平均 {out['avg']:+.1f}%"
+             + (f"（同期大盘 {bench:+.1f}%，超额 {out['excess']:+.1f}%）"
+                if bench is not None else "")]
+    if out["best"]:
+        lines.append("涨得最好：" + " / ".join(
+            f"{n}{c:+.1f}%" for n, c in out["best"]))
+    if out["worst"]:
+        lines.append("涨得最差：" + " / ".join(
+            f"{n}{c:+.1f}%" for n, c in out["worst"]))
+    if out["bought_avg"] is not None and out["nb_avg"] is not None:
+        cmp_ = ("买对了" if out["bought_avg"] >= out["nb_avg"] else "买漏了")
+        lines.append(f"模拟盘买了 {out['bought_n']} 只（均 "
+                     f"{out['bought_avg']:+.1f}%）· 没买 {out['nb_n']} 只"
+                     f"（均 {out['nb_avg']:+.1f}%）→ {cmp_}")
+    elif out["bought_n"]:
+        lines.append(f"模拟盘买了 {out['bought_n']} 只"
+                     f"（均 {out['bought_avg']:+.1f}%）")
+    if out["missed"]:
+        lines.append("漏掉的大涨票：" + "、".join(
+            f"{n}（{s}）{c:+.1f}%" for n, s, c in out["missed"]))
+    if sectors:
+        top, bot = sectors[0], sectors[-1]
+        if len(sectors) > 1 and top[0] != bot[0]:
+            lines.append(f"板块归因：最强 {top[0]} {top[1]:+.1f}%（{top[2]}只）"
+                         f" · 最弱 {bot[0]} {bot[1]:+.1f}%（{bot[2]}只）")
+    out["lines"] = lines
+    return out
+
+
+def week_card_html(wq):
+    """复盘推送里的「推荐质量周检」小节。"""
+    if not wq or not wq.get("lines"):
+        return ""
+    from . import notifier
+    return notifier._card(
+        '<b style="color:#e8eaed;font-size:13.5px">📈 推荐质量周检</b>'
+        + "".join(f'<div style="color:#c4ccd6;font-size:12.5px;'
+                  f'margin-top:3px">{notifier._esc(ln)}</div>'
+                  for ln in wq["lines"]),
+        border="#2b313d")
 
 
 def load_into_scoring(con):
@@ -254,6 +429,12 @@ def tune_card_html(rep):
         if rep.get("first_n"):
             lines.append(f"首推票 {rep['first_n']} 笔均 "
                          f"{rep['first_avg']:+.1f}%")
+    ent = rep.get("entries") or {}
+    _pairs = [(tier, g) for tier, g in ent.items() if g.get("n")]
+    if _pairs:
+        lines.append("入场时点：" + " · ".join(
+            f"{tier} {g['n']}笔均{g['avg']:+.1f}%（胜率{g['win']:.0%}）"
+            for tier, g in _pairs))
     return notifier._card(
         "<b style=\"color:#e8eaed;font-size:13.5px\">🔧 选股参数自修正</b>"
         + "".join(f'<div style="color:#c4ccd6;font-size:12.5px;'
