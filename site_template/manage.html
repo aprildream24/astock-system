@@ -112,7 +112,7 @@ async function unlock(){
     $("gate").classList.add("hidden");
     $("app").classList.remove("hidden");
     $("whoami").textContent = "已解锁";
-    renderHoldings(d.holdings || []);
+    renderHoldings(d.holdings_detail || d.holdings || []);
     $("wt").value = (d.watch || []).join("\n");
   }catch(e){
     flash("gmsg", "解锁失败：" + e.message, "err");

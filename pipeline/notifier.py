@@ -630,7 +630,7 @@ def render_card(d, first=False, head=None, accent=None):
 
 
 def render_brief(today, first, backups, changes, meta, ladder_next=(),
-                 pending=(), prev_review=()):
+                 pending=(), prev_review=(), holdings=()):
     """M35 主报告（表格化版式）：今日速览 / 今日结论 / 首选 / 备选≤2 /
     待回踩确认（紧凑行）/ 昨日推荐复核 / 计划变化 / 数据说明。
 
@@ -668,6 +668,14 @@ def render_brief(today, first, backups, changes, meta, ladder_next=(),
             f'{_esc(meta["verdict"])}</span>'
             f'<span style="color:#c4ccd6;font-size:13px;margin-left:8px">'
             f'{_esc(meta.get("verdict_text", ""))}</span>',
+            border="#2b313d"))
+    # 持仓动态（2026-10-05 用户需求：「不要让我随时问，每次更新即可」）
+    if holdings:
+        out.append(_card(
+            '<b style="color:#e8eaed;font-size:13.5px">📦 持仓动态</b>'
+            + "".join(f'<div style="color:#c4ccd6;font-size:12.5px;'
+                      f'margin-top:3px">{_esc(ln)}</div>'
+                      for ln in holdings),
             border="#2b313d"))
     out.append(_summary_strip(meta, n_buy, n_pending, n_ladder))
     out.append(f'<div style="{_STY["meta"]}">'

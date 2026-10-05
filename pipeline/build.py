@@ -84,6 +84,33 @@ def load_holdings():
     return items
 
 
+def holdings_status_lines(con, date, cap=4):
+    """每次主推送自带的「持仓动态」行（2026-10-05 用户需求：
+    「关于持仓不要让我随时问，每次更新即可」）。
+
+    口径与真实持仓体检完全同源（executor.evaluate_real_holdings），
+    每只一行：名称 现价（浮盈%）→ 判决。数据缺失降级为名称+持仓中，
+    绝不让整块消失。"""
+    if not load_holdings():
+        return []
+    try:
+        from .executor import evaluate_real_holdings
+        rows = evaluate_real_holdings(con, date, load_holdings())
+    except Exception as e:  # noqa: BLE001 — 体检失败只降级，不阻断推送
+        print(f"[build] 持仓动态生成失败（不影响推送）: {e}")
+        return []
+    lines = []
+    for h in rows[:cap]:
+        px = f" {h['close']:.2f}" if h.get("close") else ""
+        pnl = (f"（{h['pnl_pct']:+.1f}%）"
+               if h.get("pnl_pct") is not None else "")
+        lines.append(f"📦{h.get('name') or h['code']}{px}{pnl}"
+                     f" → {h.get('verdict') or '持有'}")
+    if len(rows) > cap:
+        lines.append(f"📦…另有{len(rows) - cap}只持仓，详见详情页")
+    return lines
+
+
 def recent_rows(con, code, n=60, date=None):
     """最近 n 根日K（升序）。传 date 时只看 date 及以前——
     不看未来数据（未来函数防护），并由调用方校验最后一根是否就是 date。"""
@@ -848,6 +875,12 @@ def build(task="close", date=None, period_days=30):
         if wd:
             c["wait_days"] = wd
     _stale = [c["code"] for c in cands if c.get("wait_days", 0) >= 5]
+    # 周度自修正：把 tune_state 里的系数读进评分（默认 1.0 = 不干预）。
+    try:
+        from . import autotune
+        autotune.load_into_scoring(con)
+    except Exception as e:  # noqa: BLE001 — 加载失败用默认系数
+        print(f"[build] autotune 加载失败（不影响主流程）: {e}")
     # ★ 2026-10-05 确认次数提前注入：终审排序的决胜键（同分票谁排前面）
     # 需要 confirms，而卡片标签原本在排序之后才计数——决胜键会全部读到 0。
     # 一次 GROUP BY 的成本，换来「双确认优先于首推」的真实语义。
@@ -1106,10 +1139,13 @@ def build(task="close", date=None, period_days=30):
             d.update(_sector_fields(c))
             d.update({k: c.get(k) for k in _CARD_KEYS if c.get(k) is not None})
             ladder_cards.append(d)
+        # 持仓动态算一次，brief（详细版）与 wx_text（微信版）共用
+        _hlines = holdings_status_lines(con, date)
         brief = notifier.render_brief(date, first, backups, changes, meta,
                                       ladder_next=ladder_cards,
                                       pending=pending,
-                                      prev_review=prev_review)
+                                      prev_review=prev_review,
+                                      holdings=_hlines)
         if task == "close":
             # 09-30 用户需求⑥：当日总结（市场全景）挂在收盘报告尾部
             try:
@@ -1162,6 +1198,10 @@ def build(task="close", date=None, period_days=30):
                           "→ 不开新仓，持仓反弹减、破位走")
         else:
             _wx.append(f"⚠️纪律：{_vd}")
+        # 持仓动态每次必带（用户 2026-10-05：「不要让我随时问，每次更新即可」）：
+        # 裁决差时排在纪律行后、买点清单前；正常时排在清单末尾。
+        if _hlines:
+            _wx = (_wx[:1] + _hlines + _wx[1:]) if _vd_bad else (_wx + _hlines)
         r = notifier.push(
             f"build_{task}", _title, brief, date=date, con=con,
             force=_force_push(),
@@ -1282,6 +1322,17 @@ def build(task="close", date=None, period_days=30):
     # 仅在 review 时点汇总（close 时点只发主报告，避免重复）。
     if task == "review":
         from . import narrative, executor as _ex
+        # 周度自修正（用户 2026-10-05：「根据每周模拟盘盈亏自动修正选股，
+        # 不要让我主动说明」）：周五复盘/距上次≥7天触发，证据达标才调参，
+        # 结果一行进晚间推送。
+        tune_rep = None
+        try:
+            from . import autotune
+            if autotune.due(con, date):
+                tune_rep = autotune.tune(con, date)
+                print(f"[build] {tune_rep['summary']}")
+        except Exception as e:  # noqa: BLE001 — 自修正失败不阻断复盘
+            print(f"[build] autotune failed: {e}")
         text = narrative.narrate({"date": date, "mood": mood or {},
                                   "emotion": emo, "picks": picks})
         narrative_html = notifier.md2html(text)
@@ -1323,6 +1374,15 @@ def build(task="close", date=None, period_days=30):
                     for a in watch_advice))
         digest = notifier.render_evening_digest(
             date, narrative_html, daily_html, holding_html, watch_html)
+        # 自修正小结挂在模拟盘日结前面（同一语境：盈亏 → 修正）
+        if tune_rep:
+            try:
+                _tc = autotune.tune_card_html(tune_rep)
+                if _tc and digest:
+                    digest = digest.replace(
+                        '<div style="', _tc + '<div style="', 1)
+            except Exception as e:  # noqa: BLE001
+                print(f"[build] tune_card render failed: {e}")
         print(f"[build] digest 段落长度: narrative={len(narrative_html)} "
               f"daily={len(daily_html)} holding={len(holding_html)} "
               f"watch={len(watch_html)}")
@@ -1332,6 +1392,9 @@ def build(task="close", date=None, period_days=30):
                 _rev_head = f"模拟盘{rep.get('day_amt', 0):+,.0f}元"
             except Exception:  # noqa: BLE001
                 pass
+            if tune_rep and tune_rep.get("changes"):
+                _rev_head = (_rev_head + "·已调参" if _rev_head
+                             else "选股已周度调参")
             r = notifier.push("review", date, digest, date=date, con=con,
                               force=_force_push(), headline=_rev_head)
             print(f"[build] evening_digest push={r}")

@@ -122,7 +122,12 @@ SUITES = ["test_engines.py", "test_push_crypto.py", "test_guard_t1.py",
           # 2026-10-05 并列排名总序决胜（用户「云瑶健康/吉鑫科技相互第一」）：
           #   同分票名次由 确认次数→代码 决胜，与输入序无关；展示层与
           #   终审同尺（有效分）；zt_pool/标签读取全部显式排序。
-          "test_rank_tiebreak.py"]
+          "test_rank_tiebreak.py",
+          # 2026-10-05 周度自修正 + 每次推送自带持仓动态（用户「根据每周
+          # 模拟盘盈亏自动修正选股，不要让我主动说明」）：autotune 有界
+          # 调参（k_first/k_hot）/周五或≥7天触发/样本<3不调/落库留痕；
+          # holdings_status_lines 每次主推送自动带持仓行。
+          "test_autotune.py"]
 
 # runner 预装列表缺失的可选包 → 相关用例会 skip，不算倒退
 ENV_OPTIONAL = ("nacl", "yaml")

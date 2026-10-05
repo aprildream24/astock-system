@@ -406,6 +406,10 @@ jobs:
           github.event.inputs.task != 'timer-live'
         env:
           SITE_USERS: ${{ secrets.SITE_USERS }}
+          # 2026-10-05：站点也要看到真实持仓（holdings 在 Secret 里，
+          # 仓库不放明文）——否则 owner 视图的持仓明细恒为空、
+          # manage 页预填不出当前持仓。
+          HOLDINGS_CONF: ${{ secrets.HOLDINGS_CONF }}
           SITE_EDIT_TOKEN: ${{ secrets.SITE_EDIT_TOKEN }}
         run: |
           mkdir -p config

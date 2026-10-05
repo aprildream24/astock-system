@@ -163,6 +163,10 @@ CREATE TABLE IF NOT EXISTS day_meta(
 -- 09-30 实测 sh603978 早盘 +4.6% → 收盘 -3.0%，7.6 个点回吐无人管。
 CREATE TABLE IF NOT EXISTS pos_hwm(
     code TEXT PRIMARY KEY, hwm REAL, updated_at TEXT);
+-- 周度自修正（autotune）：模拟盘平仓证据 → 选股加权系数（有界）。
+-- 只存选股类参数；止损/裁决/仓位纪律绝不进这张表。
+CREATE TABLE IF NOT EXISTS tune_state(
+    key TEXT PRIMARY KEY, value REAL, reason TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS snapshot(
     date TEXT, code TEXT, name TEXT, price REAL, pct REAL,
     amt REAL, turn REAL, fmv REAL,

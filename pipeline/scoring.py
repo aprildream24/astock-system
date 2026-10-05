@@ -123,6 +123,10 @@ def tag_winrate(con, days=30, min_n=10, threshold=45.0, today=None):
 WINRATE_ANCHOR = {"连板": 1.0, "趋势": 0.72, "波段": 0.72, "区间": 0.72}
 ACTION_RANK = {"现在买": 2, "次日竞价达标买": 2, "等回踩": 1, "小仓试": 1, "观望": 0}
 
+# 周度自修正系数（pipeline/autotune 写 tune_state，build 每次构建前
+# load_into_scoring）。默认中性 1.0=不干预；调整永远有界、有据、留痕。
+TUNE = {"k_first": 1.0, "k_hot": 1.0}
+
 
 def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
                       per_sector=1, ladder_cap=2):
@@ -151,10 +155,12 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
         # 优选因子：板块冷热 / 趋势双态
         # ⚠️ 2026-09-18 前 `sector_temp` 无任何数据源（恒 None）⇒ 本因子静默
         # 失效。数据源已由 pipeline/sector.py 补上，加成重新生效。
+        # k_hot（周度自修正）：追高搅肉多的周会把热度加成压小。
+        _kh = TUNE.get("k_hot", 1.0)
         if c.get("sector_temp") == "❄弱":
-            eff *= 0.90
+            eff *= 1 - 0.10 * (2.0 - _kh)
         elif c.get("sector_temp") == "🔥强":
-            eff *= 1.03
+            eff *= 1 + 0.03 * _kh
         if c.get("trend_state") == "增速放缓":
             eff *= 0.90
         elif c.get("trend_state") == "加速上行":
@@ -165,9 +171,13 @@ def compute_top_picks(cands, env_w, winrates, sector_of=None, limit=3,
         rs = c.get("rs_mom")
         if rs is not None:
             if rs >= engines.RS_STRONG:
-                eff *= 1.05
+                eff *= 1 + 0.05 * _kh
             elif rs <= engines.RS_WEAK:
-                eff *= 0.95
+                eff *= 1 - 0.05 * _kh
+        # k_first（周度自修正）：首推票排名折价——F2 已把它挡在大档位外，
+        # 这里再压排名权重；只有 autotune 拿到「首推票连亏」的证据才 <1。
+        if (c.get("confirms") or 0) < 2:
+            eff *= TUNE.get("k_first", 1.0)
         c["eff_score"] = round(eff, 2)
         scored.append(c)
     # ★ 2026-10-05 总序决胜（用户「到底是云瑶健康还是吉鑫科技，两个带头
