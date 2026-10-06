@@ -468,8 +468,10 @@ def _relevance_tier(con, code, watch_set, held_secs):
     1=与持仓同板块（联动/换股视角），2=其余。"""
     if code in watch_set:
         return 0
+    # stock_industry.code 是裸 6 位码，rec_picks/plan 是带前缀形态
+    bare = code[2:] if code[:2] in ("sh", "sz") else code
     row = con.execute(
-        "SELECT sector FROM stock_industry WHERE code=?", (code,)).fetchone()
+        "SELECT sector FROM stock_industry WHERE code=?", (bare,)).fetchone()
     return 1 if (row and row[0] and row[0] in held_secs) else 2
 
 
@@ -574,7 +576,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     # （告知不缺席），只是提醒列表里最相关的排最前、标题点名前两名。
     try:
         _watch_set = {prefixed(c) for c in _watch_codes}
-        _hcodes = list(held.keys())
+        _hcodes = [bare(c) for c in held.keys()]   # 行业表是裸码口径
         _held_secs = set()
         if _hcodes:
             _q = ",".join("?" * len(_hcodes))

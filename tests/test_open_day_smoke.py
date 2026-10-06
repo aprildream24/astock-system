@@ -110,7 +110,7 @@ class OpenDaySmoke(unittest.TestCase):
         # 行业归属 + 板块热度
         for code, name, base, sec in STOCKS:
             con.execute("INSERT OR REPLACE INTO stock_industry VALUES(?,?,?)",
-                        (code, sec, PREV))
+                        (code[2:], sec, PREV))
             con.execute("INSERT OR REPLACE INTO sector_heat VALUES(?,?,?,?,?,?)",
                         (PREV, sec, 1.2, 5.0, 10, 5))
         # 节前情绪（齐备维度 → 轻仓试探级）
@@ -259,7 +259,7 @@ class OpenDaySmoke(unittest.TestCase):
                 (DATE, code, "票", "趋势", action,
                  1.0, 99999.0, None, None, None, score, "", None))
         con.execute("INSERT OR REPLACE INTO stock_industry VALUES(?,?,?)",
-                    ("sh600519", "白酒", PREV))
+                    ("600519", "白酒", PREV))
         con.commit()
         snap = {bare: {"name": bare, "price": 500000.0, "pct": 1.0,
                        "amt": 1e9}

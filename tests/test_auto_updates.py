@@ -143,10 +143,10 @@ class TestRelevanceSort(unittest.TestCase):
     def test_自选最先_同板块次之_其余按分(self):
         con = _mkcon()
         con.executemany("INSERT OR REPLACE INTO stock_industry VALUES(?,?,?)",
-                        [("sz300192", "医药", "2026-10-01"),
-                         ("sh600701", "医药", "2026-10-01"),
-                         ("sh600000", "银行", "2026-10-01"),
-                         ("sz000002", "地产", "2026-10-01")])
+                        [("300192", "医药", "2026-10-01"),
+                         ("600701", "医药", "2026-10-01"),
+                         ("600000", "银行", "2026-10-01"),
+                         ("000002", "地产", "2026-10-01")])
         con.commit()
         plans = [("sz000002", "地产票", "现在买", 1, 2, None, 90),
                  ("sh600701", "同板块", "现在买", 1, 2, None, 80),
@@ -165,7 +165,7 @@ class TestRelevanceSort(unittest.TestCase):
     def test_自选票压过一切(self):
         con = _mkcon()
         con.execute("INSERT OR REPLACE INTO stock_industry VALUES(?,?,?)",
-                    ("sh600000", "银行", "2026-10-01"))
+                    ("600000", "银行", "2026-10-01"))
         con.commit()
         plans = [("sz000001", "高分无关", "现在买", 1, 2, None, 99),
                  ("sh600000", "自选低分", "等回踩", 1, 2, None, 50)]

@@ -250,8 +250,9 @@ class TestAutotune(unittest.TestCase):
                 con.execute(
                     "INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (code, d, c, c, c * 0.99, c, 1e6, 3e7, 0.0, 1.0))
+            _bare = code[2:]
             con.execute("INSERT OR REPLACE INTO stock_industry VALUES(?,?,?)",
-                        (code, "医药" if code in ("sz000001", "sz000002")
+                        (_bare, "医药" if code in ("sz000001", "sz000002")
                          else "银行", days[0]))
             con.execute("INSERT OR REPLACE INTO confirm_log VALUES(?,?,?)",
                         (days[0], "close", code))

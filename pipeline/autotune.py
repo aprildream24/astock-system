@@ -322,9 +322,13 @@ def week_quality(con, today, days=7):
             "SELECT 1 FROM fills WHERE code=? AND side='buy' "
             "AND date(ts)>=? AND date(ts)<=? LIMIT 1",
             (code, first_d, today)).fetchone())
+        # stock_industry.code 存的是**裸 6 位码**（eastmoney f12 口径），
+        # confirm_log 是带前缀形态——查询必须剥前缀（2026-10-05 修复：
+        # 周检板块归因全落「其他」的真因）
+        _bare = code[2:] if code[:2] in ("sh", "sz") else code
         ind = con.execute(
             "SELECT sector FROM stock_industry WHERE code=?",
-            (code,)).fetchone()
+            (_bare,)).fetchone()
         nm = con.execute(
             "SELECT name FROM snapshot WHERE code=? AND name<>'' "
             "ORDER BY date DESC LIMIT 1", (code,)).fetchone()

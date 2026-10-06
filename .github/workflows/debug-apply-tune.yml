@@ -1,0 +1,52 @@
+# 临时工作流（2026-10-05）：把模拟验证过的周度调参**提前生效**到真实
+# 缓存（否则要等 10-09 周五才落库）。写完即回存缓存，随后本文件删除。
+name: debug-apply-tune
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-apply-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 应用调参（真实库）
+        run: |
+          python - <<'EOF'
+          import sqlite3, os
+          from pipeline import autotune
+          p = "cache/market.db"
+          if not os.path.exists(p):
+              print("[APPLY] 无 market.db")
+              raise SystemExit(1)
+          con = sqlite3.connect(p)
+          latest = con.execute("SELECT MAX(date) FROM klines "
+                               "WHERE code='sh000001'").fetchone()[0]
+          pre = con.execute("SELECT COUNT(*) FROM tune_state").fetchone()[0]
+          rep = autotune.tune(con, latest)
+          print("[APPLY] summary:", rep["summary"])
+          print("[APPLY] changes:", rep["changes"])
+          rows = con.execute("SELECT key, value, reason FROM tune_state"
+                             ).fetchall()
+          for k, v, why in rows:
+              print(f"[APPLY] {k}={v} ({why})")
+          assert con.execute("SELECT COUNT(*) FROM tune_state"
+                             ).fetchone()[0] >= pre, "写库失败"
+          con.close()
+          print("[APPLY] done")
+          EOF
+      - name: 回存缓存（下一个 run 立即读到新参数）
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: market-db-apply-${{ github.run_id }}
