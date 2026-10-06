@@ -1,0 +1,38 @@
+# 临时只读核验（开盘前体检）：确认恢复到的缓存里调参/数据状态正确。
+name: debug-verify
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-verify-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - run: |
+          python - <<'EOF'
+          import sqlite3, os
+          p = "cache/market.db"
+          assert os.path.exists(p), "缓存恢复失败：无 market.db"
+          con = sqlite3.connect(p)
+          print("[VERIFY] klines 最新:",
+                con.execute("SELECT MAX(date) FROM klines WHERE code='sh000001'").fetchone()[0])
+          for k, v, why in con.execute("SELECT key, value, reason FROM tune_state"):
+              print(f"[VERIFY] tune_state: {k}={v} ({why})")
+          n = con.execute("SELECT COUNT(*) FROM tune_state").fetchone()[0]
+          assert n >= 1, "tune_state 为空：调参未生效！"
+          print("[VERIFY] industry 行数:",
+                con.execute("SELECT COUNT(*) FROM stock_industry").fetchone()[0])
+          print("[VERIFY] fills:",
+                con.execute("SELECT COUNT(*) FROM fills").fetchone()[0])
+          print("[VERIFY] OK")
+          EOF
