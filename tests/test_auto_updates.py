@@ -12,6 +12,7 @@ import os
 import sqlite3
 import sys
 import unittest
+from datetime import datetime, timezone, timedelta
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -137,6 +138,96 @@ class TestHoldingsCurve(unittest.TestCase):
         self.assertNotIn("holdings_curve", out,
                          "observe 角色的密文里不得残留持仓曲线")
         self.assertNotIn("holdings_detail", out)
+
+
+class TestBreakoutTrack(unittest.TestCase):
+    """F4 双轨买区：回踩轨之外新增「突破确认价」轨（回应周检买漏了）。"""
+
+    def test_breakout_ref计算(self):
+        from pipeline import engines
+        rows = [[f"2026-10-0{i}", 10.0, 10.2, 10.25, 9.9, 1e6]
+                for i in range(1, 6)]
+        bo = engines.breakout_ref(rows)
+        self.assertAlmostEqual(bo, round(10.25 * 1.005, 2))
+        self.assertIsNone(engines.breakout_ref(rows[:2]), "bar 不足返回 None")
+
+    def _mk_exec_con(self):
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        con.executescript(core._SCHEMA)
+        return con
+
+    def test_突破确认_半仓买入(self):
+        con = self._mk_exec_con()
+        for d, c in (("2026-10-07", 10.0), ("2026-10-08", 10.05)):
+            con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        ("sz000001", d, c, c * 1.02, c * 0.99, c,
+                         1e6, 3e7, 0.0, 1.0))
+        # 当日价 10.4（对昨收 10.2 = +2%？→ 需 3-7%：昨收 10.0、今价 10.4 = +4%）
+        con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ("sz000001", "2026-10-09", 10.4, 10.4, 10.4, 10.4,
+                     1e6, 3e7, 0.0, 1.0))
+        con.execute("INSERT OR REPLACE INTO candidate_snapshots VALUES("
+                    "?,?,?,?,?,?,?,?)",
+                    ("2026-10-09", "sz000001", "甲", "趋势", 80, "现在买",
+                     "", '{"breakout": 10.25, "buy_low": 9.5, "buy_high": 10.0}'))
+        con.execute(
+            "INSERT OR REPLACE INTO rec_picks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("2026-10-09", "sz000001", "甲", "趋势", "现在买",
+             9.5, 10.0, 9.0, None, None, 85.0, "", None))
+        con.commit()
+        from pipeline import executor
+        now = datetime(2026, 10, 9, 9, 35, tzinfo=timezone(timedelta(hours=8)))
+        log = executor.auto_open(con, "2026-10-09", slot="am", now=now)
+        buys = [e for e in log if e[1] == "BUY"]
+        self.assertEqual(len(buys), 1, f"突破确认价上方+4% 必须触发突破买：{log}")
+        self.assertIn("突破半仓", buys[0][2])
+        amt = con.execute(
+            "SELECT qty*price FROM fills WHERE side='buy'").fetchone()[0]
+        self.assertLessEqual(amt, 100000 * 0.15 * 1.05,
+                             "突破轨 = 档位半仓（30%→15%）")
+        # 同日第二只突破票 → 每日限 1 笔，不再买
+        con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ("sz000002", "2026-10-09", 5.4, 5.4, 5.4, 5.4,
+                     1e6, 3e7, 0.0, 1.0))
+        con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ("sz000002", "2026-10-08", 5.0, 5.0, 5.0, 5.0,
+                     1e6, 3e7, 0.0, 1.0))
+        con.execute("INSERT OR REPLACE INTO candidate_snapshots VALUES("
+                    "?,?,?,?,?,?,?,?)",
+                    ("2026-10-09", "sz000002", "乙", "趋势", 80, "现在买",
+                     "", '{"breakout": 5.05, "buy_low": 4.5, "buy_high": 4.9}'))
+        con.execute(
+            "INSERT OR REPLACE INTO rec_picks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("2026-10-09", "sz000002", "乙", "趋势", "现在买",
+             4.5, 4.9, 4.2, None, None, 84.0, "", None))
+        con.commit()
+        log2 = executor.auto_open(con, "2026-10-09", slot="pm", now=now)
+        self.assertFalse([e for e in log2 if e[1] == "BUY"],
+                         "突破买每日限 1 笔")
+
+    def test_涨幅超带_不追(self):
+        con = self._mk_exec_con()
+        con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ("sz000001", "2026-10-08", 10.0, 10.0, 10.0, 10.0,
+                     1e6, 3e7, 0.0, 1.0))
+        con.execute("INSERT OR REPLACE INTO klines VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ("sz000001", "2026-10-09", 11.4, 11.4, 11.4, 11.4,
+                     1e6, 3e7, 0.0, 1.0))   # +14% 超出 3-7% 带
+        con.execute("INSERT OR REPLACE INTO candidate_snapshots VALUES("
+                    "?,?,?,?,?,?,?,?)",
+                    ("2026-10-09", "sz000001", "甲", "趋势", 80, "现在买",
+                     "", '{"breakout": 10.25, "buy_low": 9.5, "buy_high": 10.0}'))
+        con.execute(
+            "INSERT OR REPLACE INTO rec_picks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("2026-10-09", "sz000001", "甲", "趋势", "现在买",
+             9.5, 10.0, 9.0, None, None, 85.0, "", None))
+        con.commit()
+        from pipeline import executor
+        now = datetime(2026, 10, 9, 9, 35, tzinfo=timezone(timedelta(hours=8)))
+        log = executor.auto_open(con, "2026-10-09", slot="am", now=now)
+        self.assertFalse([e for e in log if e[1] == "BUY"],
+                         "涨幅超带（涨停附近/已板）不得突破追入")
 
 
 class TestRelevanceSort(unittest.TestCase):

@@ -517,6 +517,22 @@ def alpha_extras(rows, n=20):
             "mom5": round(mom5, 2)}
 
 
+def breakout_ref(rows, n=3, buffer=0.005):
+    """双轨买区之「突破确认价」（2026-10-05）：近 n 日最高价 ×(1+buffer)。
+
+    背景（周检实证）：强势票不回踩就永远买不进——新华传媒 +33%、襄阳
+    轴承 +21%、时代万恒 +21% 全部漏掉。给每只候选同时给两条入场轨：
+    回踩买区（原体系）+ 突破确认价（本函数，越过且强而不板才可追·半仓）。
+    rows 口径 = (date, o, c, h, l, v)；bar 不足返回 None。"""
+    try:
+        hs = [float(r[3]) for r in rows[-n:]]
+        if len(hs) < n:
+            return None
+        return round(max(hs) * (1 + buffer), 2)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def donchian_breakout(rows, n=20):
     """唐奇安 20 日通道突破（海龟经典）：收盘创 n 日新高 → True。
     突破日买入是跨市场验证最多的入门信号之一；配合止损效果最佳。"""

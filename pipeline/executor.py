@@ -1026,12 +1026,37 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
         if not price or price <= 0:
             log.append((code, "SKIP", "无当日价格，跳过"))
             continue
-        # 现价必须落在买区内（与推送 buyable_now 同一把尺子）
-        if lo and hi and not (lo * 0.995 <= price <= hi * 1.005):
-            if not quiet:
-                log.append((code, "SKIP",
-                            f"现价{price:.2f}不在买区{lo:.2f}-{hi:.2f}，不追"))
-            continue
+        in_zone = lo and hi and (lo * 0.995 <= price <= hi * 1.005)
+        if not in_zone:
+            # F4 双轨买区·突破轨（2026-10-05，回应周检「买漏了」）：回踩
+            # 轨之外，越过 3 日高×1.005 且当日涨幅 3-7%（强而不板）→
+            # **半仓**突破买；每天最多 1 笔（防连续追高）。其余仍不追。
+            bo = None
+            try:
+                r = con.execute(
+                    "SELECT json_extract(extra,'$.breakout') "
+                    "FROM candidate_snapshots WHERE code=? AND date=?",
+                    (code, today)).fetchone()
+                bo = r[0] if r else None
+            except Exception:  # noqa: BLE001
+                bo = None
+            prev = con.execute(
+                "SELECT c FROM klines WHERE code=? AND date<? "
+                "ORDER BY date DESC LIMIT 1", (code, today)).fetchone()
+            pct = ((price / prev[0] - 1) * 100) if prev and prev[0] else None
+            bo_n = con.execute(
+                "SELECT COUNT(*) FROM orders WHERE reason LIKE '突破确认%' "
+                "AND substr(ts,1,10)=?", (today,)).fetchone()[0]
+            ok_bo = (bo and pct is not None and 3.0 <= pct <= 7.0
+                     and price >= bo and bo_n == 0)
+            if not ok_bo:
+                if not quiet:
+                    log.append((code, "SKIP",
+                                f"现价{price:.2f}不在买区{lo:.2f}-{hi:.2f}，不追"))
+                continue
+            bo_half = True                # 突破轨一律半仓（档位块之后生效）
+        else:
+            bo_half = False
         # 分仓档位：第 len(held)+1 笔占用 plan 对应档（3322/3331）
         slot_i = min(len(held), len(plan) - 1)
         slot_pct = plan[slot_i]
@@ -1051,6 +1076,8 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
         if slot_pct > cap_pct:
             slot_pct = cap_pct
             demoted = True
+        if bo_half:                    # 突破轨半仓在档位/降档之后最终生效
+            slot_pct = round(slot_pct * 0.5, 4)
         per_amt = eq * slot_pct
         # 入场时点规模系数（2026-10-05 用户需求：「竞价 vs 盘中谁成功率高，
         # 依据结果修正」）：autotune 每周按实际成交证据对该时点自动
@@ -1081,15 +1108,16 @@ def auto_open(con, today, max_new=None, slot=None, now=None, quiet=False):
         oid, status, why = place_order(
             con, code, "buy", qty, price, today,
             prev_close=prev[0] if prev else None,
-            reason=(f"自动建仓 {action}（第{slot_i + 1}档"
-                    f"{'·首推降档' if demoted else ''} "
+            reason=(f"{'突破确认' if bo_half else '自动建仓'} {action}"
+                    f"（第{slot_i + 1}档"
+                    f"{'·首推降档' if demoted and not bo_half else ''} "
                     f"{slot_pct:.0%}·目标{per_amt:,.0f}元）"))
         if status == "filled":
             held.add(code)
             filled += 1
             log.append((code, "BUY",
                         f"{qty}股@{price:.2f}（{action}·第{slot_i + 1}档"
-                        f"{'·首推降档' if demoted else ''}"
+                        f"{'·突破半仓' if bo_half else ('·首推降档' if demoted else '')}"
                         f"{slot_pct:.0%}≈{per_amt:,.0f}元）"))
         else:
             # ★ 用户需求：**到价了却买不进，必须说清楚原因**（资金不足/

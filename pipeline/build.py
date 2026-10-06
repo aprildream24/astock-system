@@ -295,6 +295,7 @@ def scan_all(con, date, bar_anchor=None):
             c["decisive"] = engines.decisive_stats(_r)
         c["alpha"] = engines.alpha_extras(_r)
         c["donchian"] = engines.donchian_breakout(_r)
+        c["breakout"] = engines.breakout_ref(_r)   # 双轨买区：突破确认价
         c["dist_pct"] = scoring.dist_pct(c)
         if not scoring.buy_zone_ok(c):
             reject(c["code"], c.get("pool", "-"),
@@ -881,6 +882,20 @@ def build(task="close", date=None, period_days=30):
         autotune.load_into_scoring(con)
     except Exception as e:  # noqa: BLE001 — 加载失败用默认系数
         print(f"[build] autotune 加载失败（不影响主流程）: {e}")
+    # 行业映射覆盖回填（2026-10-05）：周检归因发现部分推荐股行业缺失
+    # （板块归因落「其他」）——确认清单存在缺口码时强制刷新行业表一次。
+    try:
+        from . import sector as _sec
+        _need = [r[0] for r in con.execute(
+            "SELECT DISTINCT substr(code,3) FROM confirm_log "
+            "WHERE date>=date(?, '-10 day') AND (code LIKE 'sh%' "
+            "OR code LIKE 'sz%')", (date,)).fetchall()]
+        _have = {r[0] for r in con.execute("SELECT code FROM stock_industry")}
+        if any(c not in _have for c in _need):
+            _sec.refresh(con, date, force=True)
+            print(f"[build] 行业回填：确认码缺口 → 已强制刷新行业表")
+    except Exception as e:  # noqa: BLE001 — 回填失败不阻断
+        print(f"[build] 行业回填失败（不阻断）: {e}")
     # ★ 2026-10-05 确认次数提前注入：终审排序的决胜键（同分票谁排前面）
     # 需要 confirms，而卡片标签原本在排序之后才计数——决胜键会全部读到 0。
     # 一次 GROUP BY 的成本，换来「双确认优先于首推」的真实语义。
@@ -958,6 +973,7 @@ def build(task="close", date=None, period_days=30):
                                   "entry_hint", "cycle_hint", "trend_state",
                                   "gate_evidence", "hot_pick",
                                   "wait_days", "decisive", "rs_mom",
+                                  "breakout",
                                   "pos_label", "pos_pct", "yizi",
                                   "yizi_note", "alpha", "donchian")},
                                 ensure_ascii=False)))
@@ -991,8 +1007,8 @@ def build(task="close", date=None, period_days=30):
     # 卡片显示字段透传（confirms/板块阶段/主线/位置/池别/alpha/周期）
     _CARD_KEYS = ("confirms", "confirm_note", "mainline", "sector_state",
                   "sector_state_note", "pos_label", "pool", "alpha",
-                  "donchian", "wait_days", "hold_days", "hold_limit",
-                  "phase", "cycle_hint", "yizi_note")
+                  "donchian", "breakout", "wait_days", "hold_days",
+                  "hold_limit", "phase", "cycle_hint", "yizi_note")
     # ★ 卡片标签回读（2026-09-25）：从 candidate_snapshots.extra 恢复
     # 板块阶段/主线/位置/一字/alpha/donchian —— 确保任何路径构建卡片都
     # 有完整标签，不依赖内存中的候选 dict 生命周期。

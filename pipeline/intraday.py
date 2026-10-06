@@ -70,6 +70,7 @@ KIND_WZONE = "wzone"      # 自选进入买区
 KIND_STOP = "stop"        # 持仓触及手填止损
 KIND_SELL = "sell"        # 持仓系统判定卖出
 KIND_WSTOP = "wstop"      # 自选跌破止损
+KIND_BO = "bo"            # 双轨买区：突破确认价越过（强而不板）
 # 抓取异常的兜底：正常盘中应有 4500+ 只快照，低于此值说明源异常
 _MIN_UNIVERSE = 500
 # 09-30 用户口径：live/盘中推送里「进入买区（可当日下单）」组只放**当下
@@ -615,6 +616,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         return snap.get(bare(code))
 
     in_zone, above, below, stopped, limit = [], [], [], [], []
+    breaks = []                       # 突破确认事件（F4 双轨买区）
     for code, name, action, lo, hi, stop, score in plans:
         v = q(code) or {}
         state, label = classify(v.get("price"), v.get("pct"), lo, hi, stop)
@@ -628,13 +630,31 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
         fresh = bool(prev_p and lo and hi
                      and not (lo <= prev_p <= hi)
                      and lo <= v["price"] <= hi)  # 区外(上或下)→区内
+        # F4 双轨买区·突破确认事件（2026-10-05）：越过 3 日高×1.005 且
+        # 当日涨幅 3-7%（强而不板）→ 新事件提醒；fresh = 上轮价未越过。
+        bo = None
+        try:
+            _r = con.execute(
+                "SELECT json_extract(extra,'$.breakout') "
+                "FROM candidate_snapshots WHERE code=? AND date=?",
+                (code, date)).fetchone()
+            bo = _r[0] if _r else None
+        except Exception:  # noqa: BLE001
+            bo = None
+        fresh_bo = False
+        if (bo and v.get("price") and v.get("pct") is not None
+                and v["price"] >= bo and 3.0 <= v["pct"] <= 7.0):
+            fresh_bo = bool(prev_p and prev_p < bo) or prev_p is None
         item = {"code": code, "name": name or v.get("name", ""),
                 "price": v.get("price"), "pct": v.get("pct"),
                 "lo": lo, "hi": hi, "state": state, "label": label,
                 "action": action, "pct_dist": _pd, "fresh_entry": fresh,
-                "stop": stop, "score": score}
+                "stop": stop, "score": score, "bo": bo}
         {"in_zone": in_zone, "above": above, "below": below,
          "broke_stop": stopped, "limit_up": limit}.get(state, []).append(item)
+        if fresh_bo:
+            item["fresh_bo"] = True
+            breaks.append(item)
     # 持仓实时风控（与计划无关，独立成组）
     hold_hits = []
     for code, h in held.items():
@@ -718,7 +738,8 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
 
     out.update({"plan_n": len(plans), "in_zone": len(in_zone),
                 "broken": len(below), "stops": len(hold_hits),
-                "above": len(above), "limit": len(limit)})
+                "above": len(above), "limit": len(limit),
+                "breakouts": len(breaks)})
     print(f"[intraday] {slot} 快照{len(snap)}只 计划{len(plans)}只 → "
           f"在买区{len(in_zone)} 涨出{len(above)} 跌破{len(below)} "
           f"涨停{len(limit)} 持仓止损{len(hold_hits)}")
@@ -734,6 +755,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     sell_hits = _fresh(KIND_SELL, sell_hits, _prev)
     watch_stop_hits = _fresh(KIND_WSTOP, watch_stop_hits, _prev)
     hold_hits = _fresh(KIND_STOP, hold_hits, _prev)
+    breaks = _fresh(KIND_BO, breaks, _prev)   # 同票同日只报一次
     if _live:
         # 09-30：连板通道/观望不进「可买」组（逻辑漏洞修复）
         in_zone = [p for p in in_zone if p.get("action") in _LIVE_BUYABLE]
@@ -749,7 +771,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
             return cnt == 0               # 区内未变：当日只报第一次
         in_zone = [p for p in in_zone if _zone_allowed(p)]
         watch_zone_hits = _fresh(KIND_WZONE, watch_zone_hits, _prev)
-        _new = len(in_zone) + len(watch_zone_hits)
+        _new = len(in_zone) + len(watch_zone_hits) + len(breaks)
         if _new == 0 and not sell_hits and not watch_stop_hits \
                 and not hold_hits:
             out["reason"] = "live：无新事件（已报过的不再重复）"
@@ -769,6 +791,16 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
             _rows, "自选票回落到关注区间；按各自止损纪律执行")
         groups.append({
             "title": "★ 自选进入买区（可下单）", "hint": _hint, "rows": _rows})
+    if breaks:
+        _rows = [((b["code"], b["name"], f'{b["price"]:.2f}',
+                   f'{b["pct"]:+.1f}%' if b["pct"] is not None else "—",
+                   f'{b["bo"]:.2f}'),
+                  [_TXT, _TXT, _UP, _UP, _HL]) for b in breaks]
+        _rows, _hint = _cap_rows(
+            _rows, "越过突破确认价且强而不板（3-7%）；突破轨半仓试探，止损照旧")
+        groups.append({
+            "title": f"🔥 突破确认（{len(breaks)} 只越过确认价）",
+            "hint": _hint, "rows": _rows})
     if hold_hits:
         groups.append({
             "title": "⚠ 持仓触及止损", "hint": "按纪律处置，勿临场改判",

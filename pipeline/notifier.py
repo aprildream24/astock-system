@@ -614,6 +614,10 @@ def render_card(d, first=False, head=None, accent=None):
         + (_row("建议仓位", _esc(d.get("position") or "1成"))
            if d.get("position") or first else "")
         + _row("有效期至", _esc(d.get("valid_until")))
+        + (_row("突破确认价", f'<span style="color:#e6a700;font-weight:700">'
+                f'{_esc(d.get("breakout"))}</span>'
+                f'<span style="color:#9aa0a6">（放量越过可追·半仓）</span>')
+           if d.get("breakout") else "")
         + _row("失效条件", _esc(d.get("invalid_if") or "条件破坏即失效")))
     inner = tbl
     if d.get("reason") or d.get("score") is not None:
