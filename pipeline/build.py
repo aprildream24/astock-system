@@ -640,19 +640,19 @@ def build(task="close", date=None, period_days=30):
     # 休市日手动/误触发会把「节前数据当今日」的复盘照常推出去（今天
     # 实测：复盘+持仓+周期在国庆假期里发了一遍）。pre/auction/close 有
     # 数据就绪闸兜着，review 必须自己挡。
-    if task == "review" and not __import__(
-            "pipeline.trade_calendar", fromlist=["is_trade_day"]
-        ).is_trade_day(date):
-        print(f"[build] {date} 非交易日 → review 跳过")
-        try:
-            from . import notifier as _n
-            _n.push("data_holiday", f"休市提示 {date[5:]}",
-                    f"<p>{date} 非交易日（法定休市），复盘不产生。"
-                    f"下一个交易日 20:02 自动恢复。</p>",
-                    date=date, con=con)
-        except Exception as e:  # noqa: BLE001
-            print(f"[build] 休市提示推送失败（不阻断）: {e}")
-        return {"date": date, "skipped": "holiday"}
+    if task == "review":
+        from .trade_calendar import is_trade_day as _cal_day
+        if not _cal_day(date):
+            print(f"[build] {date} 非交易日 → review 跳过")
+            try:
+                from . import notifier as _n
+                _n.push("data_holiday", f"休市提示 {date[5:]}",
+                        f"<p>{date} 非交易日（法定休市），复盘不产生。"
+                        f"下一个交易日 20:02 自动恢复。</p>",
+                        date=date, con=con)
+            except Exception as e:  # noqa: BLE001
+                print(f"[build] 休市提示推送失败（不阻断）: {e}")
+            return {"date": date, "skipped": "holiday"}
     if task == "period":
         return _build_period(con, date, period_days)
     # ★ 演练模式（2026-09-19 用户「全部在网络上运行一次，该推送的全部推送」）：
