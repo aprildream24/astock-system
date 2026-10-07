@@ -298,6 +298,24 @@ def main(argv=None):
               f"但已发显式告警 {it['alerts']}（非静默失败）")
     for it in res["missing"]:
         print(f"[audit]   MISS  {it['task']}: {'+'.join(it['modes'])} 未送达")
+    # 2026-10-05 年度无人值守加固：「该发未发」必须**主动告诉用户**——
+    # 原实现只写日志（用户端表现为一片安静，无从判断系统死活）。走
+    # PushPlus 直发（不依赖 GH_PAT），失败绝不阻断验收主流程。
+    if res["missing"] and os.environ.get("PUSHPLUS_TOKEN"):
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))))
+            from pipeline import notifier
+            _names = "、".join(f"{it['task']}({'+'.join(it['modes'])})"
+                               for it in res["missing"])
+            notifier.push("audit_alert", "⚠️推送缺失告警",
+                          f"<p>验收发现今日应发未发：{_names}。</p>"
+                          f"<p>系统正在自动补发；若 30 分钟内仍未收到，"
+                          f"请到手机管理页查看或留言反馈。</p>",
+                          con=None, force=True)
+            print("[audit] 缺失告警已推送（pushplus）")
+        except Exception as e:  # noqa: BLE001
+            print(f"[audit] 缺失告警推送失败（不阻断）: {e}")
 
     if not res["missing"]:
         print("[audit] 全部到位")

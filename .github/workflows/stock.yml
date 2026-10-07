@@ -423,6 +423,9 @@ jobs:
         if: >-
           github.event.inputs.task != 'watch-sync' && github.event.inputs.task != 'holdings-sync' &&
           (success() || failure())
+        # 2026-10-05 continue-on-error：GH_PAT 一旦过期，账本回写失败
+        # 不允许把整条链染红（推送主链零 PAT 依赖，必须继续跑）。
+        continue-on-error: true
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPO: ${{ github.repository }}
@@ -446,6 +449,7 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPO: ${{ github.repository }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: |
           TASK="${{ github.event.inputs.task }}"
           if [ -z "$TASK" ]; then TASK=close; fi
