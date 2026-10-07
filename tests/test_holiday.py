@@ -85,7 +85,13 @@ class TestHolidayBuildSilence(unittest.TestCase):
         for task in ("pre", "auction", "close", "review"):
             with self.subTest(task=task):
                 r, _ = self._run(task, "2026-10-01")
-                self.assertIsNone(r)
+                # 2026-10-07 起 review 假期跳过返回 {"skipped": "holiday"}
+                # （并推休市提示）；pre/auction/close 仍是 None。两者共同
+                # 语义 = 不产生任何业务推送。
+                if task == "review":
+                    self.assertEqual((r or {}).get("skipped"), "holiday")
+                else:
+                    self.assertIsNone(r)
 
     def test_all_tasks_share_one_mode(self):
         """四个任务必须用**同一个** mode —— 日级保险丝按 mode+date 去重，
