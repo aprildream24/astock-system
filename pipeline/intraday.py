@@ -756,6 +756,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
     watch_stop_hits = _fresh(KIND_WSTOP, watch_stop_hits, _prev)
     hold_hits = _fresh(KIND_STOP, hold_hits, _prev)
     breaks = _fresh(KIND_BO, breaks, _prev)   # 同票同日只报一次
+    out["breakouts"] = len(breaks)             # 计数与实推保持一致
     if _live:
         # 09-30：连板通道/观望不进「可买」组（逻辑漏洞修复）
         in_zone = [p for p in in_zone if p.get("action") in _LIVE_BUYABLE]
@@ -791,6 +792,7 @@ def run(slot="pm", date=None, con=None, dry=False, now=None,
             _rows, "自选票回落到关注区间；按各自止损纪律执行")
         groups.append({
             "title": "★ 自选进入买区（可下单）", "hint": _hint, "rows": _rows})
+    breaks = [b for b in breaks if b.get("action") in _LIVE_BUYABLE]
     if breaks:
         _rows = [((b["code"], b["name"], f'{b["price"]:.2f}',
                    f'{b["pct"]:+.1f}%' if b["pct"] is not None else "—",
