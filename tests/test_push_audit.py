@@ -256,10 +256,22 @@ def _src(rel):
 
 class TestWiring(unittest.TestCase):
     def test_audit_never_pushes(self):
-        """验收器绝不能自己发推送 —— 否则"验收"就成了第三个推送源。"""
+        """验收器只允许一种推送：audit_alert（检测到"该发未发"时的失败
+        告警，2026-10-05 年度无人值守需求——沉默不等于正常）。业务内容
+        仍然绝不由验收器复推（补发走 dispatch 原任务，日级去重兜底）。"""
         src = _src("pipeline/push_audit.py")
-        self.assertNotIn("notifier.push", src)
-        self.assertNotIn("from . import notifier", src)
+        self.assertIn("notifier.push", src,
+                      "缺失告警必须直发用户（pushplus，零 PAT 依赖）")
+        self.assertIn('"audit_alert"', src)
+        # 告警必须带双保险：确有缺失 + 配置了推送令牌
+        self.assertLess(src.index('res["missing"] and '
+                                  'os.environ.get("PUSHPLUS_TOKEN")'),
+                        src.index("notifier.push"),
+                        "告警前必须先判 missing 与令牌")
+        # 业务 mode 不得从验收器发出
+        for m in ("build_pre", "build_auction", "build_close",
+                  "build_review"):
+            self.assertNotIn(f'notifier.push("{m}"', src)
 
     def test_audit_writes_no_file(self):
         """只读：不得写任何文件（尤其不能碰账本）。
