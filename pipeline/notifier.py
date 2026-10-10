@@ -1797,7 +1797,7 @@ def push(mode, title, content, date=None, con=None,
     # 是当日发送量过大（08 连发演练 + 全天 16 条）。同渠道当日真实发送
     # 超过上限后，非 force 的推送一律跳过——额度留给收盘/复盘这类关键
     # 推送。force（补发/告警）不受限。
-    _pp_daily_cap = int(os.environ.get("ASTOCK_PUSHPLUS_DAILY_CAP", "20") or 20)
+    _pp_daily_cap = int(os.environ.get("ASTOCK_PUSHPLUS_DAILY_CAP", "50") or 20)
     if cfg.get("pushplus_token") and "pushplus" in channels and not force:
         try:
             _pp_sent_today = con.execute(
