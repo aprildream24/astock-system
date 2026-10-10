@@ -244,7 +244,8 @@ def place_order(con, code, side, qty, price, today, prev_close=None,
     return oid, "filled", reason or "模拟成交"
 
 
-def evaluate_exit(con, code, today, protect_prev=None, cost_override=None):
+def evaluate_exit(con, code, today, protect_prev=None, cost_override=None,
+                  price_override=None):
     """M24：收集全部触发规则 → 固定优先级定动作；M25 按持仓收益。
 
     返回 (action, reasons, detail)。action ∈ SELL/HOLD。
@@ -263,11 +264,16 @@ def evaluate_exit(con, code, today, protect_prev=None, cost_override=None):
         (code,)).fetchone()
     if not row:
         return "HOLD", [], "无行情"
-    close = row[0]
+    # 盘中巡逻必须用**实时价**（2026-10-09 教训：丽珠集团 10-08 跌停、
+    # 10-09 实际反弹，巡逻却拿 10-08 收盘价当卖出价 → 误判"跌停无法
+    # 卖出"还整日重推 200+ 条）。close/low 用实时价，技术指标仍走历史K。
+    close = float(price_override) if price_override else row[0]
     bars = con.execute(
         "SELECT h, l, c FROM klines WHERE code=? ORDER BY date DESC LIMIT 11",
         (code,)).fetchall()
-    low_today = bars[0][1]
+    low_today = (min(bars[0][1], close)
+                 if not price_override and bars[0][2] == row[0]
+                 else (price_override if price_override else bars[0][1]))
     trs = [max(bars[i][0] - bars[i][1],
                abs(bars[i][0] - bars[i + 1][2]),
                abs(bars[i][1] - bars[i + 1][2]))
@@ -1262,11 +1268,14 @@ def run(task="scan", price_of=None, slot=None, now=None):
         "SELECT DISTINCT code FROM position_batches WHERE buy_date<?",
         (today,))]
     for code in codes:
-        action, reasons, detail = evaluate_exit(con, code, today)
+        _live = _last_price(con, code, today, slot)
+        action, reasons, detail = evaluate_exit(
+            con, code, today, price_override=_live)
         if action == "SELL":
             row = con.execute(
                 "SELECT c FROM klines WHERE code=? ORDER BY date DESC LIMIT 1",
                 (code,)).fetchone()
+            _sell_px = _live if _live else row[0]
             prev = con.execute(
                 "SELECT c FROM klines WHERE code=? ORDER BY date DESC LIMIT 1 "
                 "OFFSET 1", (code,)).fetchone()
@@ -1277,11 +1286,25 @@ def run(task="scan", price_of=None, slot=None, now=None):
                             "；".join(reasons)))
                 continue
             oid, status, why = place_order(
-                con, code, "sell", qty, row[0], today,
+                con, code, "sell", qty, _sell_px, today,
                 prev_close=prev[0] if prev else None, risk_sell=True,
                 reason="；".join(reasons))
-            log.append((code, "SELL" if status == "filled" else "RISK_BLOCKED",
-                        why))
+            if status == "filled":
+                log.append((code, "SELL", why))
+            else:
+                # RISK_BLOCKED 每日去重（2026-10-09 教训：跌停/受限仓位
+                # 每轮巡逻 force 推送 → 单日 200+ 条）。首次告警留痕，
+                # 后续只写日志不推送（持仓页/日结仍可见状态）。
+                con.execute(
+                    "CREATE TABLE IF NOT EXISTS live_alerts("
+                    "date TEXT, kind TEXT, code TEXT, ts TEXT, detail TEXT,"
+                    "PRIMARY KEY(date, kind, code))")
+                _first = con.execute(
+                    "INSERT OR IGNORE INTO live_alerts VALUES(?,?,?,?,?)",
+                    (today, "rblk", code, _now(),
+                     "；".join(reasons))).rowcount
+                if _first:
+                    log.append((code, "RISK_BLOCKED", why))
         else:
             log.append((code, "HOLD", detail))
     # ★ 去弱留强（用户 2026-09-21「持续弱拿着没意义，本质是去弱留强」）：
