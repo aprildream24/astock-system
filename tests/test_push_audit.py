@@ -264,10 +264,10 @@ class TestWiring(unittest.TestCase):
                       "缺失告警必须直发用户（pushplus，零 PAT 依赖）")
         self.assertIn('"audit_alert"', src)
         # 告警必须带双保险：确有缺失 + 配置了推送令牌
-        self.assertLess(src.index('res["missing"] and '
+        self.assertLess(src.index('not _already and '
                                   'os.environ.get("PUSHPLUS_TOKEN")'),
                         src.index("notifier.push"),
-                        "告警前必须先判 missing 与令牌")
+                        "告警前必须先判 missing、日去重与令牌")
         # 业务 mode 不得从验收器发出
         for m in ("build_pre", "build_auction", "build_close",
                   "build_review"):
