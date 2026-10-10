@@ -30,7 +30,11 @@ on:
 # 防止两个循环并存造成双倍轮询（推送本身有 live_alerts 去重兜底）。
 concurrency:
   group: intraday-live
-  cancel-in-progress: true
+  # 2026-10-09 修（开盘日实战教训）：cancel-in-progress 会把正在轮询的
+  # 循环杀掉——备份链迟到重派 am 时（11:09/14:25 实测）造成轮询断档、
+  # 漏买点/漏止损提醒。改为共存：live_alerts 事件去重保证不重复推送，
+  # live_loop 自带 _already_running 守门让后到的实例自行退出。
+  cancel-in-progress: false
 
 permissions:
   contents: read

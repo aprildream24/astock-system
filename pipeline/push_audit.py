@@ -301,7 +301,10 @@ def main(argv=None):
     # 2026-10-05 年度无人值守加固：「该发未发」必须**主动告诉用户**——
     # 原实现只写日志（用户端表现为一片安静，无从判断系统死活）。走
     # PushPlus 直发（不依赖 GH_PAT），失败绝不阻断验收主流程。
-    if res["missing"] and os.environ.get("PUSHPLUS_TOKEN"):
+    # 日去重：同一天只发一次缺失告警（多班审计/双链备份不会刷屏）
+    _already = ("audit_alert" in sent_modes(led, date)
+                if "sent_modes" in dir() else False)
+    if res["missing"] and not _already and os.environ.get("PUSHPLUS_TOKEN"):
         try:
             sys.path.insert(0, os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))))
