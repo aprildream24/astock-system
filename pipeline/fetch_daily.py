@@ -506,10 +506,16 @@ def data_ready_for(con, date):
     """
     if not core.is_real_trade_day(date):
         return False, "权威日历：非交易日（法定休市/周末）"
-    n = con.execute("SELECT COUNT(*) FROM klines WHERE date=?",
-                    (date,)).fetchone()[0]
-    if n == 0:
-        return False, f"{date} 无K线数据（先跑 fetch_daily）"
+    # 2026-10-11 修（10-09 实战血案）：原判据只数当日K线总行数——
+    # 个股抓到而**指数（sh000001）没抓到**时照样放行，结果日历不含当日、
+    # 全部价格退化成前一日（10-09 收盘推送发的是 10-08 价格：科德 22.72、
+    # 丽珠 -10%）。指数K线是权威日历的基座，必须单独确认入库。
+    _idx = con.execute(
+        "SELECT COUNT(*) FROM klines WHERE date=? AND code='sh000001'",
+        (date,)).fetchone()[0]
+    if _idx == 0:
+        return False, (f"{date} 指数K线未入库（权威日历缺基座）——"
+                       "先重新抓取，绝不以前一日价格冒充当日")
     path = os.path.join(core.CACHE_DIR, "fetch_stats.json")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
