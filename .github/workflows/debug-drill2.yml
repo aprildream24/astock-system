@@ -1,0 +1,69 @@
+# 卖出推送演练（2026-10-11）：验证新标题格式「卖出 股票名 价格」。
+# 数据不回存缓存。完成后删除本文件。
+name: debug-drill2
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  sell-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-drill2-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 卖出推送演练
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WECOM_HOOK: ${{ secrets.WECOM_HOOK }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          import sqlite3
+          from pipeline import executor, notifier
+
+          con = sqlite3.connect("cache/market.db")
+          D = "2026-10-09"
+
+          # ① 正常卖出：中毅达按周五收盘价卖出 → exec 报告
+          row = con.execute(
+              "SELECT c FROM klines WHERE code='sh601579' AND date=?",
+              (D,)).fetchone()
+          qty = con.execute(
+              "SELECT SUM(available) FROM position_batches "
+              "WHERE code='sh601579'").fetchone()[0]
+          print("[drill2] 中毅达 qty:", qty, "px:", row[0] if row else None)
+          if qty and row:
+              prev = con.execute(
+                  "SELECT c FROM klines WHERE code='sh601579' AND date<? "
+                  "ORDER BY date DESC LIMIT 1", (D,)).fetchone()
+              oid, status, why = executor.place_order(
+                  con, "sh601579", "sell", int(qty), row[0], D,
+                  prev_close=prev[0] if prev else None, risk_sell=True,
+                  reason="演练卖出（浮盈止盈演示）")
+              print(f"[drill2] sell → {status} {why}")
+          # ② 受阻演示：跌停价卖单（价格 < 前收×0.9）→ RISK_BLOCKED
+          oid2, status2, why2 = executor.place_order(
+              con, "sz300192", "sell", 800, 21.0, D,
+              prev_close=24.59 if True else None, risk_sell=True,
+              reason="演练：跌停价以下卖单演示")
+          print(f"[drill2] blocked demo → {status2} {why2}")
+          # exec 报告推送（新标题格式：卖出 股票名 价格）
+          log = [("sh601579", "SELL" if status == "filled" else "RISK_BLOCKED",
+                  "演练卖出（浮盈止盈演示）")]
+          if status2 != "filled":
+              log.append(("sz300192", "RISK_BLOCKED", why2))
+          r = executor._exec_push(con, "restore", D, log, slot=None)
+          print(f"[drill2] exec push={r}")
+          con.close()
+          print("[drill2] done")
+          EOF
