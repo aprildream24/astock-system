@@ -695,6 +695,22 @@ def build(task="close", date=None, period_days=30):
         print(f"[build] {date} 拒绝构建（{why}/{ready_why}）")
         # 2026-09-15：拒绝构建不再静默——主动告警用户（详见函数注释）
         _notify_data_blocked(task, date, why, ready_why)
+        # ★ 2026-10-11 自愈补救（用户：「发现问题没有补救措施吗？」）：
+        # 告警后**自动重抓一次再给一次机会**，不把问题留到下一次开盘。
+        if task not in ("pre", "auction") and _cal_trade(date):
+            print("[build] 数据未就绪 → 自动重抓一次（自愈补救）")
+            try:
+                from . import fetch_daily as _fd
+                _fd.fetch_daily(days=3, force=True)
+                ready2, ready_why2 = data_ready_for(con, date)
+                if ready2:
+                    print("[build] 自愈成功：数据已入库，继续构建")
+                    certain, ready = True, True
+                else:
+                    print(f"[build] 自愈后仍未就绪（{ready_why2}）→ 放弃")
+            except Exception as e:  # noqa: BLE001
+                print(f"[build] 自愈重抓失败: {e}")
+    if not certain or not ready:
         return None
     # 技巧只增不减：注册表基线守门（数量跌了直接拒绝构建）
     _tb = os.path.join(core.BASE_DIR, "tools", "baseline_techniques.json")
@@ -1443,6 +1459,45 @@ def build(task="close", date=None, period_days=30):
             _prep = _maybe_period(con, date)
         except Exception as e:  # noqa: BLE001 — 周期复盘失败不阻断主流程
             print(f"[build] auto period failed: {e}")
+        # 盘前预告（2026-10-11 用户需求）：每晚复盘后自动推「明日预告」——
+        # 下一交易日、当前裁决、持仓与止损位、系统自检三件套。
+        try:
+            from .trade_calendar import is_trade_day as _nd, why_closed as _wc
+            import datetime as _dt
+            _ndate = _dt.date.fromisoformat(date) + _dt.timedelta(days=1)
+            while not _nd(_ndate.isoformat()):
+                _ndate += _dt.timedelta(days=1)
+            _lines = [f"下一交易日：{_ndate.isoformat()}"]
+            _vd = con.execute("SELECT verdict FROM day_meta WHERE date=?",
+                              (date,)).fetchone()
+            _lines.append(f"当前裁决：{_vd[0] if _vd else '—'}")
+            for h in load_holdings():
+                _r = con.execute(
+                    "SELECT c FROM klines WHERE code=? ORDER BY date DESC "
+                    "LIMIT 1", (h.get("code", ""),)).fetchone()
+                if _r and h.get("buy_price"):
+                    _pn = (_r[0] / h["buy_price"] - 1) * 100
+                    _lines.append(f"持仓 {h.get('name') or h['code']} "
+                                  f"{_r[0]:.2f}（{_pn:+.1f}%）止损关注 "
+                                  f"{h.get('stop') or '自动'}")
+            _sent_n = len([1 for k, v in con.execute(
+                "SELECT key, status FROM push_ledger WHERE ts LIKE ?",
+                (date + "%",)).fetchall() if v == "sent"])
+            _fresh = con.execute(
+                "SELECT MAX(date) FROM klines WHERE code='sh000001'"
+            ).fetchone()[0]
+            _kh = con.execute(
+                "SELECT value FROM tune_state WHERE key='k_hot'").fetchone()
+            _lines.append(f"系统自检：今日推送 {_sent_n} 条 · 数据截止 "
+                          f"{_fresh} · k_hot={_kh[0] if _kh else '默认'}")
+            notifier.push("prebrief", f"【盘前预告】{_nd_txt}"
+                          if (_nd_txt := _ndate.isoformat()) else "盘前预告",
+                          "<h3>明日开盘预告</h3>" + "".join(
+                              f"<p>{notifier._esc(l)}</p>" for l in _lines),
+                          date=date, con=con, force=True)
+            print("[build] 盘前预告已推送")
+        except Exception as e:  # noqa: BLE001
+            print(f"[build] 盘前预告失败（不阻断）: {e}")
         else:
             print("[build] evening_digest empty → 跳过")
     return {"date": date, "candidates": len(cands), "picks": picks,
