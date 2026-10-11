@@ -1,0 +1,47 @@
+name: debug-drill3
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-drill3-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 卖出标题格式展示（零数据变更）
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WECOM_HOOK: ${{ secrets.WECOM_HOOK }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          from pipeline import notifier
+          html = notifier.render_exec_report(
+              "2026-10-09",
+              {"cash": 12345.6, "equity": 100678.9, "day_pnl": -0.8},
+              opened=[],
+              sold=[{"code": "sh601579", "name": "中毅达",
+                     "action": "SELL",
+                     "detail": "演练：浮盈止盈演示"},
+                    {"code": "sz000513", "name": "丽珠集团",
+                     "action": "SELL",
+                     "detail": "演练：硬止损触发"}],
+              holdings=[{"code": "sz300192", "name": "科德教育",
+                         "qty": 800, "cost": 24.59, "price": 24.59,
+                         "pnl_pct": 0.0}],
+              skipped=[], note="本条为推送格式演练，非真实交易")
+          r = notifier.push("rehearsal_sell", "【演练】卖出 中毅达 40.28 / 丽珠集团 30.50",
+                            html, date="2026-10-09", con=None, force=True)
+          print(f"[drill3] push={r}")
+          EOF
