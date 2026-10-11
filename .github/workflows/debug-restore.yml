@@ -1,0 +1,107 @@
+# 临时工作流（2026-10-11）：错卖仓位还原 + 全量成交史报告。
+# 还原 = 按周五收盘价原量买回（账目留痕「错卖回补」）；完成后本文件删除。
+name: debug-restore
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-restore-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 还原并报告
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WECOM_HOOK: ${{ secrets.WECOM_HOOK }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          import sqlite3, os
+          from pipeline import executor, notifier
+
+          con = sqlite3.connect("cache/market.db")
+          T = "2026-10-09"          # 锚定最后一个交易日（T+1 语义正确）
+
+          print("===== 全量成交史 =====")
+          hist = con.execute(
+              "SELECT substr(f.ts,1,10), f.code, f.side, f.qty, f.price, "
+              "o.reason FROM fills f LEFT JOIN orders o "
+              "ON o.order_id=f.order_id WHERE NOT EXISTS "
+              "(SELECT 1 FROM offday_reverted r WHERE r.fill_id=f.fill_id) "
+              "ORDER BY f.ts").fetchall()
+          rows_html = []
+          for d, code, side, qty, px, reason in hist:
+              mark = "买入" if side == "buy" else "卖出"
+              print(f"  {d} {code} {mark} {qty:.0f}股@{px:.2f} {reason or ''}")
+              rows_html.append(f"<p>{d} {code} {mark} {qty:.0f}股@{px:.2f}"
+                               f"　{reason or ''}</p>")
+
+          print("===== 当前持仓 =====")
+          for r in con.execute(
+                  "SELECT code, SUM(qty), AVG(cost) FROM position_batches "
+                  "GROUP BY code"):
+              print("  ", r)
+
+          print("===== 错卖回补 =====")
+          restore, rep = [], []
+          for code in ("sz300192", "sz000513"):
+              held = con.execute(
+                  "SELECT COALESCE(SUM(qty),0) FROM position_batches "
+                  "WHERE code=?", (code,)).fetchone()[0]
+              if held > 0:
+                  print(f"  {code} 仍在持仓（{held:.0f}股）→ 无需回补")
+                  continue
+              sells = [r for r in hist if r[1] == code and r[2] == "sell"]
+              if not sells:
+                  continue
+              d, _c, _s, qty, px, _r = sells[-1]
+              close = con.execute(
+                  "SELECT c FROM klines WHERE code=? AND date=?",
+                  (code, T)).fetchone()
+              buy_px = close[0] if close else float(px)
+              prev = con.execute(
+                  "SELECT c FROM klines WHERE code=? AND date<? "
+                  "ORDER BY date DESC LIMIT 1", (code, T)).fetchone()
+              oid, status, why = executor.place_order(
+                  con, code, "buy", int(qty), buy_px, T,
+                  prev_close=prev[0] if prev else None,
+                  reason="错卖回补（10-09 数据事故还原，原卖出 "
+                         f"{d}@{px:.2f}）")
+              print(f"  {code} 回补 {int(qty)}股@{buy_px:.2f} → {status} {why}")
+              restore.append((code, int(qty), buy_px, status))
+          con.commit()
+
+          now_pos = [(r[0], r[1], r[2]) for r in con.execute(
+              "SELECT code, SUM(qty), AVG(cost) FROM position_batches "
+              "GROUP BY code")]
+          html = ("<h3>模拟盘全量成交史（含错卖回补）</h3>"
+                  + "".join(rows_html)
+                  + "<h3>错卖回补结果</h3>"
+                  + "".join(f"<p>{c} 回补 {q}股@{p:.2f} → {st}</p>"
+                            for c, q, p, st in restore)
+                  + "<h3>当前持仓（周一按实时价继续管理）</h3>"
+                  + "".join(f"<p>{c} {q:.0f}股 成本{cost:.2f}</p>"
+                            for c, q, cost in now_pos))
+          r = notifier.push("exec_restore", "模拟盘成交史与错卖回补",
+                            html, date=T, con=con, force=True)
+          print(f"[restore] push={r}")
+          con.close()
+          print("[restore] done")
+          EOF
+      - name: 回存缓存
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: market-db-restore-${{ github.run_id }}
