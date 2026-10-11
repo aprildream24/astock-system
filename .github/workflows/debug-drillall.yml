@@ -1,0 +1,134 @@
+name: debug-drillall
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-drillall-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 全类型推送演练
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WECOM_HOOK: ${{ secrets.WECOM_HOOK }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          import datetime as dt
+          from unittest import mock
+          from pipeline import notifier, build as B, intraday as I, executor
+
+          con = executor.get_conn()
+          D = "2026-10-09"
+          done, failed = [], []
+
+          def fire(name, title, html):
+              try:
+                  r = notifier.push(f"rehearsal_{name}",
+                                    f"【演练】{title}", html,
+                                    date=D, con=con, force=True)
+                  ok = r.get("sent") and all(
+                      v.get("status") == "sent"
+                      for v in r.get("results", {}).values()
+                      if v.get("status") != "failed")
+                  (done if r.get("sent") else failed).append(
+                      (name, title, str(r)[:120]))
+                  print(f"[drill] {name}: {str(r)[:150]}")
+              except Exception as e:
+                  failed.append((name, title, f"{type(e).__name__} {e}"))
+                  print(f"[drill] {name} EXC: {type(e).__name__} {e}")
+
+          # ① 盘前计划 / ② 竞价裁决（同一渲染器，真实 10-09 推荐与裁决）
+          try:
+              picks = [dict(zip(("code", "name", "tag", "action", "buy_low",
+                                 "buy_high", "stop", "score"), r))
+                       for r in con.execute(
+                           "SELECT code,name,tag,action,buy_low,buy_high,"
+                           "stop,score FROM rec_picks WHERE date=? "
+                           "ORDER BY score DESC LIMIT 6", (D,)).fetchall()]
+              meta = {"verdict": "轻仓试探", "verdict_text": "演练口径",
+                      "heat_level": "均衡", "reviewed": 100, "universe": 5000,
+                      "coverage": 100, "data_date": D, "valid_until": D,
+                      "hot_sectors": [], "pick_limit": 8}
+              first = picks[0] if picks else None
+              first = dict(first, close=first.get("buy_high"),
+                           zone=[first.get("buy_low"), first.get("buy_high")],
+                           stop=first.get("stop")) if first else None
+              backups = [dict(p, close=p.get("buy_high"),
+                              zone=[p.get("buy_low"), p.get("buy_high")])
+                         for p in picks[1:3]]
+              for c in ([first] if first else []) + backups:
+                  c["confirms"] = 2
+                  c["pool"] = "趋势"
+              brief = notifier.render_brief(D, first, backups, [], meta)
+              fire("pre", "盘前计划", brief)
+              fire("auction", "竞价裁决", brief)
+          except Exception as e:
+              failed.append(("pre/auction", "盘前/竞价", repr(e)[:120]))
+              print("[drill] pre/auction EXC:", repr(e)[:150])
+
+          # ③ 早盘校验 / ⑤ 尾盘机会 / ④ 买点触发（intraday 真实通道）
+          _now_am = dt.datetime(2026, 10, 9, 9, 45,
+                                tzinfo=dt.timezone(dt.timedelta(hours=8)))
+          _now_pm = dt.datetime(2026, 10, 9, 14, 40,
+                                tzinfo=dt.timezone(dt.timedelta(hours=8)))
+          try:
+              out = I.run(slot="am", date=D, now=_now_am)
+              done.append(("intraday_am", "早盘校验", "run ok"))
+          except Exception as e:
+              failed.append(("intraday_am", "早盘校验", repr(e)[:120]))
+          try:
+              out = I.run(slot="pm", date=D, now=_now_pm)
+              done.append(("intraday_pm", "尾盘机会", "run ok"))
+          except Exception as e:
+              failed.append(("intraday_pm", "尾盘机会", repr(e)[:120]))
+
+          # ⑦ 晚间复盘（真实日结 + 周检卡）
+          try:
+              from pipeline import autotune, narrative
+              rep = executor.report_daily_pnl(con, D)
+              daily = notifier.render_daily_summary(rep, D)
+              wq = autotune.week_quality(con, D)
+              digest = notifier.render_evening_digest(
+                  D, notifier.md2html("【演练】复盘文字"), daily,
+                  autotune.week_card_html(wq), "")
+              fire("review", "晚间复盘", digest)
+          except Exception as e:
+              failed.append(("review", "晚间复盘", repr(e)[:120]))
+
+          # ⑧ 周期复盘
+          try:
+              fire("period", "周期复盘",
+                   notifier.render_period_report(
+                       executor.report_period(con, D, 15), D, 15))
+          except Exception as e:
+              failed.append(("period", "周期复盘", repr(e)[:120]))
+
+          # ⑨ 数据未就绪告警 / ⑩ 假期提示（固定格式）
+          fire("data_blocked", "数据未就绪告警",
+               "<p>【演练】数据未就绪：行情抓取未完成，今日推送延后。</p>")
+          fire("data_holiday", "假期提示",
+               "<p>【演练】休市提示：非交易日，复盘不产生。</p>")
+
+          print(f"[drill] 完成 {len(done)} 失败 {len(failed)}")
+          for n, t, d in failed:
+              print(f"[drill] FAILED: {n} {t} {d}")
+          summ = ("<h3>【演练】全类型推送清单</h3>"
+                  + "".join(f"<p>✓ {t}</p>" for _n, t, _d in done)
+                  + "".join(f"<p>✗ {t}（见日志）</p>" for n, t, d in failed))
+          notifier.push("rehearsal_summary", "【演练】全类型推送总清单",
+                        summ, date=D, con=con, force=True)
+          print("[drill] done")
+          EOF
