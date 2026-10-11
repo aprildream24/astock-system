@@ -1201,11 +1201,24 @@ def _exec_push(con, task, today, log, slot=None):
         holdings=holdings, skipped=skipped, note=note,
         slot_label={"am": " · 早盘", "pm": " · 尾盘"}.get(slot, ""))
     # 标题摘要（配合 notifier 的【模拟】【Astra】前缀，一眼知行情）
+    # 2026-10-11 修（用户：丽珠/科德的卖出推送「没收到」）：卖出必须
+    # 把 **股票名和成交价写进标题**——此前只有"退出 N 只"，内容淹没在
+    # 长报告里，用户端感知不到发生了什么。
     head = f"建仓 {len(opened)} 只 · 持仓 {len(holdings)} 只"
+    if sold:
+        _sold_px = []
+        for x in sold:
+            _p = ""
+            if x.get("code") != "-":
+                _row = con.execute(
+                    "SELECT price FROM fills WHERE code=? AND side='sell' "
+                    "ORDER BY ts DESC LIMIT 1", (x["code"],)).fetchone()
+                if _row:
+                    _p = f" {_row[0]:.2f}"
+            _sold_px.append(f"{x.get('name') or x['code']}{_p}")
+        head += f" · 卖出 {' / '.join(_sold_px)}"
     if blocked:
         head += f" · 未成交 {len(blocked)} 只"
-    if sold:
-        head += f" · 退出 {len(sold)} 只"
     # 2026-09-22 用户需求：「模拟盘中购入的必须全部推送」。凡有实质动作
     # （买入/卖出/到价未成交/风控）一律 force 即时送达——本函数仅在
     # 有实质动作时才被调用，所以这里 force 恒为 True；噪音已由
