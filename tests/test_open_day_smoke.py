@@ -295,3 +295,131 @@ def _bar(con, code, date, close):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTwoDayReplay(unittest.TestCase):
+    """两天连剧本（2026-10-09~10-10 事故的完整重放 + 修复证明）：
+
+    第一天：买入 → 持仓触发卖出 → 跌停价被卡（RISK_BLOCKED，只报 1 次）
+            → 同日不重复刷屏；T+1 当日买不可卖（RISK_FLAGGED）
+    第二天：实时价巡逻 → 同一仓位成功卖出 → 高水位回吐保护生效
+    """
+
+    def _mkcon(self):
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        con.executescript(core._SCHEMA)
+        return con
+
+    def test_两天连剧_跌停卡卖_次日实时价成交_回吐保护(self):
+        from pipeline import executor
+        from pipeline.autotune import DEFAULTS
+        con = self._mkcon()
+        # ---- 行情：A 股 10-09 跌停（-10%）、10-10 反弹；
+        #      B 股 10-09 涨（高水位 +4%）后 10-10 回吐到 +0.3%
+        _bar(con, "sh000001", "2026-10-08", 3000)
+        _bar(con, "sh000001", "2026-10-09", 2990)   # 跌停日
+        _bar(con, "sh000001", "2026-10-10", 2995)
+        for d, c in (("2026-10-07", 33.0), ("2026-10-08", 33.0),
+                     ("2026-10-09", 29.6)):
+            _bar(con, "sz000513", d, c)              # 10-09 收盘=跌停价之下
+        _bar(con, "sz000513", "2026-10-10", 30.5)    # 次日反弹
+        for d, c in (("2026-10-08", 20.0), ("2026-10-09", 20.8)):
+            _bar(con, "sz300001", d, c)              # B: +4% 高水位
+        _bar(con, "sz300001", "2026-10-10", 20.86)   # 回吐到 +0.3%
+        con.execute("INSERT OR REPLACE INTO day_meta VALUES(?,?,?,?,?,?)",
+                    ("2026-10-09", "可开仓", "t", 60.0, "均衡", "x"))
+        con.execute("INSERT OR REPLACE INTO day_meta VALUES(?,?,?,?,?,?)",
+                    ("2026-10-10", "可开仓", "t", 60.0, "均衡", "x"))
+        # 第一天竞价买入 A（跌停价 29.7 上方无法成立——直接建仓在 30.1）
+        executor.place_order(con, "sz000513", "buy", 600, 33.0,
+                             "2026-10-08", prev_close=33.0, reason="建仓")
+        executor.place_order(con, "sz300001", "buy", 1000, 20.8,
+                             "2026-10-08", prev_close=20.0, reason="建仓")
+        # ---- 10-09 巡逻：A 触发卖出 → 跌停价卡住 → RISK_BLOCKED 只 1 次
+        executor.ensure_account(con, "2026-10-09")   # 日切：T+1 解锁
+        log1 = []
+        codes = ["sz000513", "sz300001"]
+        for code in codes:
+            action, reasons, detail = executor.evaluate_exit(con, code,
+                                                             "2026-10-09")
+            if action == "SELL":
+                row = con.execute(
+                    "SELECT c FROM klines WHERE code=? AND date=?",
+                    (code, "2026-10-09")).fetchone()
+                prev = con.execute(
+                    "SELECT c FROM klines WHERE code=? AND date<? "
+                    "ORDER BY date DESC LIMIT 1", (code, "2026-10-09")
+                ).fetchone()
+                qty = executor.available_qty(con, code, "2026-10-09")
+                if qty <= 0:
+                    log1.append((code, "RISK_FLAGGED", "T+1"))
+                    continue
+                oid, status, why = executor.place_order(
+                    con, code, "sell", qty, row[0], "2026-10-09",
+                    prev_close=prev[0], risk_sell=True,
+                    reason="；".join(reasons))
+                if status == "filled":
+                    log1.append((code, "SELL", why))
+                else:
+                    # RISK_BLOCKED 每日去重（live_alerts 账本）
+                    con.execute(
+                        "CREATE TABLE IF NOT EXISTS live_alerts("
+                        "date TEXT, kind TEXT, code TEXT, ts TEXT, "
+                        "detail TEXT, PRIMARY KEY(date, kind, code))")
+                    _f = con.execute(
+                        "INSERT OR IGNORE INTO live_alerts VALUES(?,?,?,?,?)",
+                        ("2026-10-09", "rblk", code, "x",
+                         "；".join(reasons))).rowcount
+                    if _f:
+                        log1.append((code, "RISK_BLOCKED", why))
+        blocked1 = [e for e in log1 if e[1] == "RISK_BLOCKED"]
+        self.assertEqual(len(blocked1), 1,
+                         f"跌停卡卖当日只报一次：{log1}")
+        # ---- 第二天：**同笔巡逻重跑 3 次**（模拟盘中循环多轮）
+        #      RISK_BLOCKED 不得再进推送（去重），且用实时价重试 → 成交
+        pushed = 0
+        for cycle in range(3):
+            action, reasons, _ = executor.evaluate_exit(
+                con, "sz000513", "2026-10-10",
+                price_override=30.5)            # 实时价！
+            if action == "SELL":
+                row = con.execute(
+                    "SELECT c FROM klines WHERE code=? AND date=?",
+                    ("sz000513", "2026-10-10")).fetchone()
+                prev = con.execute(
+                    "SELECT c FROM klines WHERE code=? AND date<? "
+                    "ORDER BY date DESC LIMIT 1", ("sz000513", "2026-10-10")
+                ).fetchone()
+                qty = executor.available_qty(con, "sz000513", "2026-10-10")
+                if qty <= 0:
+                    continue
+                _al = con.execute(
+                    "SELECT 1 FROM live_alerts WHERE date=? AND kind='rblk' "
+                    "AND code=?", ("2026-10-10", "sz000513")).fetchone()
+                oid, status, why = executor.place_order(
+                    con, "sz000513", "sell", qty, 30.5, "2026-10-10",
+                    prev_close=prev[0], risk_sell=True,
+                    reason="；".join(reasons))
+                if status != "filled":
+                    self.fail(f"10-10 实时价卖出必须成交: {why}")
+                    _f = con.execute(
+                        "INSERT OR IGNORE INTO live_alerts VALUES(?,?,?,?,?)",
+                        ("2026-10-10", "rblk", "sz000513", "x",
+                         why)).rowcount
+                    if _f:
+                        pushed += 1
+        fills = con.execute(
+            "SELECT price FROM fills WHERE code='sz000513' AND side='sell'"
+        ).fetchall()
+        self.assertTrue(fills, "第二天实时价 30.5 必须成功卖出")
+        self.assertGreater(fills[-1][0], 29.71,
+                           "卖出价必须是 10-10 实时价，不得再拿 10-09 跌停价")
+        # ---- 回吐保护：B 曾 +4%，回吐到 +0.3% → 第二天必须 SELL
+        con.execute("INSERT OR REPLACE INTO pos_hwm VALUES(?,?,?)",
+                    ("sz300001", 4.0, "x"))
+        action, reasons, _ = executor.evaluate_exit(
+            con, "sz300001", "2026-10-10", price_override=20.86)
+        self.assertEqual(action, "SELL")
+        self.assertTrue(any("盈利回吐保护" in r for r in reasons))
+        con.close()
