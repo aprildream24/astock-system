@@ -1,0 +1,76 @@
+# 全要素实战演练（2026-10-11）：真实数据 + 真实双通道推送，
+# 演练交易不回存缓存（次日即蒸发，不污染真实模拟盘）。完成后本文件删除。
+name: debug-drill
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: market-db-drill-${{ github.run_id }}
+          restore-keys: |
+            market-db-
+      - name: 全要素演练（锚定 10-09 交易日，实弹推送）
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WECOM_HOOK: ${{ secrets.WECOM_HOOK }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          import sys, datetime as dt
+          from unittest import mock
+          from pipeline import executor, intraday, autotune, notifier
+
+          D = "2026-10-09"
+          _now = dt.datetime(2026, 10, 9, 9, 35,
+                             tzinfo=dt.timezone(dt.timedelta(hours=8)))
+
+          # ① 模拟盘：建仓 + 巡逻卖出（真实数据、真实推送）
+          executor.today_str = lambda: D
+          print("===== ① 模拟盘建仓+巡逻 =====")
+          executor.run(task="auto", slot="am", now=_now)
+
+          # ② 盘中提醒通道（买点触发格式，实时报价源）
+          print("===== ② 盘中提醒 =====")
+          try:
+              out = intraday.run(slot="live", date=D, now=_now)
+              print("[drill] intraday:", {k: out.get(k) for k in
+                    ("plan_n", "in_zone", "breakouts", "reason")})
+          except Exception as e:
+              print(f"[drill] intraday 异常: {type(e).__name__} {e}")
+
+          # ③ 周度调参报告（真实证据 + 真实推送）
+          print("===== ③ 周度调参 =====")
+          con = executor.get_conn()
+          rep = autotune.tune(con, D)
+          print("[drill]", rep["summary"])
+          wq = autotune.week_quality(con, D)
+          html = (autotune.tune_card_html(rep) + autotune.week_card_html(wq)
+                  or "<p>本无新增调整（参数已到位），详见周检卡。</p>")
+          notifier.push("rehearsal_tune", "【演练】周度调参报告",
+                        html, date=D, con=con, force=True)
+
+          # ④ 演练总结推送
+          pos = [(r[0], r[1], r[2]) for r in con.execute(
+              "SELECT code, SUM(qty), AVG(cost) FROM position_batches "
+              "GROUP BY code")]
+          summ = ("<h3>【演练】全要素总结（10-09 数据）</h3>"
+                  + "".join(f"<p>持仓 {c} {q:.0f}股 成本{cost:.2f}</p>"
+                            for c, q, cost in pos))
+          notifier.push("rehearsal_summary", "【演练】全要素演练总结",
+                        summ, date=D, con=con, force=True)
+          print("[drill] done")
+          EOF
+      - name: 明确不回存缓存（演练数据即弃）
+        run: echo "skip cache save by design"
