@@ -232,6 +232,14 @@ def verify_prior(part, token, repo, date, when, dry=False):
     need = (VERIFY_START if when == "start" else VERIFY_END).get(part, ())
     if not need:
         return 0
+    # 2026-10-11 修（账本对账发现 10-08 01:58 假期误报案底）：被核验的
+    # date 本身是休市日 → 无推送是**正确行为**，不得告警/补发。
+    # （触发链今天可能是交易日，但核对的是昨天/假期的送达情况。）
+    from pipeline.trade_calendar import is_trade_day as _cal_day
+    if not _cal_day(date):
+        print(f"[driver] 前序核验跳过：{date} 非交易日（休市无推送属正常）",
+              flush=True)
+        return 0
     sent, ok = ledger_modes_today(token, repo, date)
     if not ok:
         return 0
