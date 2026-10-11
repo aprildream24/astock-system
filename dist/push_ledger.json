@@ -1775,7 +1775,7 @@
  },
  "8dea9df877268d12": {
   "mode": "audit_alert",
-  "ts": "2026-10-11 08:18:08",
+  "ts": "2026-10-11 22:21:40",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -1783,7 +1783,7 @@
  },
  "a12c8538748d6863": {
   "mode": "rehearsal_build_pre",
-  "ts": "2026-10-09 08:18:14",
+  "ts": "2026-10-09 22:22:25",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
@@ -1803,7 +1803,7 @@
  },
  "f3ffe017fcd2dabb": {
   "mode": "rehearsal_build_auction",
-  "ts": "2026-10-09 08:20:54",
+  "ts": "2026-10-09 22:24:45",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
@@ -1813,7 +1813,7 @@
  },
  "a0ffc81a83e88213": {
   "mode": "rehearsal_holding_check",
-  "ts": "2026-10-09 08:22:04",
+  "ts": "2026-10-09 22:25:54",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
@@ -1823,7 +1823,7 @@
  },
  "90978c9c8c25b1f9": {
   "mode": "rehearsal_build_close",
-  "ts": "2026-10-09 08:23:28",
+  "ts": "2026-10-09 22:27:19",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
@@ -1853,7 +1853,27 @@
  },
  "18ac830d2ad49789": {
   "mode": "rehearsal_period",
-  "ts": "2026-10-11 08:27:44",
+  "ts": "2026-10-11 22:30:17",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "f4e2ead89c87975a": {
+  "mode": "rehearsal_holding_check",
+  "ts": "2026-10-09 22:23:18",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "9d5e4d2c853f6ff7": {
+  "mode": "rehearsal_rehearsal_exec",
+  "ts": "2026-10-11 22:28:29",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
