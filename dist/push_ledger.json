@@ -1991,7 +1991,7 @@
  },
  "05363dcb1ede935e": {
   "mode": "audit_alert",
-  "ts": "2026-10-13 08:50:43",
+  "ts": "2026-10-13 09:25:36",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -2000,6 +2000,36 @@
  "a0f212807b74bfe2": {
   "mode": "build_pre",
   "ts": "2026-10-13 09:01:44",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "282d67dad399961c": {
+  "mode": "build_auction",
+  "ts": "2026-10-13 09:33:28",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "af721aefb39da767": {
+  "mode": "holding_check",
+  "ts": "2026-10-13 09:34:20",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "c6b95a11d25b3244": {
+  "mode": "exec_auto",
+  "ts": "2026-10-13 09:35:38",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
