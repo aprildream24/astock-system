@@ -2569,7 +2569,7 @@
  },
  "039c6208df6d2d73": {
   "mode": "audit_alert",
-  "ts": "2026-10-21 14:40:55",
+  "ts": "2026-10-21 15:22:37",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -2648,6 +2648,26 @@
  "9ec76b7c38ac7163": {
   "mode": "intraday_pm",
   "ts": "2026-10-21 14:42:33",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "66db93b25232e3b8": {
+  "mode": "data_blocked_close",
+  "ts": "2026-10-21 15:27:27",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "5f6134d4081c4294": {
+  "mode": "build_close",
+  "ts": "2026-10-21 15:33:54",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
