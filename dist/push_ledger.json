@@ -2569,7 +2569,7 @@
  },
  "039c6208df6d2d73": {
   "mode": "audit_alert",
-  "ts": "2026-10-21 08:50:43",
+  "ts": "2026-10-21 09:25:36",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -2588,6 +2588,26 @@
  "7e73802de01ba2c2": {
   "mode": "holding_check",
   "ts": "2026-10-21 09:02:33",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "3b62575c00da2c3e": {
+  "mode": "build_auction",
+  "ts": "2026-10-21 09:33:20",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "20bd1ac0cf33e786": {
+  "mode": "exec_auto",
+  "ts": "2026-10-21 09:34:13",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
