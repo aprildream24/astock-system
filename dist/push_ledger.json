@@ -3295,7 +3295,7 @@
  },
  "6c61818b0071d42d": {
   "mode": "audit_alert",
-  "ts": "2026-10-30 14:08:19",
+  "ts": "2026-10-30 14:40:49",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -3354,6 +3354,16 @@
  "024c1fa0aafe2bd3": {
   "mode": "exec_auto",
   "ts": "2026-10-30 09:48:39",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "2fe5b1987b30b9b1": {
+  "mode": "intraday_pm",
+  "ts": "2026-10-30 14:42:04",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
