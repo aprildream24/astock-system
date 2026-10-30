@@ -3295,7 +3295,7 @@
  },
  "6c61818b0071d42d": {
   "mode": "audit_alert",
-  "ts": "2026-10-30 09:25:35",
+  "ts": "2026-10-30 09:45:50",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -3324,6 +3324,36 @@
  "93a31b1aefe54881": {
   "mode": "build_auction",
   "ts": "2026-10-30 09:29:08",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "eeee3c2ea225cf9f": {
+  "mode": "holding_intraday",
+  "ts": "2026-10-30 09:46:28",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "8e89118b7ed59950": {
+  "mode": "intraday_am",
+  "ts": "2026-10-30 09:47:21",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "024c1fa0aafe2bd3": {
+  "mode": "exec_auto",
+  "ts": "2026-10-30 09:48:39",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
