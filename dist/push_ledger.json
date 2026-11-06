@@ -3775,7 +3775,7 @@
  },
  "83725d3003f0f0da": {
   "mode": "audit_alert",
-  "ts": "2026-11-06 08:50:41",
+  "ts": "2026-11-06 09:25:38",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -3794,6 +3794,16 @@
  "2995dccc6c1b72f5": {
   "mode": "holding_check",
   "ts": "2026-11-06 09:02:36",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "99ecd7db5134412e": {
+  "mode": "build_auction",
+  "ts": "2026-11-06 09:32:36",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
