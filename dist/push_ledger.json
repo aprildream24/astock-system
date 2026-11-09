@@ -3863,7 +3863,7 @@
  },
  "e6786636ec907612": {
   "mode": "audit_alert",
-  "ts": "2026-11-09 15:22:33",
+  "ts": "2026-11-09 20:02:32",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -3952,6 +3952,16 @@
  "b39ef0416217abd1": {
   "mode": "build_close",
   "ts": "2026-11-09 15:28:09",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "0c5fee1be57d9d7b": {
+  "mode": "review",
+  "ts": "2026-11-09 20:10:07",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
