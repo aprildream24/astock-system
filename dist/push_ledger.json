@@ -4451,7 +4451,7 @@
  },
  "9e0ef2f719fa13b4": {
   "mode": "audit_alert",
-  "ts": "2026-11-17 14:41:04",
+  "ts": "2026-11-17 15:22:30",
   "status": "sent",
   "channels": {
    "pushplus": "sent"
@@ -4510,6 +4510,26 @@
  "76660fde1622310f": {
   "mode": "intraday_pm",
   "ts": "2026-11-17 14:42:37",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "cae604ce7ed6a069": {
+  "mode": "data_blocked_close",
+  "ts": "2026-11-17 15:28:05",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "b2bf92ecb50a24a4": {
+  "mode": "build_close",
+  "ts": "2026-11-17 15:35:47",
   "status": "sent",
   "channels": {
    "pushplus": "sent",
