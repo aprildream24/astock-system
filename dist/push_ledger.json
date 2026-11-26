@@ -5104,5 +5104,33 @@
    "wecom_hook": "sent",
    "tg": "failed"
   }
+ },
+ "908422e36674f314": {
+  "mode": "audit_alert",
+  "ts": "2026-11-26 08:50:47",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent"
+  }
+ },
+ "55c773302de12e89": {
+  "mode": "build_pre",
+  "ts": "2026-11-26 09:02:14",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
+ },
+ "5f8ebfddaa45f60e": {
+  "mode": "holding_check",
+  "ts": "2026-11-26 09:03:06",
+  "status": "sent",
+  "channels": {
+   "pushplus": "sent",
+   "wecom_hook": "sent",
+   "tg": "failed"
+  }
  }
 }
